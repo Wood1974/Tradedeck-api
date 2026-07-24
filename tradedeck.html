@@ -1,0 +1,1239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TradeDeck — Hire the Trade. Find the Work.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --navy:    #1A1F2E;
+    --steel:   #8B9BB4;
+    --amber:   #F5A623;
+    --amber-dk:#C7841A;
+    --concrete:#F2F0EC;
+    --white:   #FFFFFF;
+    --slate:   #2C3347;
+    --muted:   #4A5568;
+    --line:    rgba(139,155,180,0.2);
+    --radius:  4px;
+  }
+
+  html { scroll-behavior: smooth; }
+  body { font-family: 'Inter', sans-serif; background: var(--navy); color: var(--concrete); min-height: 100vh; }
+
+  /* ── PAGE TABS ── */
+  .page-tab-bar {
+    display: flex;
+    border-bottom: 1px solid var(--line);
+    background: var(--navy);
+  }
+  .page-tab {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 700;
+    font-size: 0.9rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--steel);
+    padding: 14px 28px;
+    cursor: pointer;
+    border: none;
+    background: none;
+    border-bottom: 3px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  .page-tab:hover { color: var(--white); }
+  .page-tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+
+  .page-view { display: none; }
+  .page-view.active { display: block; }
+
+  /* ── NAV ── */
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 40px;
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    background: var(--navy);
+    z-index: 100;
+  }
+  .logo { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 1.6rem; letter-spacing: 0.04em; color: var(--white); cursor: pointer; }
+  .logo span { color: var(--amber); }
+  nav .nav-links { display: flex; gap: 32px; align-items: center; }
+  nav a { color: var(--steel); text-decoration: none; font-size: 0.875rem; font-weight: 500; transition: color 0.15s; cursor: pointer; }
+  nav a:hover { color: var(--white); }
+
+  .btn-primary {
+    background: var(--amber); color: var(--navy); border: none; padding: 10px 22px;
+    border-radius: var(--radius); font-family: 'Barlow Condensed', sans-serif; font-weight: 700;
+    font-size: 1rem; letter-spacing: 0.06em; cursor: pointer; text-transform: uppercase;
+    transition: background 0.15s, transform 0.1s; text-decoration: none; display: inline-block;
+  }
+  .btn-primary:hover { background: var(--amber-dk); }
+  .btn-primary:active { transform: scale(0.98); }
+
+  .btn-ghost {
+    background: transparent; color: var(--concrete); border: 1px solid var(--steel); padding: 10px 22px;
+    border-radius: var(--radius); font-family: 'Barlow Condensed', sans-serif; font-weight: 700;
+    font-size: 1rem; letter-spacing: 0.06em; cursor: pointer; text-transform: uppercase;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn-ghost:hover { border-color: var(--white); color: var(--white); }
+
+  /* ── HERO ── */
+  .hero {
+    padding: 90px 40px 80px; max-width: 1100px; margin: 0 auto;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: center;
+  }
+  .hero-eyebrow { font-family: 'Barlow Condensed', sans-serif; font-size: 0.8rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber); margin-bottom: 18px; }
+  .hero h1 { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: clamp(2.8rem, 5vw, 4.2rem); line-height: 1.0; color: var(--white); text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 20px; }
+  .hero h1 em { font-style: normal; color: var(--amber); }
+  .hero-sub { color: var(--steel); font-size: 1rem; line-height: 1.65; margin-bottom: 36px; max-width: 440px; }
+  .hero-ctas { display: flex; gap: 14px; flex-wrap: wrap; }
+
+  /* Blueprint card */
+  .blueprint-card {
+    background: var(--slate); border: 1px solid var(--line); border-radius: 6px;
+    padding: 28px; position: relative; overflow: hidden;
+  }
+  .blueprint-card::before {
+    content: ''; position: absolute; inset: 0;
+    background-image: linear-gradient(rgba(139,155,180,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(139,155,180,0.06) 1px, transparent 1px);
+    background-size: 28px 28px; pointer-events: none;
+  }
+  .bc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+  .bc-title { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 1.25rem; letter-spacing: 0.04em; color: var(--white); text-transform: uppercase; }
+  .bc-subtitle { color: var(--steel); font-size: 0.8rem; margin-top: 2px; }
+  .badge { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 10px; border-radius: 2px; border: 1.5px solid; }
+  .badge-open { color: #4ADE80; border-color: #4ADE80; background: rgba(74,222,128,0.08); }
+  .badge-amber { color: var(--amber); border-color: var(--amber); background: rgba(245,166,35,0.1); }
+  .bc-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+  .bc-field label { display: block; font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--steel); margin-bottom: 4px; font-weight: 500; }
+  .bc-field .val { font-size: 0.9rem; color: var(--concrete); font-weight: 500; }
+  .bc-divider { border: none; border-top: 1px dashed var(--line); margin: 16px 0; }
+  .bc-footer { display: flex; justify-content: space-between; align-items: center; }
+  .bc-avatars { display: flex; }
+  .bc-avatar { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--slate); background: var(--steel); display: inline-flex; align-items: center; justify-content: center; font-size: 0.65rem; font-weight: 700; color: var(--navy); margin-left: -6px; }
+  .bc-avatar:first-child { margin-left: 0; }
+  .bc-apply-count { color: var(--steel); font-size: 0.8rem; margin-left: 10px; }
+
+  /* ── STATS BAR ── */
+  .stats-bar { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 24px 40px; display: flex; justify-content: center; gap: 60px; flex-wrap: wrap; }
+  .stat { text-align: center; }
+  .stat .num { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 2rem; color: var(--amber); line-height: 1; }
+  .stat .lbl { font-size: 0.75rem; color: var(--steel); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 4px; }
+
+  /* ── HOW IT WORKS ── */
+  .section { max-width: 1100px; margin: 0 auto; padding: 80px 40px; }
+  .section-label { font-family: 'Barlow Condensed', sans-serif; font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber); margin-bottom: 12px; }
+  .section-title { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: clamp(2rem, 4vw, 3rem); text-transform: uppercase; color: var(--white); margin-bottom: 48px; line-height: 1.0; }
+  .steps-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .step-card { background: var(--slate); border: 1px solid var(--line); border-radius: 6px; padding: 28px 24px; }
+  .step-num { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 3rem; color: rgba(245,166,35,0.15); line-height: 1; margin-bottom: 12px; }
+  .step-card h3 { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--white); margin-bottom: 8px; }
+  .step-card p { font-size: 0.875rem; color: var(--steel); line-height: 1.6; }
+
+  .post-bar { background: linear-gradient(135deg, var(--slate) 0%, #232840 100%); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 40px; text-align: center; }
+  .post-bar h2 { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 2.2rem; text-transform: uppercase; color: var(--white); margin-bottom: 8px; }
+  .post-bar p { color: var(--steel); margin-bottom: 24px; font-size: 0.9rem; }
+
+  /* ══════════════════════════════════════════
+     FIND WORK TAB
+  ══════════════════════════════════════════ */
+  .fw-header {
+    background: linear-gradient(135deg, var(--slate) 0%, #232840 100%);
+    border-bottom: 1px solid var(--line);
+    padding: 48px 40px 40px;
+  }
+  .fw-header-inner { max-width: 1100px; margin: 0 auto; }
+  .fw-eyebrow { font-family: 'Barlow Condensed', sans-serif; font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber); margin-bottom: 10px; }
+  .fw-header h2 { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: clamp(2rem, 4vw, 3rem); text-transform: uppercase; color: var(--white); line-height: 1; margin-bottom: 10px; }
+  .fw-header p { color: var(--steel); font-size: 0.9rem; max-width: 520px; }
+
+  /* Filter bar */
+  .fw-filters {
+    background: var(--slate);
+    border-bottom: 1px solid var(--line);
+    padding: 18px 40px;
+    position: sticky;
+    top: 57px;
+    z-index: 90;
+  }
+  .fw-filters-inner {
+    max-width: 1100px; margin: 0 auto;
+    display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+  }
+  .fw-search {
+    flex: 1; min-width: 200px;
+    background: var(--navy); border: 1px solid rgba(139,155,180,0.3);
+    border-radius: var(--radius); color: var(--concrete);
+    font-family: 'Inter', sans-serif; font-size: 0.875rem;
+    padding: 9px 14px; outline: none; transition: border-color 0.15s;
+  }
+  .fw-search::placeholder { color: rgba(139,155,180,0.5); }
+  .fw-search:focus { border-color: var(--amber); }
+
+  .fw-select {
+    background: var(--navy); border: 1px solid rgba(139,155,180,0.3);
+    border-radius: var(--radius); color: var(--concrete);
+    font-family: 'Inter', sans-serif; font-size: 0.875rem;
+    padding: 9px 14px; outline: none; transition: border-color 0.15s;
+    appearance: none; cursor: pointer; min-width: 140px;
+  }
+  .fw-select:focus { border-color: var(--amber); }
+
+  .fw-clear {
+    background: none; border: 1px solid rgba(139,155,180,0.3);
+    border-radius: var(--radius); color: var(--steel);
+    font-family: 'Barlow Condensed', sans-serif; font-weight: 700;
+    font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 9px 16px; cursor: pointer; transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .fw-clear:hover { border-color: var(--steel); color: var(--white); }
+
+  .fw-count { font-size: 0.78rem; color: var(--steel); margin-left: auto; white-space: nowrap; }
+
+  /* Sub-tabs within Find Work */
+  .fw-subtabs {
+    max-width: 1100px; margin: 0 auto;
+    display: flex; gap: 0; border-bottom: 1px solid var(--line);
+    padding: 0 40px;
+  }
+  .fw-subtab {
+    font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 0.85rem;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--steel);
+    padding: 16px 24px 14px; cursor: pointer; border: none; background: none;
+    border-bottom: 3px solid transparent; transition: color 0.15s, border-color 0.15s;
+    margin-bottom: -1px;
+  }
+  .fw-subtab:hover { color: var(--white); }
+  .fw-subtab.active { color: var(--amber); border-bottom-color: var(--amber); }
+
+  .fw-subview { display: none; }
+  .fw-subview.active { display: block; }
+
+  /* Job cards grid */
+  .fw-body { max-width: 1100px; margin: 0 auto; padding: 32px 40px 60px; }
+
+  .jobs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+
+  .job-card {
+    background: var(--slate); border: 1px solid var(--line); border-radius: 6px;
+    padding: 22px; position: relative; overflow: hidden;
+    transition: border-color 0.15s, transform 0.15s;
+    cursor: pointer;
+  }
+  .job-card:hover { border-color: rgba(139,155,180,0.5); transform: translateY(-2px); }
+  .job-card::before {
+    content: ''; position: absolute; inset: 0;
+    background-image: linear-gradient(rgba(139,155,180,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(139,155,180,0.05) 1px, transparent 1px);
+    background-size: 24px 24px; pointer-events: none;
+  }
+  .jc-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+  .jc-title { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 1.1rem; text-transform: uppercase; color: var(--white); letter-spacing: 0.03em; line-height: 1.2; }
+  .jc-meta { color: var(--steel); font-size: 0.78rem; margin-top: 3px; }
+  .jc-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .jc-field label { display: block; font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--steel); margin-bottom: 2px; }
+  .jc-field .jval { font-size: 0.85rem; color: var(--concrete); }
+  .jc-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px dashed var(--line); padding-top: 12px; margin-top: 4px; }
+  .jc-applicants { display: flex; align-items: center; gap: 8px; }
+  .jc-apply-btn { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; background: var(--amber); color: var(--navy); border: none; padding: 7px 16px; border-radius: var(--radius); cursor: pointer; transition: background 0.15s; }
+  .jc-apply-btn:hover { background: var(--amber-dk); }
+
+  /* Lead source list */
+  .ls-section { margin-bottom: 36px; }
+  .ls-section-title {
+    font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 0.75rem;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber);
+    padding: 10px 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 10px;
+  }
+  .ls-item {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--slate); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 8px;
+    transition: border-color 0.15s;
+  }
+  .ls-item:hover { border-color: rgba(139,155,180,0.45); }
+  .ls-item[data-hidden="true"] { display: none; }
+  .ls-name { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 1rem; text-transform: uppercase; color: var(--white); letter-spacing: 0.03em; min-width: 160px; }
+  .ls-desc { font-size: 0.82rem; color: var(--steel); flex: 1; line-height: 1.5; }
+  .ls-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  .ls-tag { font-family: 'Barlow Condensed', sans-serif; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 8px; border-radius: 2px; border: 1px solid; white-space: nowrap; }
+  .ls-tag-free { color: #4ADE80; border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.06); }
+  .ls-tag-paid { color: var(--amber); border-color: rgba(245,166,35,0.4); background: rgba(245,166,35,0.06); }
+  .ls-tag-trade { color: var(--steel); border-color: rgba(139,155,180,0.3); background: rgba(139,155,180,0.06); }
+  .ls-link { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--amber); text-decoration: none; white-space: nowrap; padding: 6px 12px; border: 1px solid rgba(245,166,35,0.3); border-radius: var(--radius); transition: all 0.15s; }
+  .ls-link:hover { background: var(--amber); color: var(--navy); }
+
+  .fw-empty { text-align: center; padding: 60px 20px; color: var(--steel); }
+  .fw-empty p { font-size: 0.9rem; margin-top: 8px; }
+
+  /* ── JOB POST FLOW OVERLAY ── */
+  .flow-overlay { display: none; position: fixed; inset: 0; background: rgba(10,12,20,0.88); z-index: 200; align-items: center; justify-content: center; padding: 20px; }
+  .flow-overlay.active { display: flex; }
+  .flow-panel { background: var(--navy); border: 1px solid var(--line); border-radius: 8px; width: 100%; max-width: 620px; max-height: 90vh; overflow-y: auto; position: relative; }
+  .flow-header { padding: 24px 28px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+  .flow-title { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 1.3rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--white); }
+  .flow-close { background: none; border: none; color: var(--steel); font-size: 1.4rem; cursor: pointer; line-height: 1; padding: 4px 8px; transition: color 0.15s; }
+  .flow-close:hover { color: var(--white); }
+  .progress-wrap { padding: 20px 28px 0; }
+  .progress-steps { display: flex; gap: 8px; margin-bottom: 6px; }
+  .progress-step { flex: 1; height: 3px; background: var(--line); border-radius: 2px; transition: background 0.3s; }
+  .progress-step.done { background: var(--amber); }
+  .progress-label { font-size: 0.7rem; color: var(--steel); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 24px; }
+  .flow-body { padding: 0 28px 28px; }
+  .step-pane { display: none; }
+  .step-pane.active { display: block; }
+  .step-pane h3 { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 1.1rem; text-transform: uppercase; color: var(--white); margin-bottom: 20px; letter-spacing: 0.04em; }
+  .field-group { margin-bottom: 18px; }
+  .field-group label { display: block; font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--steel); margin-bottom: 7px; font-weight: 500; }
+  .field-group input, .field-group select, .field-group textarea { width: 100%; background: var(--slate); border: 1px solid rgba(139,155,180,0.3); border-radius: var(--radius); color: var(--concrete); font-family: 'Inter', sans-serif; font-size: 0.9rem; padding: 11px 14px; outline: none; transition: border-color 0.15s; appearance: none; }
+  .field-group input::placeholder, .field-group textarea::placeholder { color: rgba(139,155,180,0.5); }
+  .field-group input:focus, .field-group select:focus, .field-group textarea:focus { border-color: var(--amber); }
+  .field-group textarea { resize: vertical; min-height: 90px; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .trade-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+  .trade-pill { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; padding: 7px 14px; border-radius: var(--radius); border: 1.5px solid rgba(139,155,180,0.3); color: var(--steel); cursor: pointer; transition: all 0.15s; background: transparent; }
+  .trade-pill:hover { border-color: var(--amber); color: var(--amber); }
+  .trade-pill.selected { border-color: var(--amber); color: var(--navy); background: var(--amber); }
+  .preview-card { background: var(--slate); border: 1px solid var(--line); border-radius: 6px; padding: 22px; position: relative; overflow: hidden; margin-bottom: 20px; }
+  .preview-card::before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(rgba(139,155,180,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(139,155,180,0.05) 1px, transparent 1px); background-size: 24px 24px; pointer-events: none; }
+  .preview-card .pc-head { display: flex; justify-content: space-between; margin-bottom: 16px; }
+  .preview-card .pc-title { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 1.15rem; text-transform: uppercase; color: var(--white); letter-spacing: 0.03em; }
+  .preview-card .pc-meta { color: var(--steel); font-size: 0.8rem; margin-top: 3px; }
+  .preview-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .preview-field label { display: block; font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--steel); margin-bottom: 3px; }
+  .preview-field .pval { font-size: 0.875rem; color: var(--concrete); }
+  .pc-desc { margin-top: 14px; }
+  .pc-desc label { font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--steel); display: block; margin-bottom: 4px; }
+  .pc-desc p { font-size: 0.85rem; color: var(--steel); line-height: 1.6; }
+  .flow-footer { display: flex; justify-content: space-between; align-items: center; padding-top: 20px; border-top: 1px solid var(--line); margin-top: 8px; }
+  .btn-back { background: none; border: none; color: var(--steel); font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 0.95rem; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; padding: 10px 0; transition: color 0.15s; }
+  .btn-back:hover { color: var(--white); }
+  .btn-back:disabled { opacity: 0; pointer-events: none; }
+  .success-pane { padding: 40px 28px; text-align: center; display: none; }
+  .success-pane.active { display: block; }
+  .success-icon { width: 64px; height: 64px; border-radius: 50%; background: rgba(74,222,128,0.12); border: 2px solid #4ADE80; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 1.6rem; }
+  .success-pane h3 { font-family: 'Barlow Condensed', sans-serif; font-weight: 800; font-size: 1.6rem; text-transform: uppercase; color: var(--white); margin-bottom: 10px; }
+  .success-pane p { color: var(--steel); font-size: 0.9rem; line-height: 1.6; margin-bottom: 24px; }
+
+  footer { border-top: 1px solid var(--line); padding: 32px 40px; display: flex; justify-content: space-between; align-items: center; max-width: 1100px; margin: 0 auto; flex-wrap: wrap; gap: 16px; }
+  footer .logo { font-size: 1.2rem; }
+  footer p { font-size: 0.8rem; color: var(--steel); }
+
+  @media (max-width: 768px) {
+    nav { padding: 16px 20px; }
+    .nav-links { display: none; }
+    .hero { grid-template-columns: 1fr; padding: 50px 20px 40px; gap: 40px; }
+    .stats-bar { padding: 20px; gap: 32px; }
+    .section { padding: 60px 20px; }
+    .steps-grid { grid-template-columns: 1fr; }
+    .field-row { grid-template-columns: 1fr; }
+    footer { padding: 24px 20px; }
+    .fw-header { padding: 32px 20px 28px; }
+    .fw-filters { padding: 14px 20px; top: 57px; }
+    .fw-body { padding: 24px 20px 48px; }
+    .fw-subtabs { padding: 0 20px; }
+    .ls-item { flex-wrap: wrap; }
+    .ls-name { min-width: unset; width: 100%; }
+    .ls-tags { margin-left: 0; }
+    .page-tab { padding: 12px 16px; font-size: 0.8rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="logo" id="navLogo">Trade<span>Deck</span></div>
+  <div class="nav-links">
+    <a id="navFindWork">Find Work</a>
+    <a id="navBrowseJobs">Browse Jobs</a>
+    <a id="navHowItWorks">How It Works</a>
+    <button class="btn-primary" id="navPostBtn">Post a Job</button>
+  </div>
+</nav>
+
+<!-- PAGE TAB BAR -->
+<div class="page-tab-bar">
+  <button class="page-tab active" data-page="home">Home</button>
+  <button class="page-tab" data-page="findwork">Find Work</button>
+  <button class="page-tab" data-page="postjob">Post a Job</button>
+</div>
+
+
+<!-- ══════════════════════════════════
+     PAGE: HOME
+══════════════════════════════════ -->
+<div class="page-view active" id="page-home">
+
+  <!-- HERO -->
+  <section style="max-width:1100px;margin:0 auto;">
+    <div class="hero">
+      <div>
+        <div class="hero-eyebrow">The Trade Marketplace</div>
+        <h1>Hire the Trade.<br><em>Find</em> the Work.</h1>
+        <p class="hero-sub">Twenty years. Every nail. Every pour. Every roof.<br>TradeDeck connects contractors and subs who know the difference between a shortcut and a standard.</p>
+        <div class="hero-ctas">
+          <button class="btn-primary" id="heroPostBtn">Post a Job</button>
+          <button class="btn-ghost" id="heroFindWork">Find Work</button>
+        </div>
+      </div>
+      <div class="blueprint-card">
+        <div class="bc-header">
+          <div>
+            <div class="bc-title">Framing Crew Needed</div>
+            <div class="bc-subtitle">Park City, UT · Posted 2h ago</div>
+          </div>
+          <span class="badge badge-open">Open</span>
+        </div>
+        <div class="bc-fields">
+          <div class="bc-field"><label>Trade</label><div class="val">Framing</div></div>
+          <div class="bc-field"><label>Duration</label><div class="val">3–4 Weeks</div></div>
+          <div class="bc-field"><label>Rate</label><div class="val">$65–$75 / hr</div></div>
+          <div class="bc-field"><label>Start</label><div class="val">Aug 4, 2026</div></div>
+        </div>
+        <hr class="bc-divider">
+        <div class="bc-footer">
+          <div style="display:flex;align-items:center;">
+            <div class="bc-avatars">
+              <div class="bc-avatar">MR</div>
+              <div class="bc-avatar">KJ</div>
+              <div class="bc-avatar">DS</div>
+            </div>
+            <span class="bc-apply-count">7 applicants</span>
+          </div>
+          <button class="btn-primary" style="font-size:0.8rem;padding:8px 16px;">Apply</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STATS -->
+  <div class="stats-bar">
+    <div class="stat"><div class="num">2,400+</div><div class="lbl">Verified Tradespeople</div></div>
+    <div class="stat"><div class="num">840</div><div class="lbl">Active Job Posts</div></div>
+    <div class="stat"><div class="num">18</div><div class="lbl">Trades Covered</div></div>
+    <div class="stat"><div class="num">94%</div><div class="lbl">Fill Rate</div></div>
+  </div>
+
+  <!-- HOW IT WORKS -->
+  <section class="section">
+    <div class="section-label">Built for the field</div>
+    <div class="section-title">Post. Vet. Get It Done.</div>
+    <div class="steps-grid">
+      <div class="step-card"><div class="step-num">01</div><h3>Post Your Job</h3><p>Trade, location, timeline, and rate. Takes two minutes. No fluff, no filler — just what a sub needs to know.</p></div>
+      <div class="step-card"><div class="step-num">02</div><h3>Subs Apply</h3><p>Verified tradespeople apply with their work history and ratings. You see the real résumé — the job site kind.</p></div>
+      <div class="step-card"><div class="step-num">03</div><h3>Hire & Work</h3><p>Connect directly. No middleman, no markup. Rate when the job's done and build your crew for the next one.</p></div>
+    </div>
+  </section>
+
+  <div class="post-bar">
+    <h2>Need a Crew by Monday?</h2>
+    <p>Post a job in under 2 minutes. Subs in your trade and region start seeing it immediately.</p>
+    <button class="btn-primary" id="barPostBtn">Post a Job — It's Free</button>
+  </div>
+
+  <footer>
+    <div class="logo">Trade<span>Deck</span></div>
+    <p>© 2026 TradeDeck · tradedeckapp.com</p>
+    <p>For the trade. By the trade.</p>
+  </footer>
+
+</div><!-- /page-home -->
+
+
+<!-- ══════════════════════════════════
+     PAGE: FIND WORK
+══════════════════════════════════ -->
+<div class="page-view" id="page-findwork">
+
+  <div class="fw-header">
+    <div class="fw-header-inner">
+      <div class="fw-eyebrow">Find Work</div>
+      <h2>Open Jobs &amp; Lead Sources</h2>
+      <p>Browse open job posts in your trade, or explore every channel where work gets posted — all in one place.</p>
+    </div>
+  </div>
+
+  <!-- Sub-tabs -->
+  <div style="background:var(--slate);border-bottom:1px solid var(--line);">
+    <div class="fw-subtabs">
+      <button class="fw-subtab active" data-sub="jobs">Open Jobs</button>
+      <button class="fw-subtab" data-sub="sources">Lead Sources</button>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="fw-filters">
+    <div class="fw-filters-inner">
+      <input type="text" class="fw-search" id="fwSearch" placeholder="Search jobs, trades, platforms…">
+      <select class="fw-select" id="fwTrade">
+        <option value="">All Trades</option>
+        <option>Framing</option>
+        <option>Concrete</option>
+        <option>Roofing</option>
+        <option>Electrical</option>
+        <option>Plumbing</option>
+        <option>HVAC</option>
+        <option>Excavation</option>
+        <option>Flooring</option>
+        <option>Siding</option>
+        <option>Finish Carpentry</option>
+        <option>Painting</option>
+        <option>General</option>
+      </select>
+      <select class="fw-select" id="fwLocation">
+        <option value="">All Locations</option>
+        <option>Park City, UT</option>
+        <option>Heber City, UT</option>
+        <option>Kamas, UT</option>
+        <option>Salt Lake City, UT</option>
+        <option>Denver, CO</option>
+        <option>Boise, ID</option>
+        <option>National</option>
+      </select>
+      <select class="fw-select" id="fwCost">
+        <option value="">All Cost Types</option>
+        <option value="free">Free Only</option>
+        <option value="paid">Paid</option>
+      </select>
+      <button class="fw-clear" id="fwClearBtn">Clear</button>
+      <span class="fw-count" id="fwCount"></span>
+    </div>
+  </div>
+
+  <!-- OPEN JOBS sub-view -->
+  <div class="fw-subview active" id="sub-jobs">
+    <div class="fw-body">
+      <div class="jobs-grid" id="jobsGrid">
+
+        <div class="job-card" data-trade="Framing" data-location="Park City, UT">
+          <div class="jc-head"><div><div class="jc-title">Framing Crew Needed</div><div class="jc-meta">Park City, UT · 2h ago</div></div><span class="badge badge-open">Open</span></div>
+          <div class="jc-fields">
+            <div class="jc-field"><label>Trade</label><div class="jval">Framing</div></div>
+            <div class="jc-field"><label>Duration</label><div class="jval">3–4 Weeks</div></div>
+            <div class="jc-field"><label>Rate</label><div class="jval">$65–$75 / hr</div></div>
+            <div class="jc-field"><label>Start</label><div class="jval">Aug 4, 2026</div></div>
+          </div>
+          <div class="jc-footer">
+            <div class="jc-applicants"><div class="bc-avatars"><div class="bc-avatar">MR</div><div class="bc-avatar">KJ</div></div><span class="bc-apply-count">7 applicants</span></div>
+            <button class="jc-apply-btn">Apply</button>
+          </div>
+        </div>
+
+        <div class="job-card" data-trade="Concrete" data-location="Heber City, UT">
+          <div class="jc-head"><div><div class="jc-title">Concrete Flatwork — Heated Drive</div><div class="jc-meta">Heber City, UT · 6h ago</div></div><span class="badge badge-open">Open</span></div>
+          <div class="jc-fields">
+            <div class="jc-field"><label>Trade</label><div class="jval">Concrete</div></div>
+            <div class="jc-field"><label>Duration</label><div class="jval">1 Week</div></div>
+            <div class="jc-field"><label>Rate</label><div class="jval">$8,500 flat</div></div>
+            <div class="jc-field"><label>Start</label><div class="jval">Aug 11, 2026</div></div>
+          </div>
+          <div class="jc-footer">
+            <div class="jc-applicants"><div class="bc-avatars"><div class="bc-avatar">TS</div></div><span class="bc-apply-count">3 applicants</span></div>
+            <button class="jc-apply-btn">Apply</button>
+          </div>
+        </div>
+
+        <div class="job-card" data-trade="Roofing" data-location="Kamas, UT">
+          <div class="jc-head"><div><div class="jc-title">Metal Roofing — Custom Home</div><div class="jc-meta">Kamas, UT · 1d ago</div></div><span class="badge badge-open">Open</span></div>
+          <div class="jc-fields">
+            <div class="jc-field"><label>Trade</label><div class="jval">Roofing</div></div>
+            <div class="jc-field"><label>Duration</label><div class="jval">2 Weeks</div></div>
+            <div class="jc-field"><label>Rate</label><div class="jval">$55–$65 / hr</div></div>
+            <div class="jc-field"><label>Start</label><div class="jval">Aug 18, 2026</div></div>
+          </div>
+          <div class="jc-footer">
+            <div class="jc-applicants"><div class="bc-avatars"><div class="bc-avatar">BL</div><div class="bc-avatar">RW</div></div><span class="bc-apply-count">5 applicants</span></div>
+            <button class="jc-apply-btn">Apply</button>
+          </div>
+        </div>
+
+        <div class="job-card" data-trade="Excavation" data-location="Park City, UT">
+          <div class="jc-head"><div><div class="jc-title">Site Prep &amp; Excavation</div><div class="jc-meta">Park City, UT · 1d ago</div></div><span class="badge badge-open">Open</span></div>
+          <div class="jc-fields">
+            <div class="jc-field"><label>Trade</label><div class="jval">Excavation</div></div>
+            <div class="jc-field"><label>Duration</label><div class="jval">1–2 Months</div></div>
+            <div class="jc-field"><label>Rate</label><div class="jval">Negotiable</div></div>
+            <div class="jc-field"><label>Start</label><div class="jval">Sep 1, 2026</div></div>
+          </div>
+          <div class="jc-footer">
+            <div class="jc-applicants"><div class="bc-avatars"><div class="bc-avatar">JD</div></div><span class="bc-apply-count">2 applicants</span></div>
+            <button class="jc-apply-btn">Apply</button>
+          </div>
+        </div>
+
+        <div class="job-card" data-trade="Electrical" data-location="Salt Lake City, UT">
+          <div class="jc-head"><div><div class="jc-title">Rough-In Electrical — 4-Plex</div><div class="jc-meta">Salt Lake City, UT · 2d ago</div></div><span class="badge badge-open">Open</span></div>
+          <div class="jc-fields">
+            <div class="jc-field"><label>Trade</label><div class="jval">Electrical</div></div>
+            <div class="jc-field"><label>Duration</label><div class="jval">3–4 Weeks</div></div>
+            <div class="jc-field"><label>Rate</label><div class="jval">$70–$85 / hr</div></div>
+            <div class="jc-field"><label>Start</label><div class="jval">Aug 25, 2026</div></div>
+          </div>
+          <div class="jc-footer">
+            <div class="jc-applicants"><div class="bc-avatars"><div class="bc-avatar">PH</div><div class="bc-avatar">AM</div><div class="bc-avatar">CG</div></div><span class="bc-apply-count">11 applicants</span></div>
+            <button class="jc-apply-btn">Apply</button>
+          </div>
+        </div>
+
+        <div class="job-card" data-trade="Finish Carpentry" data-location="Park City, UT">
+          <div class="jc-head"><div><div class="jc-title">Finish Carpentry — Luxury Home</div><div class="jc-meta">Park City, UT · 3d ago</div></div><span class="badge badge-open">Open</span></div>
+          <div class="jc-fields">
+            <div class="jc-field"><label>Trade</label><div class="jval">Finish Carpentry</div></div>
+            <div class="jc-field"><label>Duration</label><div class="jval">1–2 Months</div></div>
+            <div class="jc-field"><label>Rate</label><div class="jval">$60–$70 / hr</div></div>
+            <div class="jc-field"><label>Start</label><div class="jval">Sep 8, 2026</div></div>
+          </div>
+          <div class="jc-footer">
+            <div class="jc-applicants"><div class="bc-avatars"><div class="bc-avatar">NK</div></div><span class="bc-apply-count">4 applicants</span></div>
+            <button class="jc-apply-btn">Apply</button>
+          </div>
+        </div>
+
+      </div>
+      <div class="fw-empty" id="jobsEmpty" style="display:none;">
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:1.4rem;text-transform:uppercase;color:var(--steel);">No Jobs Match</div>
+        <p>Try adjusting your filters, or post a job to attract subs in this trade.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- LEAD SOURCES sub-view -->
+  <div class="fw-subview" id="sub-sources">
+    <div class="fw-body">
+      <div id="leadSourcesList">
+
+        <!-- Each ls-item has data-trade, data-cost, data-text for filtering -->
+
+        <div class="ls-section" data-category="local">
+          <div class="ls-section-title">Local &amp; Community Channels</div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="facebook groups local contractors trades utah wasatch">
+            <div class="ls-name">Facebook Groups</div>
+            <div class="ls-desc">Join local contractor and trades groups for your region. Post open jobs, recruit subs, seed your brand. Search your trade + city name.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://facebook.com/groups" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="nextdoor local neighborhood community referral">
+            <div class="ls-name">Nextdoor Pro</div>
+            <div class="ls-desc">Hyperlocal community platform. High trust signal from neighbors — great for referrals and recruiting local subs.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://nextdoor.com/business" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="craigslist skilled trades gigs classifieds local">
+            <div class="ls-name">Craigslist</div>
+            <div class="ls-desc">Skilled trades and gigs section. Subs still browse it. Low noise cost — post open jobs to seed your pipeline during launch.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://craigslist.org" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="lumber yard supply house home depot pro desk 84 lumber referral">
+            <div class="ls-name">Lumber Yards &amp; Supply Houses</div>
+            <div class="ls-desc">Counter staff at ProDesk, 84 Lumber, and local yards know every GC in the market. Post flyers, drop cards, build relationships.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://www.84lumber.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="equipment rental united rentals sunbelt crews active jobs">
+            <div class="ls-name">Equipment Rental Yards</div>
+            <div class="ls-desc">United Rentals, Sunbelt — crews renting gear are actively working jobs right now. Leave cards and QR codes at the counter.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://www.unitedrentals.com" target="_blank">Visit →</a>
+          </div>
+        </div>
+
+        <div class="ls-section" data-category="digital-free">
+          <div class="ls-section-title">Digital — Free</div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="google business profile local seo search listing">
+            <div class="ls-name">Google Business Profile</div>
+            <div class="ls-desc">Shows before your website in local search. Fastest free ROI for any trade. Every TradeDeck user should have one set up.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://business.google.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="planhub subcontractor bids invitations free plan GC">
+            <div class="ls-name">PlanHub</div>
+            <div class="ls-desc">Free sub plan — receive bid invitations from GCs. 92,000-item cost library. Widely used by smaller subs. Create a profile and start getting ITBs.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free Tier</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://planhub.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="lookingforsubs directory GC find subcontractors listing">
+            <div class="ls-name">LookingForSubs.com</div>
+            <div class="ls-desc">Simple directory where GCs search for subs by trade. Add a free listing to get in front of GCs actively seeking your trade.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://lookingforsubs.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="linkedin professional network GC outreach direct message">
+            <div class="ls-name">LinkedIn</div>
+            <div class="ls-desc">Search "General Contractor [State]" and do direct outreach. Best channel for reaching GC decision-makers on the demand side.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://linkedin.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="bing places local seo search visibility">
+            <div class="ls-name">Bing Places</div>
+            <div class="ls-desc">Free local listing that complements Google Business Profile. Different audience segment — low effort, worth doing.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://bingplaces.com" target="_blank">Visit →</a>
+          </div>
+        </div>
+
+        <div class="ls-section" data-category="digital-paid">
+          <div class="ls-section-title">Digital — Paid</div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="thumbtack lead generation pay per lead homeowner matching">
+            <div class="ls-name">Thumbtack</div>
+            <div class="ls-desc">Pay-per-lead ($2–$50). AI matching improved significantly in 2026. Best for contractors across nearly every trade seeking homeowner work.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">$2–50/lead</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://thumbtack.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="angi angie's list homeowner verified reviews subscription">
+            <div class="ls-name">Angi</div>
+            <div class="ls-desc">Shifted to verified reviews in 2026. Subscription $100–400/mo. Best for contractors who prioritize reputation and collect reviews consistently.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">$100–400/mo</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://angi.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="google local services ads LSA urgent emergency verified badge">
+            <div class="ls-name">Google LSA</div>
+            <div class="ls-desc">Local Services Ads — best for urgent jobs. Google-verified badge boosts trust. Pay-per-lead ($20–150). First caller typically wins.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">$20–150/lead</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://ads.google.com/local-services-ads" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="homeadvisor pay per lead speed respond first">
+            <div class="ls-name">HomeAdvisor</div>
+            <div class="ls-desc">Pay-per-lead platform. Shared leads — speed to respond is everything. First caller typically wins the job. $15–100/lead.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">$15–100/lead</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://homeadvisor.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="houzz pro luxury remodelers designers portfolio high-end">
+            <div class="ls-name">Houzz Pro</div>
+            <div class="ls-desc">Best for high-end residential. Subscription $65–350/mo. Strong photo portfolio display. Connects quality-conscious homeowners with vetted professionals.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">$65–350/mo</span><span class="ls-tag ls-tag-trade">Remodel / Luxury</span></div>
+            <a class="ls-link" href="https://houzz.com/pro" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="yelp directory reviews high margin local jobs">
+            <div class="ls-name">Yelp</div>
+            <div class="ls-desc">2.5M daily searches. Claim a free profile — avoid paid CPC ($50–100/click). Best as a secondary channel for high-margin local jobs.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free Profile</span><span class="ls-tag ls-tag-paid">CPC Optional</span></div>
+            <a class="ls-link" href="https://yelp.com" target="_blank">Visit →</a>
+          </div>
+        </div>
+
+        <div class="ls-section" data-category="commercial">
+          <div class="ls-section-title">Commercial Bid Platforms</div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="constructconnect bid management commercial GC sub database">
+            <div class="ls-name">ConstructConnect</div>
+            <div class="ls-desc">Largest North American commercial bid DB. Best for active commercial bid phase. GCs and subs focused on commercial projects.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">Subscription</span><span class="ls-tag ls-tag-trade">Commercial</span></div>
+            <a class="ls-link" href="https://constructconnect.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="dodge construction network project intelligence pre-planning">
+            <div class="ls-name">Dodge Construction Network</div>
+            <div class="ls-desc">Strongest pre-planning intelligence and full project lifecycle tracking. Best for teams who want to get ahead of the market before bid phase.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">Enterprise</span><span class="ls-tag ls-tag-trade">Commercial</span></div>
+            <a class="ls-link" href="https://construction.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="isqft subcontractor bid invitations regional commercial">
+            <div class="ls-name">iSqFt</div>
+            <div class="ls-desc">Sub-focused bid management. Solid regional commercial coverage. Subs with established GC relationships get streamlined ITB workflow.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">Subscription</span><span class="ls-tag ls-tag-trade">Commercial</span></div>
+            <a class="ls-link" href="https://isqft.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="the blue book network directory advertising placement dodge">
+            <div class="ls-name">The Blue Book Network</div>
+            <div class="ls-desc">One of the oldest construction directories. Now part of Dodge. Advertising model — pay for premium placement when GCs search your trade.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">Paid Placement</span><span class="ls-tag ls-tag-trade">Commercial</span></div>
+            <a class="ls-link" href="https://thebluebook.com" target="_blank">Visit →</a>
+          </div>
+        </div>
+
+        <div class="ls-section" data-category="associations">
+          <div class="ls-section-title">Associations &amp; Trade Networks</div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="AGC associated general contractors utah chapter membership">
+            <div class="ls-name">AGC Utah</div>
+            <div class="ls-desc">Associated General Contractors — Utah chapter. Warm intro channel to GCs who hire subs. Credibility signal for any trade business.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">Membership</span><span class="ls-tag ls-tag-trade">GC Network</span></div>
+            <a class="ls-link" href="https://agcutah.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="ABC associated builders contractors tech marketplace membership">
+            <div class="ls-name">ABC (Associated Builders &amp; Contractors)</div>
+            <div class="ls-desc">National org with 67 chapters. Tech Marketplace connects members with contractor software. Strong channel for digital-native trades businesses.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">Membership</span><span class="ls-tag ls-tag-trade">GC + Subs</span></div>
+            <a class="ls-link" href="https://abc.org" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="paid" data-text="NAHB home builders association utah residential builders">
+            <div class="ls-name">Home Builders Association of Utah</div>
+            <div class="ls-desc">Residential-focused; directly aligned with the Wasatch Back market. Best warm channel for GCs who build custom homes.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-paid">Membership</span><span class="ls-tag ls-tag-trade">Residential</span></div>
+            <a class="ls-link" href="https://utahnahb.org" target="_blank">Visit →</a>
+          </div>
+        </div>
+
+        <div class="ls-section" data-category="jobboards">
+          <div class="ls-section-title">Job Boards</div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="indeed job board find work employment listing">
+            <div class="ls-name">Indeed</div>
+            <div class="ls-desc">General job board. GCs often post sub and crew positions here. Search your trade + city for active postings.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free to Search</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://indeed.com" target="_blank">Visit →</a>
+          </div>
+
+          <div class="ls-item" data-trade="General" data-cost="free" data-text="ziprecruiter job board contractor find work AI matching">
+            <div class="ls-name">ZipRecruiter</div>
+            <div class="ls-desc">AI-powered job matching. Contractors post positions here for crews and subs. Better quality than raw boards — worth a profile.</div>
+            <div class="ls-tags"><span class="ls-tag ls-tag-free">Free to Search</span><span class="ls-tag ls-tag-trade">All Trades</span></div>
+            <a class="ls-link" href="https://ziprecruiter.com" target="_blank">Visit →</a>
+          </div>
+        </div>
+
+      </div>
+      <div class="fw-empty" id="sourcesEmpty" style="display:none;">
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:1.4rem;text-transform:uppercase;color:var(--steel);">No Sources Match</div>
+        <p>Try clearing your filters to see all lead channels.</p>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /page-findwork -->
+
+
+<!-- ══════════════════════════════════
+     PAGE: POST A JOB (placeholder)
+══════════════════════════════════ -->
+<div class="page-view" id="page-postjob">
+  <div style="max-width:600px;margin:80px auto;padding:0 40px;text-align:center;">
+    <div style="font-family:'Barlow Condensed',sans-serif;font-size:0.75rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--amber);margin-bottom:12px;">Post a Job</div>
+    <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:2.4rem;text-transform:uppercase;color:var(--white);margin-bottom:12px;">Ready to Post?</div>
+    <p style="color:var(--steel);margin-bottom:28px;line-height:1.65;">Fill out the form below and your job will be live immediately. Subs in your trade and region will be notified.</p>
+    <button class="btn-primary" id="postPageBtn">Open Job Post Form</button>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════
+     JOB POST FLOW OVERLAY
+══════════════════════════════════ -->
+<div class="flow-overlay" id="flowOverlay">
+  <div class="flow-panel">
+    <div class="flow-header">
+      <div class="flow-title">Post a Job</div>
+      <button class="flow-close" id="flowCloseBtn">✕</button>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-steps">
+        <div class="progress-step done" id="prog1"></div>
+        <div class="progress-step" id="prog2"></div>
+        <div class="progress-step" id="prog3"></div>
+      </div>
+      <div class="progress-label" id="progressLabel">Step 1 of 3 — Trade & Location</div>
+    </div>
+    <div class="flow-body">
+      <div class="step-pane active" id="step1">
+        <h3>What trade are you hiring?</h3>
+        <div class="field-group">
+          <label>Select Trade</label>
+          <div class="trade-pills" id="tradePills">
+            <button class="trade-pill">Framing</button>
+            <button class="trade-pill">Concrete</button>
+            <button class="trade-pill">Roofing</button>
+            <button class="trade-pill">Electrical</button>
+            <button class="trade-pill">Plumbing</button>
+            <button class="trade-pill">HVAC</button>
+            <button class="trade-pill">Excavation</button>
+            <button class="trade-pill">Flooring</button>
+            <button class="trade-pill">Siding</button>
+            <button class="trade-pill">Finish Carpentry</button>
+            <button class="trade-pill">Painting</button>
+            <button class="trade-pill">Other</button>
+          </div>
+        </div>
+        <div class="field-row" style="margin-top:20px;">
+          <div class="field-group"><label>City</label><input type="text" id="city" placeholder="Park City"></div>
+          <div class="field-group">
+            <label>State</label>
+            <select id="stateSelect">
+              <option value="">— Select —</option>
+              <option value="UT" selected>Utah</option>
+              <option value="CO">Colorado</option>
+              <option value="ID">Idaho</option>
+              <option value="NV">Nevada</option>
+              <option value="WY">Wyoming</option>
+              <option value="MT">Montana</option>
+              <option value="AZ">Arizona</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+        </div>
+        <div class="flow-footer">
+          <button class="btn-back" disabled>← Back</button>
+          <button class="btn-primary" id="step1Next">Next →</button>
+        </div>
+      </div>
+
+      <div class="step-pane" id="step2">
+        <h3>Tell subs what the job looks like</h3>
+        <div class="field-group"><label>Job Title</label><input type="text" id="jobTitle" placeholder="e.g. Framing Crew for New Custom Home"></div>
+        <div class="field-row">
+          <div class="field-group"><label>Start Date</label><input type="date" id="startDate"></div>
+          <div class="field-group"><label>Duration</label>
+            <select id="duration">
+              <option value="">— Select —</option>
+              <option>1 Week</option><option>2 Weeks</option><option>3–4 Weeks</option><option>1–2 Months</option><option>Ongoing</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field-group"><label>Pay Rate</label><input type="text" id="payRate" placeholder="e.g. $65–$75 / hr or $8,000 flat"></div>
+          <div class="field-group"><label>Crew Size Needed</label>
+            <select id="crewSize">
+              <option value="">— Select —</option>
+              <option>1 Person</option><option>2–3 People</option><option>4–6 People</option><option>7+ People</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-group"><label>Job Description</label><textarea id="jobDesc" placeholder="What's the scope? Any specific experience required? Anything subs need to know before applying?"></textarea></div>
+        <div class="flow-footer">
+          <button class="btn-back" id="step2Back">← Back</button>
+          <button class="btn-primary" id="step2Next">Preview →</button>
+        </div>
+      </div>
+
+      <div class="step-pane" id="step3">
+        <h3>Review your job post</h3>
+        <div class="preview-card" id="previewCard">
+          <div class="pc-head">
+            <div><div class="pc-title" id="pvTitle">—</div><div class="pc-meta" id="pvMeta">—</div></div>
+            <span class="badge badge-amber">Draft</span>
+          </div>
+          <div class="preview-fields">
+            <div class="preview-field"><label>Trade</label><div class="pval" id="pvTrade">—</div></div>
+            <div class="preview-field"><label>Duration</label><div class="pval" id="pvDuration">—</div></div>
+            <div class="preview-field"><label>Rate</label><div class="pval" id="pvRate">—</div></div>
+            <div class="preview-field"><label>Crew Size</label><div class="pval" id="pvCrew">—</div></div>
+          </div>
+          <div class="pc-desc"><label>Description</label><p id="pvDesc">—</p></div>
+        </div>
+        <div class="flow-footer">
+          <button class="btn-back" id="step3Back">← Back</button>
+          <button class="btn-primary" id="step3Submit">Post Job →</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="success-pane" id="successPane">
+      <div class="success-icon">✓</div>
+      <h3>Job Posted.</h3>
+      <p>Your post is live. Subs in your area who work your trade will see it immediately. You'll get notified as applications come in.</p>
+      <button class="btn-primary" id="successDoneBtn">Done</button>
+    </div>
+  </div>
+</div>
+
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+
+  /* ─── PAGE TABS ─── */
+  function showPage(id) {
+    document.querySelectorAll('.page-view').forEach(v => v.classList.remove('active'));
+    document.querySelectorAll('.page-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('page-' + id).classList.add('active');
+    document.querySelector('[data-page="' + id + '"]').classList.add('active');
+  }
+
+  document.querySelectorAll('.page-tab').forEach(function(tab) {
+    tab.addEventListener('click', function() { showPage(this.dataset.page); });
+  });
+
+  // Nav shortcuts
+  document.getElementById('navLogo').addEventListener('click', function() { showPage('home'); });
+  document.getElementById('navFindWork').addEventListener('click', function() { showPage('findwork'); });
+  document.getElementById('navBrowseJobs').addEventListener('click', function() {
+    showPage('findwork');
+    setTimeout(function() { setSubTab('jobs'); }, 50);
+  });
+  document.getElementById('heroFindWork').addEventListener('click', function() { showPage('findwork'); });
+  document.getElementById('postPageBtn').addEventListener('click', openFlow);
+
+  /* ─── API ─── */
+  const API = 'https://tradedeck-api.onrender.com';
+
+  function loadJobs() {
+    const grid = document.getElementById('jobsGrid');
+    const empty = document.getElementById('jobsEmpty');
+    grid.innerHTML = '<div style="color:var(--steel);font-size:0.9rem;padding:20px 0;grid-column:1/-1;">Loading jobs…</div>';
+    fetch(API + '/api/jobs')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        grid.innerHTML = '';
+        if (!data.jobs || data.jobs.length === 0) { empty.style.display = 'block'; return; }
+        empty.style.display = 'none';
+        data.jobs.forEach(function(job) {
+          const card = document.createElement('div');
+          card.className = 'job-card';
+          card.dataset.trade = job.trade;
+          card.dataset.location = job.location;
+          card.innerHTML =
+            '<div class="jc-head">' +
+              '<div><div class="jc-title">' + job.title + '</div>' +
+              '<div class="jc-meta">' + job.location + ' · ' + job.age + '</div></div>' +
+              '<span class="badge badge-open">Open</span>' +
+            '</div>' +
+            '<div class="jc-fields">' +
+              '<div class="jc-field"><label>Trade</label><div class="jval">' + job.trade + '</div></div>' +
+              '<div class="jc-field"><label>Duration</label><div class="jval">' + (job.duration || '—') + '</div></div>' +
+              '<div class="jc-field"><label>Rate</label><div class="jval">' + (job.rate || '—') + '</div></div>' +
+              '<div class="jc-field"><label>Start</label><div class="jval">' + (job.start_date || '—') + '</div></div>' +
+            '</div>' +
+            '<div class="jc-footer">' +
+              '<span class="bc-apply-count">' + job.applicants + ' applicant' + (job.applicants !== 1 ? 's' : '') + '</span>' +
+              '<button class="jc-apply-btn" data-job-id="' + job.id + '">Apply</button>' +
+            '</div>';
+          grid.appendChild(card);
+        });
+        grid.querySelectorAll('.jc-apply-btn').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const id = this.dataset.jobId;
+            fetch(API + '/api/jobs/' + id + '/apply', { method: 'POST' })
+              .then(function() {
+                btn.textContent = 'Applied ✓';
+                btn.style.background = '#4ADE80';
+                btn.disabled = true;
+              });
+          });
+        });
+        applyFilters();
+      })
+      .catch(function() {
+        grid.innerHTML = '<div style="color:var(--steel);font-size:0.9rem;padding:20px 0;grid-column:1/-1;">Could not load jobs. Try refreshing.</div>';
+      });
+  }
+
+  /* ─── FIND WORK SUB-TABS ─── */
+  function setSubTab(id) {
+    document.querySelectorAll('.fw-subtab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.fw-subview').forEach(v => v.classList.remove('active'));
+    document.querySelector('[data-sub="' + id + '"]').classList.add('active');
+    document.getElementById('sub-' + id).classList.add('active');
+    if (id === 'jobs') { loadJobs(); } else { applyFilters(); }
+  }
+
+  document.querySelectorAll('.fw-subtab').forEach(function(tab) {
+    tab.addEventListener('click', function() { setSubTab(this.dataset.sub); });
+  });
+
+  /* ─── FILTERS ─── */
+  function activeSubTab() {
+    const t = document.querySelector('.fw-subtab.active');
+    return t ? t.dataset.sub : 'jobs';
+  }
+
+  function applyFilters() {
+    const search = document.getElementById('fwSearch').value.toLowerCase().trim();
+    const trade  = document.getElementById('fwTrade').value;
+    const loc    = document.getElementById('fwLocation').value;
+    const cost   = document.getElementById('fwCost').value;
+    const sub    = activeSubTab();
+
+    if (sub === 'jobs') {
+      const cards = document.querySelectorAll('#jobsGrid .job-card');
+      let visible = 0;
+      cards.forEach(function(card) {
+        const cTrade = card.dataset.trade || '';
+        const cLoc   = card.dataset.location || '';
+        const cText  = card.innerText.toLowerCase();
+        const ok =
+          (!search || cText.includes(search)) &&
+          (!trade  || cTrade === trade) &&
+          (!loc    || cLoc === loc);
+        card.style.display = ok ? '' : 'none';
+        if (ok) visible++;
+      });
+      document.getElementById('jobsEmpty').style.display = visible === 0 ? 'block' : 'none';
+      document.getElementById('fwCount').textContent = visible + ' job' + (visible !== 1 ? 's' : '');
+    } else {
+      const items = document.querySelectorAll('#leadSourcesList .ls-item');
+      let visible = 0;
+      items.forEach(function(item) {
+        const iCost = item.dataset.cost || '';
+        const iText = (item.dataset.text || '') + ' ' + item.innerText.toLowerCase();
+        const iTrade = item.dataset.trade || '';
+        const ok =
+          (!search || iText.includes(search)) &&
+          (!trade  || iTrade === trade || iTrade === 'General') &&
+          (!cost   || iCost === cost);
+        item.style.display = ok ? '' : 'none';
+        if (ok) visible++;
+      });
+      // Hide empty sections
+      document.querySelectorAll('.ls-section').forEach(function(sec) {
+        const anyVisible = Array.from(sec.querySelectorAll('.ls-item')).some(i => i.style.display !== 'none');
+        sec.style.display = anyVisible ? '' : 'none';
+      });
+      document.getElementById('sourcesEmpty').style.display = visible === 0 ? 'block' : 'none';
+      document.getElementById('fwCount').textContent = visible + ' source' + (visible !== 1 ? 's' : '');
+    }
+  }
+
+  ['fwSearch','fwTrade','fwLocation','fwCost'].forEach(function(id) {
+    document.getElementById(id).addEventListener('input', applyFilters);
+    document.getElementById(id).addEventListener('change', applyFilters);
+  });
+
+  document.getElementById('fwClearBtn').addEventListener('click', function() {
+    document.getElementById('fwSearch').value = '';
+    document.getElementById('fwTrade').value = '';
+    document.getElementById('fwLocation').value = '';
+    document.getElementById('fwCost').value = '';
+    applyFilters();
+  });
+
+  // Load jobs from API on page load
+  loadJobs();
+
+  /* ─── JOB POST FLOW ─── */
+  let selectedTrade = '';
+
+  function openFlow() {
+    document.querySelector('.progress-wrap').style.display = '';
+    document.querySelector('.flow-body').style.display = '';
+    document.getElementById('successPane').classList.remove('active');
+    document.getElementById('flowOverlay').classList.add('active');
+    document.body.style.overflow = 'hidden';
+    goToStep(1);
+  }
+
+  function closeFlow() {
+    document.getElementById('flowOverlay').classList.remove('active');
+    document.body.style.overflow = '';
+  }
+
+  function goToStep(n) {
+    document.querySelectorAll('.step-pane').forEach(p => p.classList.remove('active'));
+    document.getElementById('successPane').classList.remove('active');
+    const pane = document.getElementById('step' + n);
+    if (pane) pane.classList.add('active');
+    for (let i = 1; i <= 3; i++) {
+      document.getElementById('prog' + i).classList.toggle('done', i <= n);
+    }
+    const labels = ['','Step 1 of 3 — Trade & Location','Step 2 of 3 — Job Details','Step 3 of 3 — Preview & Post'];
+    document.getElementById('progressLabel').textContent = labels[n] || '';
+  }
+
+  function buildPreview() {
+    const city = document.getElementById('city').value || '—';
+    const state = document.getElementById('stateSelect').value || '';
+    const title = document.getElementById('jobTitle').value || '(No title)';
+    const duration = document.getElementById('duration').value || '—';
+    const rate = document.getElementById('payRate').value || '—';
+    const crew = document.getElementById('crewSize').value || '—';
+    const desc = document.getElementById('jobDesc').value || '(No description provided)';
+    const startRaw = document.getElementById('startDate').value;
+    let startFmt = '—';
+    if (startRaw) {
+      const d = new Date(startRaw + 'T12:00:00');
+      startFmt = d.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+    }
+    document.getElementById('pvTitle').textContent = title;
+    document.getElementById('pvMeta').textContent = [city, state].filter(Boolean).join(', ') + (startFmt !== '—' ? ' · Starts ' + startFmt : '');
+    document.getElementById('pvTrade').textContent = selectedTrade || '—';
+    document.getElementById('pvDuration').textContent = duration;
+    document.getElementById('pvRate').textContent = rate;
+    document.getElementById('pvCrew').textContent = crew;
+    document.getElementById('pvDesc').textContent = desc;
+  }
+
+  function submitPost() {
+    const payload = {
+      title:       document.getElementById('jobTitle').value || 'Untitled Job',
+      trade:       selectedTrade || 'General',
+      city:        document.getElementById('city').value || 'Unknown',
+      state:       document.getElementById('stateSelect').value || 'UT',
+      rate:        document.getElementById('payRate').value,
+      duration:    document.getElementById('duration').value,
+      crew_size:   document.getElementById('crewSize').value,
+      start_date:  document.getElementById('startDate').value,
+      description: document.getElementById('jobDesc').value,
+    };
+    fetch(API + '/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function() {
+      document.querySelectorAll('.step-pane').forEach(p => p.classList.remove('active'));
+      document.querySelector('.progress-wrap').style.display = 'none';
+      document.querySelector('.flow-body').style.display = 'none';
+      document.getElementById('successPane').classList.add('active');
+      loadJobs();
+    })
+    .catch(function() {
+      alert('Failed to post job. Please try again.');
+    });
+  }
+
+  ['navPostBtn','heroPostBtn','barPostBtn'].forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', openFlow);
+  });
+
+  document.getElementById('flowCloseBtn').addEventListener('click', closeFlow);
+  document.getElementById('successDoneBtn').addEventListener('click', closeFlow);
+
+  document.getElementById('tradePills').addEventListener('click', function(e) {
+    const pill = e.target.closest('.trade-pill');
+    if (!pill) return;
+    document.querySelectorAll('.trade-pill').forEach(p => p.classList.remove('selected'));
+    pill.classList.add('selected');
+    selectedTrade = pill.textContent.trim();
+  });
+
+  document.getElementById('step1Next').addEventListener('click', function() { goToStep(2); });
+  document.getElementById('step2Back').addEventListener('click', function() { goToStep(1); });
+  document.getElementById('step2Next').addEventListener('click', function() { buildPreview(); goToStep(3); });
+  document.getElementById('step3Back').addEventListener('click', function() { goToStep(2); });
+  document.getElementById('step3Submit').addEventListener('click', submitPost);
+
+  document.getElementById('flowOverlay').addEventListener('click', function(e) {
+    if (e.target === this) closeFlow();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeFlow();
+  });
+
+});
+</script>
+
+</body>
+</html>
