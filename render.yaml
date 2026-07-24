@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tradedeck-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: DB_PATH
+        value: /var/data/tradedeck.db
+    disk:
+      name: tradedeck-db
+      mountPath: /var/data
+      sizeGB: 1
