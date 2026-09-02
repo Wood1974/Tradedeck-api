@@ -11,6 +11,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from supabase import create_client
 
+import leads
+
 app = Flask(__name__)
 CORS(app)
 
@@ -115,13 +117,13 @@ def _verify_draw_owner(draw_id, user_id):
 
 @app.route("/")
 def index():
-    return jsonify({"status": "TradeDeck API running", "version": "2.1"})
+    return jsonify({"status": "TradeDeck API running", "version": "2.2"})
 
 
 @app.route("/health")
 @handle_errors
 def health():
-    status = {"status": "ok", "version": "2.1", "checks": {}}
+    status = {"status": "ok", "version": "2.2", "checks": {}}
 
     url = os.environ.get("SUPABASE_URL", "").strip()
     if not url:
@@ -147,6 +149,13 @@ def health():
         status["checks"]["anthropic"] = "missing ANTHROPIC_API_KEY"
     else:
         status["checks"]["anthropic"] = "configured"
+
+    try:
+        leads.get_live_leads(limit=1)
+        status["checks"]["leads"] = "ok"
+    except Exception as e:
+        status["checks"]["leads"] = str(e)
+        status["status"] = "degraded"
 
     code = 200 if status["status"] == "ok" else 503
     return jsonify(status), code
@@ -202,6 +211,67 @@ def apply_to_job(job_id):
         return jsonify({"error": "user_id or email required"}), 400
     get_supabase().table("applications").insert(row).execute()
     return jsonify({"success": True})
+
+
+@app.route("/api/live-leads", methods=["GET"])
+@handle_errors
+def get_live_leads():
+    leads.run_all_fetches()
+    trade = request.args.get("trade", "")
+    source = request.args.get("source", "")
+    search = request.args.get("search", "")
+    limit = min(int(request.args.get("limit", 100)), 300)
+    data = leads.get_live_leads(trade=trade, source=source, search=search, limit=limit)
+    return jsonify({"leads": data, "count": len(data)})
+
+
+@app.route("/api/live-leads/refresh", methods=["POST"])
+@handle_errors
+def refresh_live_leads():
+    count = leads.refresh_live_leads()
+    return jsonify({"success": True, "total_leads": count})
+
+
+@app.route("/api/gc-leads", methods=["GET"])
+@handle_errors
+def get_gc_leads():
+    leads.fetch_permitstack()
+    trade = request.args.get("trade", "")
+    city = request.args.get("city", "")
+    limit = min(int(request.args.get("limit", 50)), 200)
+    data = leads.get_gc_leads(trade=trade, city=city, limit=limit)
+    return jsonify({"leads": data, "count": len(data)})
+
+
+@app.route("/api/gc-leads/refresh", methods=["POST"])
+@handle_errors
+def refresh_gc_leads():
+    leads.refresh_gc_leads()
+    return jsonify({"success": True})
+
+
+@app.route("/api/chat", methods=["POST"])
+@handle_errors
+def chat_proxy():
+    data = request.get_json(silent=True) or {}
+    messages = data.get("messages", [])
+    if not messages:
+        return jsonify({"error": "messages required"}), 400
+    system = data.get("system", "")
+    kwargs = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1000,
+        "messages": messages,
+    }
+    if system:
+        kwargs["system"] = system
+    msg = get_anthropic().messages.create(**kwargs)
+    return jsonify({
+        "id": msg.id,
+        "model": msg.model,
+        "role": "assistant",
+        "content": [{"type": "text", "text": msg.content[0].text}],
+    })
 
 
 @app.route("/stripe/connect/onboard", methods=["POST"])

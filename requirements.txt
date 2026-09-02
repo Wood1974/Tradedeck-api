@@ -4,3 +4,4 @@ gunicorn==22.0.0
 supabase==2.31.0
 anthropic==1.0.0
 stripe==15.5.1
+requests==2.32.3

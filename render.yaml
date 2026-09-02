@@ -17,5 +17,17 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: PERMITSTACK_KEY
+        sync: false
+      - key: SAM_API_KEY
+        sync: false
+      - key: ZIPRECRUITER_KEY
+        sync: false
       - key: APP_URL
         value: https://tradedeckapp.com
+      - key: DB_PATH
+        value: /var/data/tradedeck-leads.db
+    disk:
+      name: tradedeck-leads
+      mountPath: /var/data
+      sizeGB: 1
