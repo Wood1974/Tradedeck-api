@@ -1,0 +1,151 @@
+From d69c74bee5c45a1765373ae6e3f23fccc63a841e Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Wed, 2 Sep 2026 03:58:00 +0000
+Subject: [PATCH] Attach Supabase JWT to secured TradeDeck API calls
+
+- Add api-client.js helper (Bearer token on every apiFetch)
+- Load api-client in app.html alongside Supabase SDK
+- Route draw approval through POST /draws/:id/approve with JWT
+---
+ api-client.js | 85 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ app.html      | 16 +++++++++-
+ 2 files changed, 100 insertions(+), 1 deletion(-)
+ create mode 100644 api-client.js
+
+diff --git a/api-client.js b/api-client.js
+new file mode 100644
+index 0000000..56833f7
+--- /dev/null
++++ b/api-client.js
+@@ -0,0 +1,85 @@
++(function (global) {
++  var API_URL = global.TRADEDECK_API_URL || 'https://tradedeck-api.onrender.com';
++  var SUPABASE_URL = global.TRADEDECK_SUPABASE_URL || 'https://jlaajejpqjldpbinktln.supabase.co';
++  var SUPABASE_ANON_KEY = global.TRADEDECK_SUPABASE_ANON_KEY || '';
++
++  var supabaseClient = null;
++
++  function getSupabase() {
++    if (!global.supabase || !global.supabase.createClient) {
++      throw new Error('Supabase JS SDK is not loaded');
++    }
++    if (!SUPABASE_ANON_KEY) {
++      throw new Error('TRADEDECK_SUPABASE_ANON_KEY is not configured');
++    }
++    if (!supabaseClient) {
++      supabaseClient = global.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
++    }
++    return supabaseClient;
++  }
++
++  async function getAccessToken() {
++    try {
++      var result = await getSupabase().auth.getSession();
++      return (result.data && result.data.session && result.data.session.access_token) || null;
++    } catch (err) {
++      return null;
++    }
++  }
++
++  async function apiFetch(path, options) {
++    options = options || {};
++    var headers = Object.assign({}, options.headers || {});
++    var token = await getAccessToken();
++
++    if (token) {
++      headers.Authorization = 'Bearer ' + token;
++    } else if (options.requireAuth) {
++      var authError = new Error('Sign in required');
++      authError.code = 'AUTH_REQUIRED';
++      throw authError;
++    }
++
++    var fetchOptions = {
++      method: options.method || 'GET',
++      headers: headers,
++      credentials: 'omit',
++    };
++
++    if (options.body !== undefined && options.body !== null) {
++      if (typeof options.body === 'object' && !(options.body instanceof FormData)) {
++        headers['Content-Type'] = headers['Content-Type'] || 'application/json';
++        fetchOptions.body = JSON.stringify(options.body);
++      } else {
++        fetchOptions.body = options.body;
++      }
++    }
++
++    fetchOptions.headers = headers;
++    var response = await fetch(API_URL + path, fetchOptions);
++    var payload = null;
++    var contentType = response.headers.get('content-type') || '';
++
++    if (contentType.indexOf('application/json') !== -1) {
++      payload = await response.json();
++    } else if (!response.ok) {
++      payload = { error: response.statusText || 'Request failed' };
++    }
++
++    if (!response.ok) {
++      var error = new Error((payload && payload.error) || response.statusText || 'Request failed');
++      error.status = response.status;
++      error.payload = payload;
++      throw error;
++    }
++
++    return payload;
++  }
++
++  global.TradeDeckAPI = {
++    API_URL: API_URL,
++    getSupabase: getSupabase,
++    getAccessToken: getAccessToken,
++    apiFetch: apiFetch,
++  };
++})(window);
+diff --git a/app.html b/app.html
+index f42925b..6722868 100644
+--- a/app.html
++++ b/app.html
+@@ -6,6 +6,7 @@
+ <title>TradeDeck -- Hire the Trade. Find the Work.</title>
+ <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self' https://*.supabase.co https://*.supabase.io wss://*.supabase.co https://tradedeck-api.onrender.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src 'self' data:;">
+ <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
++<script src="api-client.js"></script>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+@@ -893,7 +894,9 @@ footer p{font-size:0.8rem;color:var(--steel)}
+ const { createClient } = supabase;
+ const SUPABASE_URL = 'https://jlaajejpqjldpbinktln.supabase.co';
+ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsYWFqZWpwcWpsZHBiaW5rdGxuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyMDg3MTksImV4cCI6MjEwMTc4NDcxOX0.tP-seLGoJnivrYmNhhTDmDJw4Uk92D95-zrwWB1G_S4';
++window.TRADEDECK_SUPABASE_ANON_KEY = SUPABASE_ANON;
+ const db = createClient(SUPABASE_URL, SUPABASE_ANON);
++const apiFetch = TradeDeckAPI.apiFetch;
+ 
+ function showApp(session) {
+   document.getElementById('auth-loading-overlay').style.display = 'none';
+@@ -1548,8 +1551,19 @@ document.addEventListener('DOMContentLoaded', function() {
+ 
+   async function dmDecideMilestone(id, decision) {
+     if (decision === 'disputed' && !confirm('Mark this milestone as disputed?')) return;
++
++    if (decision === 'approved') {
++      try {
++        await apiFetch('/draws/' + id + '/approve', { method: 'POST', requireAuth: true });
++        loadDrawManager();
++        return;
++      } catch (err) {
++        alert('Could not approve milestone. ' + (err.message || 'Please try again.'));
++        return;
++      }
++    }
++
+     var patch = { status: decision };
+-    if (decision === 'approved') { patch.approved_at = new Date().toISOString(); }
+     if (decision === 'disputed') { patch.resolved_at = new Date().toISOString(); }
+     var res = await db.from('draws').update(patch).eq('id', id);
+     if (res.error) { alert('Could not update milestone. ' + res.error.message); return; }
+-- 
+2.43.0
+
