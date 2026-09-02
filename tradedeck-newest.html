@@ -695,14 +695,25 @@ footer p{font-size:0.8rem;color:var(--steel)}
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  window.TRADEDECK_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsYWFqZWpwcWpsZHBiaW5rdGxuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyMDg3MTksImV4cCI6MjEwMTc4NDcxOX0.tP-seLGoJnivrYmNhhTDmDJw4Uk92D95-zrwWB1G_S4';
+</script>
+<script src="api-client.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
 
-  var API = 'https://tradedeck-api.onrender.com';
+  function handleAuthError(err) {
+    if (err && err.code === 'AUTH_REQUIRED') {
+      alert('Please sign in to continue. Use the main TradeDeck app to create an account or sign in.');
+      return true;
+    }
+    return false;
+  }
 
   /* --- HERO CARD --- */
   function loadHeroCard() {
-    fetch(API + '/api/jobs')
+    TradeDeckAPI.apiFetch('/api/jobs')
       .then(function(r){ return r.json(); })
       .then(function(data) {
         if (!data.jobs || data.jobs.length === 0) {
@@ -730,8 +741,9 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('heroApplyBtn').addEventListener('click', function() {
           var id = this.dataset.jobId;
           var btn = this;
-          fetch(API + '/api/jobs/' + id + '/apply', { method:'POST' })
-            .then(function(){ btn.textContent='Applied'; btn.style.background='#4ADE80'; btn.disabled=true; });
+          TradeDeckAPI.apiFetch('/api/jobs/' + id + '/apply', { method: 'POST', requireAuth: true })
+            .then(function(){ btn.textContent='Applied'; btn.style.background='#4ADE80'; btn.disabled=true; })
+            .catch(function(err){ if (!handleAuthError(err)) btn.disabled = false; });
         });
       })
       .catch(function(){
@@ -766,7 +778,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var grid = document.getElementById('jobsGrid');
     var empty = document.getElementById('jobsEmpty');
     grid.innerHTML = '<div style="color:var(--steel);font-size:0.9rem;grid-column:1/-1;">Loading jobs...</div>';
-    fetch(API + '/api/jobs')
+    TradeDeckAPI.apiFetch('/api/jobs')
       .then(function(r){ return r.json(); })
       .then(function(data) {
         grid.innerHTML = '';
@@ -798,8 +810,9 @@ document.addEventListener('DOMContentLoaded', function() {
             e.stopPropagation();
             var id = this.dataset.jobId;
             var b = this;
-            fetch(API + '/api/jobs/' + id + '/apply', { method:'POST' })
-              .then(function(){ b.textContent='Applied'; b.style.background='#4ADE80'; b.disabled=true; });
+            TradeDeckAPI.apiFetch('/api/jobs/' + id + '/apply', { method: 'POST', requireAuth: true })
+              .then(function(){ b.textContent='Applied'; b.style.background='#4ADE80'; b.disabled=true; })
+              .catch(function(err){ if (!handleAuthError(err)) b.disabled = false; });
           });
         });
         applyFilters();
@@ -911,19 +924,15 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function submitPost() {
-    var payload={
-      title:document.getElementById('jobTitle').value||'Untitled Job',
-      trade:selectedTrade||'General',
-      city:document.getElementById('city').value||'Unknown',
-      state:document.getElementById('stateSelect').value||'UT',
-      rate:document.getElementById('payRate').value,
-      duration:document.getElementById('duration').value,
-      crew_size:document.getElementById('crewSize').value,
-      start_date:document.getElementById('startDate').value,
-      description:document.getElementById('jobDesc').value
+    var city = document.getElementById('city').value || 'Unknown';
+    var state = document.getElementById('stateSelect').value || 'UT';
+    var payload = {
+      title: document.getElementById('jobTitle').value || 'Untitled Job',
+      trade: selectedTrade || 'General',
+      location: [city, state].filter(Boolean).join(', '),
+      description: document.getElementById('jobDesc').value
     };
-    fetch(API+'/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-      .then(function(r){ return r.json(); })
+    TradeDeckAPI.apiFetch('/api/jobs', { method: 'POST', body: payload, requireAuth: true })
       .then(function(){
         document.querySelectorAll('.step-pane').forEach(function(p){ p.classList.remove('active'); });
         document.querySelector('.progress-wrap').style.display='none';
@@ -931,7 +940,9 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('successPane').classList.add('active');
         loadJobs();
       })
-      .catch(function(){ alert('Failed to post job. Please try again.'); });
+      .catch(function(err){
+        if (!handleAuthError(err)) alert('Failed to post job. Please try again.');
+      });
   }
 
   ['navPostBtn','heroPostBtn','barPostBtn'].forEach(function(id){ var el=document.getElementById(id); if(el) el.addEventListener('click',openFlow); });
