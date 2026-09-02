@@ -5,9 +5,17 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
-      - key: DB_PATH
-        value: /var/data/tradedeck.db
-    disk:
-      name: tradedeck-db
-      mountPath: /var/data
-      sizeGB: 1
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APP_URL
+        value: https://tradedeckapp.com
+      - key: ALLOWED_ORIGINS
+        value: https://tradedeckapp.com
