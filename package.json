@@ -1,0 +1,12 @@
+{
+  "scripts": {
+    "supabase:start": "supabase start",
+    "supabase:stop": "supabase stop",
+    "supabase:status": "supabase status",
+    "supabase:push": "supabase db push",
+    "supabase:reset": "supabase db reset"
+  },
+  "devDependencies": {
+    "supabase": "^2.116.0"
+  }
+}
