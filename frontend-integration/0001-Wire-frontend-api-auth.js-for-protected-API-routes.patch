@@ -1,0 +1,309 @@
+From 5faa09ea4fbf5bf202abd3368c50632f6cecc092 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Wed, 2 Sep 2026 08:12:10 +0000
+Subject: [PATCH] Wire frontend-api-auth.js for protected API routes
+
+- Add frontend-api-auth.js with JWT auto-attach and draw/stripe helpers
+- Initialize TradeDeckAPI in app.html and index.html with Supabase client
+- Draw approve/dispute call API (escrow release/refund)
+- Draw submit opens photo picker and calls AI photo upload endpoint
+- Add Stripe Connect button on mobile profile (index.html)
+- Update CLAUDE.md
+---
+ CLAUDE.md            | 10 ++++---
+ app.html             | 47 +++++++++++++++++++++++++--------
+ frontend-api-auth.js | 62 ++++++++++++++++++++++++++++++++++++++++++++
+ index.html           | 59 ++++++++++++++++++++++++++++++++++++++---
+ 4 files changed, 160 insertions(+), 18 deletions(-)
+ create mode 100644 frontend-api-auth.js
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 750641d..2db2746 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -33,12 +33,14 @@ principles baked into every feature decision:
+   (`@supabase/supabase-js@2` from jsDelivr), project `jlaajejpqjldpbinktln`.
+   Handles email+password sign-in and sign-up. On success it shows the in-page
+   app shell (Home, Find Work, Post Job, Draws, Profile, Admin). **Does not
+-  redirect to `app.html`.**
++  redirect to `app.html`.** Draw approve/dispute and photo submit call
++  `tradedeck-api.onrender.com` via `frontend-api-auth.js` (auto JWT).
+ - `_headers` — Netlify response headers, sets a Content-Security-Policy for
+   the whole site.
+ - `app.html` — **desktop marketing shell** with embedded sign-in, Find Work,
+   Post Job wizard, CompanyCam (mock), Draw Manager, and Admin. Also uses
+-  Supabase directly. Both frontends must use the same live schema (see below).
++  Supabase directly. Draw Manager uses `frontend-api-auth.js` for milestone
++  photo upload, approve (escrow release), and dispute (refund).
+ - `app.py` — Flask API (Stripe Connect, escrow, AI photo review). Belongs in
+   the `tradedeck-api` repo for deployment; included here for reference. All
+   routes except `/` and `/stripe/webhook` require a Supabase JWT.
+@@ -65,7 +67,9 @@ but the frontends should use `draws`.
+ - No `tradedeck-app.html` mobile rebuild, no `draw_manager_frontend.html`,
+   no `tradedeck-pitch.html` marketing page. Draw Manager and Profile **are**
+   built into `index.html` and `app.html`.
+-- No Stripe Connect / escrow / draw code anywhere in the frontend.
++- No Stripe Connect / escrow UI in the frontend beyond Profile → Connect Stripe
++  (`index.html`) and Draw Manager API calls (`index.html`, `app.html`).
++- `frontend-api-auth.js` — attaches Supabase JWT to protected API routes.
+ 
+ ## Backend & data
+ 
+diff --git a/app.html b/app.html
+index f42925b..237625d 100644
+--- a/app.html
++++ b/app.html
+@@ -6,6 +6,7 @@
+ <title>TradeDeck -- Hire the Trade. Find the Work.</title>
+ <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self' https://*.supabase.co https://*.supabase.io wss://*.supabase.co https://tradedeck-api.onrender.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src 'self' data:;">
+ <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
++<script src="frontend-api-auth.js"></script>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+@@ -894,6 +895,7 @@ const { createClient } = supabase;
+ const SUPABASE_URL = 'https://jlaajejpqjldpbinktln.supabase.co';
+ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsYWFqZWpwcWpsZHBiaW5rdGxuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyMDg3MTksImV4cCI6MjEwMTc4NDcxOX0.tP-seLGoJnivrYmNhhTDmDJw4Uk92D95-zrwWB1G_S4';
+ const db = createClient(SUPABASE_URL, SUPABASE_ANON);
++TradeDeckAPI.init({ supabase: db });
+ 
+ function showApp(session) {
+   document.getElementById('auth-loading-overlay').style.display = 'none';
+@@ -1519,7 +1521,7 @@ document.addEventListener('DOMContentLoaded', function() {
+           '</div>' +
+           '<div class="dm-actions">' +
+           dmStatusBadge(d.status) +
+-          (canSubmit ? '<button class="dm-btn dm-btn-submit dm-submit-btn" data-id="' + d.id + '">Submit</button>' : '') +
++          (canSubmit ? '<button class="dm-btn dm-btn-submit dm-submit-btn" data-id="' + d.id + '">Submit Photo</button>' : '') +
+           (canApprove ? '<button class="dm-btn dm-btn-approve dm-decide-btn" data-id="' + d.id + '" data-decision="approved">Approve</button><button class="dm-btn dm-btn-dispute dm-decide-btn" data-id="' + d.id + '" data-decision="disputed">Dispute</button>' : '') +
+           '</div></div>';
+       });
+@@ -1541,19 +1543,42 @@ document.addEventListener('DOMContentLoaded', function() {
+   }
+ 
+   async function dmSubmitMilestone(id) {
+-    var res = await db.from('draws').update({ status: 'submitted', submitted_at: new Date().toISOString() }).eq('id', id);
+-    if (res.error) { alert('Could not submit milestone. ' + res.error.message); return; }
+-    loadDrawManager();
++    var input = document.createElement('input');
++    input.type = 'file';
++    input.accept = 'image/*';
++    input.onchange = async function() {
++      var file = input.files && input.files[0];
++      if (!file) return;
++      var reader = new FileReader();
++      reader.onload = async function() {
++        try {
++          var b64 = reader.result.split(',')[1];
++          await TradeDeckAPI.uploadDrawPhoto(id, b64);
++          loadDrawManager();
++        } catch (e) {
++          alert('Photo upload failed: ' + e.message);
++        }
++      };
++      reader.readAsDataURL(file);
++    };
++    input.click();
+   }
+ 
+   async function dmDecideMilestone(id, decision) {
+-    if (decision === 'disputed' && !confirm('Mark this milestone as disputed?')) return;
+-    var patch = { status: decision };
+-    if (decision === 'approved') { patch.approved_at = new Date().toISOString(); }
+-    if (decision === 'disputed') { patch.resolved_at = new Date().toISOString(); }
+-    var res = await db.from('draws').update(patch).eq('id', id);
+-    if (res.error) { alert('Could not update milestone. ' + res.error.message); return; }
+-    loadDrawManager();
++    if (decision === 'disputed' && !confirm('Mark this milestone as disputed? This may trigger an escrow refund.')) return;
++    try {
++      if (decision === 'approved') {
++        await TradeDeckAPI.approveDraw(id);
++      } else if (decision === 'disputed') {
++        await TradeDeckAPI.refundDraw(id);
++      } else {
++        var res = await db.from('draws').update({ status: decision }).eq('id', id);
++        if (res.error) throw new Error(res.error.message);
++      }
++      loadDrawManager();
++    } catch (e) {
++      alert('Could not update milestone: ' + e.message);
++    }
+   }
+ 
+   /* --- DRAW SCHEDULE SETUP --- */
+diff --git a/frontend-api-auth.js b/frontend-api-auth.js
+new file mode 100644
+index 0000000..4a1edf0
+--- /dev/null
++++ b/frontend-api-auth.js
+@@ -0,0 +1,62 @@
++/**
++ * TradeDeck API client for Tradeneck (Supabase Auth).
++ * Auto-attaches Authorization: Bearer <jwt> on protected routes.
++ */
++(function (global) {
++  var config = { apiBase: '', supabase: null };
++
++  function init(opts) {
++    config.apiBase = (opts.apiBase || 'https://tradedeck-api.onrender.com').replace(/\/$/, '');
++    if (opts.supabase) {
++      config.supabase = opts.supabase;
++    } else if (opts.supabaseUrl && opts.supabaseAnonKey && global.supabase) {
++      config.supabase = global.supabase.createClient(opts.supabaseUrl, opts.supabaseAnonKey);
++    }
++  }
++
++  async function getToken() {
++    if (!config.supabase) return null;
++    var result = await config.supabase.auth.getSession();
++    return result.data && result.data.session ? result.data.session.access_token : null;
++  }
++
++  async function request(method, path, body, requireAuth) {
++    var headers = { 'Content-Type': 'application/json' };
++    var token = await getToken();
++    if (token) headers['Authorization'] = 'Bearer ' + token;
++    if (requireAuth && !token) throw new Error('Sign in required');
++    var opts = { method: method, headers: headers };
++    if (body !== undefined) opts.body = JSON.stringify(body);
++    return fetch(config.apiBase + path, opts);
++  }
++
++  async function apiJson(method, path, body, requireAuth) {
++    var r = await request(method, path, body, requireAuth);
++    var data = {};
++    try { data = await r.json(); } catch (e) { /* empty */ }
++    if (!r.ok) throw new Error(data.error || ('Request failed (' + r.status + ')'));
++    return data;
++  }
++
++  global.TradeDeckAPI = {
++    init: init,
++    get: function (path) { return request('GET', path, undefined, false); },
++    post: function (path, body, requireAuth) {
++      return request('POST', path, body, requireAuth !== false);
++    },
++    apiJson: apiJson,
++    getToken: getToken,
++    approveDraw: function (drawId) {
++      return apiJson('POST', '/draws/' + drawId + '/approve', {});
++    },
++    refundDraw: function (drawId) {
++      return apiJson('POST', '/stripe/escrow/refund', { draw_id: drawId });
++    },
++    uploadDrawPhoto: function (drawId, imageBase64) {
++      return apiJson('POST', '/draws/' + drawId + '/photos/upload', { image_base64: imageBase64 });
++    },
++    connectStripe: function (userId, email) {
++      return apiJson('POST', '/stripe/connect/onboard', { user_id: userId, email: email });
++    },
++  };
++})(typeof window !== 'undefined' ? window : globalThis);
+diff --git a/index.html b/index.html
+index 4722808..b08abbd 100644
+--- a/index.html
++++ b/index.html
+@@ -5,6 +5,7 @@
+ <meta name="viewport" content="width=device-width,initial-scale=1"/>
+ <title>TradeDeck</title>
+ <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
++<script src="frontend-api-auth.js"></script>
+ <style>
+ *{box-sizing:border-box;margin:0;padding:0}
+ :root{
+@@ -242,6 +243,7 @@ const SUPABASE_URL     = 'https://jlaajejpqjldpbinktln.supabase.co';
+ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsYWFqZWpwcWpsZHBiaW5rdGxuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyMDg3MTksImV4cCI6MjEwMTc4NDcxOX0.tP-seLGoJnivrYmNhhTDmDJw4Uk92D95-zrwWB1G_S4';
+ const { createClient } = supabase;
+ const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
++TradeDeckAPI.init({ supabase: sb });
+ 
+ // ─── STATE ────────────────────────────────────────────────────────────────────
+ let STATE = {
+@@ -613,7 +615,7 @@ function renderDraws(){
+           <span style="font-size:14px">${d.milestone_order}. ${d.milestone_name} <span class="text-muted">(${d.percentage}%)</span></span>
+           <div class="flex gap8" style="align-items:center">
+             <span class="draw-status ${d.status}">${d.status}</span>
+-            ${d.status==='pending'?`<button class="btn btn-outline btn-sm" onclick="drawAction('${d.id}','submitted')">Submit</button>`:''}
++            ${d.status==='pending'?`<button class="btn btn-outline btn-sm" onclick="drawAction('${d.id}','submitted')">Submit Photo</button>`:''}
+             ${d.status==='submitted'?`
+               <button class="btn btn-primary btn-sm" onclick="drawAction('${d.id}','approved')">Approve</button>
+               <button class="btn btn-danger btn-sm" onclick="drawAction('${d.id}','disputed')">Dispute</button>`:''}
+@@ -622,9 +624,44 @@ function renderDraws(){
+     </div>`;
+   }).join('');
+ }
+-async function drawAction(id,status){
+-  await sb.from('draws').update({status,resolved_at:['approved','disputed'].includes(status)?new Date().toISOString():null}).eq('id',id);
+-  await loadData();renderDraws();
++async function drawAction(id, status){
++  try {
++    if (status === 'submitted') {
++      var input = document.createElement('input');
++      input.type = 'file';
++      input.accept = 'image/*';
++      input.onchange = async function() {
++        var file = input.files && input.files[0];
++        if (!file) return;
++        var reader = new FileReader();
++        reader.onload = async function() {
++          try {
++            var b64 = reader.result.split(',')[1];
++            await TradeDeckAPI.uploadDrawPhoto(id, b64);
++            await loadData();
++            renderDraws();
++          } catch (e) {
++            alert('Photo upload failed: ' + e.message);
++          }
++        };
++        reader.readAsDataURL(file);
++      };
++      input.click();
++      return;
++    }
++    if (status === 'approved') {
++      await TradeDeckAPI.approveDraw(id);
++    } else if (status === 'disputed') {
++      if (!confirm('Dispute this milestone? This may trigger an escrow refund.')) return;
++      await TradeDeckAPI.refundDraw(id);
++    } else {
++      await sb.from('draws').update({status}).eq('id', id);
++    }
++    await loadData();
++    renderDraws();
++  } catch (e) {
++    alert('Draw action failed: ' + e.message);
++  }
+ }
+ 
+ // ─── PROFILE ──────────────────────────────────────────────────────────────────
+@@ -654,6 +691,11 @@ function renderProfile(){
+       <input id="edit-phone" value="${p.phone||''}" placeholder="435-555-0100"/>
+       <button class="btn btn-primary btn-block" onclick="saveProfile()">Save</button>
+     </div>
++    <div class="card">
++      <h3>Stripe Payouts</h3>
++      <p class="text-muted" style="font-size:13px;margin-bottom:12px">Connect Stripe to receive milestone draw payments.</p>
++      <button class="btn btn-outline btn-block" onclick="connectStripe()">Connect Stripe Account</button>
++    </div>
+     <button class="btn btn-outline btn-block mt8" onclick="signOut()">Sign Out</button>
+   `;
+ }
+@@ -669,6 +711,15 @@ async function saveProfile(){
+   STATE.profile = {...STATE.profile,...updates};
+   renderProfile();
+ }
++async function connectStripe(){
++  if (!STATE.user){alert('Sign in required');return;}
++  try {
++    const data = await TradeDeckAPI.connectStripe(STATE.user.id, STATE.user.email);
++    if (data.url) window.location.href = data.url;
++  } catch (e) {
++    alert('Stripe connect failed: ' + e.message);
++  }
++}
+ 
+ // ─── ADMIN ────────────────────────────────────────────────────────────────────
+ // Ported from app.html's Admin tab, adapted to the columns actually
+-- 
+2.43.0
+

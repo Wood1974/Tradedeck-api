@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>TradeDeck</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="frontend-api-auth.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0A0A0A;--surface:#141414;--border:#222;
+  --teal:#0BBCD4;--text:#F0F0F0;--muted:#888;--danger:#e05555;--green:#4ADE80;
+}
+body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;min-height:100vh}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--surface);border-top:1px solid var(--border);z-index:100}
+nav button{flex:1;padding:12px 4px 10px;background:none;border:none;color:var(--muted);font-size:11px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;transition:color .15s}
+nav button.active{color:var(--teal)}
+nav button svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8}
+#app{padding:16px 16px 80px}
+.screen{display:none}.screen.active{display:block}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
+.card h3{font-size:15px;margin-bottom:6px}
+.card p{font-size:13px;color:var(--muted);line-height:1.5}
+.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 18px;border-radius:8px;font-size:14px;font-weight:600;border:none;cursor:pointer;transition:opacity .15s}
+.btn:hover{opacity:.85}
+.btn-primary{background:var(--teal);color:#000}
+.btn-outline{background:none;border:1px solid var(--border);color:var(--text)}
+.btn-danger{background:var(--danger);color:#fff}
+.btn-sm{padding:6px 12px;font-size:13px}
+.btn-block{width:100%;margin-top:8px}
+input,textarea,select{width:100%;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:10px;outline:none}
+input:focus,textarea:focus,select:focus{border-color:var(--teal)}
+textarea{min-height:80px;resize:vertical}
+label{font-size:13px;color:var(--muted);margin-bottom:4px;display:block}
+.tab-bar{display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;padding-bottom:4px}
+.tab-btn{white-space:nowrap;padding:6px 14px;border-radius:20px;border:1px solid var(--border);background:none;color:var(--muted);font-size:13px;cursor:pointer}
+.tab-btn.active{background:var(--teal);color:#000;border-color:var(--teal)}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
+.badge-teal{background:rgba(11,188,212,.15);color:var(--teal)}
+.badge-ksl{background:rgba(255,180,0,.15);color:#ffb400}
+.screen-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.screen-header h2{font-size:20px;font-weight:700}
+#auth-wrap{max-width:400px;margin:60px auto;padding:0 16px}
+#auth-wrap h1{font-size:26px;font-weight:800;margin-bottom:6px}
+#auth-wrap p.sub{color:var(--muted);margin-bottom:24px}
+.auth-toggle{font-size:13px;color:var(--muted);margin-top:12px;text-align:center;cursor:pointer}
+.auth-toggle span{color:var(--teal)}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;align-items:flex-end}
+.overlay.open{display:flex}
+.overlay-inner{background:var(--surface);border-radius:16px 16px 0 0;padding:20px 16px 32px;width:100%;max-height:90vh;overflow-y:auto}
+.overlay-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.overlay-header h3{font-size:17px;font-weight:700}
+.close-btn{background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer}
+.flex{display:flex}.between{justify-content:space-between}.gap8{gap:8px}.mt8{margin-top:8px}.mt16{margin-top:16px}
+.text-muted{color:var(--muted);font-size:13px}
+.draw-status{padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;text-transform:uppercase}
+.draw-status.pending{background:rgba(255,180,0,.15);color:#ffb400}
+.draw-status.submitted{background:rgba(11,188,212,.15);color:var(--teal)}
+.draw-status.approved{background:rgba(74,222,128,.15);color:var(--green)}
+.draw-status.disputed{background:rgba(224,85,85,.15);color:var(--danger)}
+.escrow-bar{background:var(--border);border-radius:4px;height:8px;margin:8px 0}
+.escrow-fill{background:var(--teal);height:100%;border-radius:4px;transition:width .4s}
+.stars{display:flex;gap:6px;font-size:28px;cursor:pointer;margin:10px 0}
+.stars span{color:var(--border);transition:color .1s}
+.stars span.on{color:#ffb400}
+.milestone-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.milestone-row input{margin-bottom:0}
+.milestone-row .pct-input{width:65px;flex-shrink:0;text-align:center}
+.county-tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:12px}
+.county-tab{white-space:nowrap;padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:none;color:var(--muted);font-size:12px;cursor:pointer;flex-shrink:0}
+.county-tab.active{background:var(--teal);color:#000;border-color:var(--teal)}
+.applicant-count{font-size:12px;color:var(--muted)}
+.lead-category{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--teal);font-weight:700;margin:20px 0 8px;padding-top:4px}
+.lead-category:first-child{margin-top:0}
+.lead-tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.lead-tag-free{background:rgba(74,222,128,.15);color:var(--green)}
+.lead-tag-paid{background:rgba(255,180,0,.15);color:#ffb400}
+.lead-link{color:var(--teal);font-size:12px;font-weight:600;text-decoration:none;display:inline-block;margin-top:8px}
+.adm-subtabs{display:flex;gap:8px;margin-bottom:16px}
+.adm-subtab{padding:6px 14px;border-radius:20px;border:1px solid var(--border);background:none;color:var(--muted);font-size:13px;cursor:pointer}
+.adm-subtab.active{background:var(--teal);color:#000;border-color:var(--teal)}
+.adm-subview{display:none}.adm-subview.active{display:block}
+.adm-row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.adm-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;text-transform:uppercase;flex-shrink:0}
+.adm-badge-admin{background:rgba(11,188,212,.15);color:var(--teal)}
+.adm-badge-user{background:var(--border);color:var(--muted)}
+</style>
+</head>
+<body>
+
+<!-- AUTH -->
+<div id="auth-wrap">
+  <h1>TradeDeck</h1>
+  <p class="sub">The marketplace built for the trades.</p>
+  <label>Email</label>
+  <input id="auth-email" type="email" placeholder="you@example.com"/>
+  <label>Password</label>
+  <input id="auth-password" type="password" placeholder="••••••••"/>
+  <button class="btn btn-primary btn-block" onclick="authSubmit()">Sign In</button>
+  <p id="auth-error" style="color:var(--danger);font-size:13px;margin-top:8px"></p>
+  <p class="auth-toggle">No account? <span onclick="toggleAuth()">Sign up</span></p>
+</div>
+
+<!-- APP -->
+<div id="app" style="display:none">
+
+  <!-- HOME -->
+  <div id="screen-home" class="screen active">
+    <div class="screen-header"><h2>Home</h2><span id="home-tier" class="badge badge-teal"></span></div>
+    <div id="home-stats" class="card"></div>
+    <div class="card">
+      <h3>Quick Actions</h3>
+      <div class="flex gap8 mt8">
+        <button class="btn btn-primary btn-sm" onclick="switchTab('post')">Post a Job</button>
+        <button class="btn btn-outline btn-sm" onclick="switchTab('work')">Find Work</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FIND WORK -->
+  <div id="screen-work" class="screen">
+    <div class="screen-header"><h2>Find Work</h2></div>
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="workTab('open',this)">Open Jobs</button>
+      <button class="tab-btn" onclick="workTab('ksl',this)">KSL Jobs</button>
+      <button class="tab-btn" onclick="workTab('leads',this)">Lead Sources</button>
+    </div>
+    <div class="county-tabs" id="county-tabs" style="display:none"></div>
+    <div id="work-content"></div>
+  </div>
+
+  <!-- POST A JOB -->
+  <div id="screen-post" class="screen">
+    <div class="screen-header"><h2>Post a Job</h2></div>
+    <div class="card">
+      <label>Job Title</label>
+      <input id="post-title" placeholder="e.g. Framing crew needed — custom home"/>
+      <label>Trade</label>
+      <select id="post-trade">
+        <option>Framing</option><option>Concrete</option><option>Roofing</option>
+        <option>Electrical</option><option>Plumbing</option><option>HVAC</option>
+        <option>Drywall</option><option>Flooring</option><option>Excavation</option>
+        <option>Landscaping</option><option>General Labor</option><option>Other</option>
+      </select>
+      <label>Location / City</label>
+      <input id="post-city" placeholder="e.g. Francis"/>
+      <label>County</label>
+      <select id="post-county">
+        <option>Summit</option><option>Wasatch</option><option>Utah</option>
+        <option>Salt Lake</option><option>Davis</option><option>Weber</option>
+        <option>Cache</option><option>Tooele</option><option>Juab</option>
+        <option>Sanpete</option><option>Sevier</option><option>Millard</option>
+        <option>Iron</option><option>Washington</option><option>Kane</option>
+        <option>Garfield</option><option>Piute</option><option>Wayne</option>
+        <option>Emery</option><option>Carbon</option><option>Grand</option>
+        <option>San Juan</option><option>Uintah</option><option>Duchesne</option>
+        <option>Daggett</option><option>Morgan</option><option>Rich</option>
+        <option>Box Elder</option><option>Other</option>
+      </select>
+      <label>Description</label>
+      <textarea id="post-desc" placeholder="Scope, timeline, crew size…"></textarea>
+      <label>Budget / Rate</label>
+      <input id="post-budget" placeholder="e.g. $85,000 or $45/hr"/>
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0"/>
+      <h3 style="margin-bottom:10px">Draw Schedule <span class="text-muted">(optional)</span></h3>
+      <div id="milestone-rows"></div>
+      <div class="flex gap8 mt8">
+        <button class="btn btn-outline btn-sm" onclick="addMilestone()">+ Milestone</button>
+        <span id="pct-total" class="text-muted" style="align-self:center;font-size:13px"></span>
+      </div>
+      <button class="btn btn-primary btn-block mt16" onclick="submitJob()">Post Job</button>
+    </div>
+  </div>
+
+  <!-- DRAW MANAGER -->
+  <div id="screen-draws" class="screen">
+    <div class="screen-header"><h2>Draw Manager</h2></div>
+    <div id="draws-content"></div>
+  </div>
+
+  <!-- PROFILE -->
+  <div id="screen-profile" class="screen">
+    <div class="screen-header"><h2>Profile</h2></div>
+    <div id="profile-content"></div>
+  </div>
+
+  <!-- ADMIN -->
+  <div id="screen-admin" class="screen">
+    <div class="screen-header"><h2>Admin</h2></div>
+    <div class="adm-subtabs">
+      <button class="adm-subtab active" onclick="admTab('users',this)">Users</button>
+      <button class="adm-subtab" onclick="admTab('jobs',this)">Jobs</button>
+    </div>
+    <div class="adm-subview active" id="adm-users"></div>
+    <div class="adm-subview" id="adm-jobs"></div>
+  </div>
+
+</div>
+
+<!-- NAV -->
+<nav id="main-nav" style="display:none">
+  <button class="active" onclick="switchTab('home')" id="nav-home">
+    <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>Home
+  </button>
+  <button onclick="switchTab('work')" id="nav-work">
+    <svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>Find Work
+  </button>
+  <button onclick="switchTab('post')" id="nav-post">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>Post Job
+  </button>
+  <button onclick="switchTab('draws')" id="nav-draws">
+    <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>Draws
+  </button>
+  <button onclick="switchTab('profile')" id="nav-profile">
+    <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>Profile
+  </button>
+  <button onclick="switchTab('admin')" id="nav-admin" style="display:none">
+    <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Admin
+  </button>
+</nav>
+
+<!-- RATING OVERLAY -->
+<div class="overlay" id="rating-overlay">
+  <div class="overlay-inner">
+    <div class="overlay-header">
+      <h3>Rate this Job</h3>
+      <button class="close-btn" onclick="closeOverlay('rating-overlay')">×</button>
+    </div>
+    <div class="stars" id="star-picker">
+      <span onclick="setRating(1)">★</span><span onclick="setRating(2)">★</span>
+      <span onclick="setRating(3)">★</span><span onclick="setRating(4)">★</span>
+      <span onclick="setRating(5)">★</span>
+    </div>
+    <textarea id="review-text" placeholder="Share your experience (optional)…"></textarea>
+    <button class="btn btn-primary btn-block" onclick="submitRating()">Submit Rating</button>
+  </div>
+</div>
+
+<script>
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+const SUPABASE_URL     = 'https://jlaajejpqjldpbinktln.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsYWFqZWpwcWpsZHBiaW5rdGxuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyMDg3MTksImV4cCI6MjEwMTc4NDcxOX0.tP-seLGoJnivrYmNhhTDmDJw4Uk92D95-zrwWB1G_S4';
+const { createClient } = supabase;
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+TradeDeckAPI.init({ supabase: sb });
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let STATE = {
+  user:null, profile:null, isAdmin:false,
+  jobs:[], kslJobs:[], draws:[],
+  appliedJobIds:{}, applicantCounts:{},
+  activeWorkTab:'open', activeCounty:'all', activeAdmTab:'users', admLoaded:false,
+  currentRatingJobId:null, currentRatingRevieweeId:null, currentRating:0,
+  milestones:[]
+};
+
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+let authMode = 'signin';
+function toggleAuth() {
+  authMode = authMode==='signin'?'signup':'signin';
+  document.querySelector('#auth-wrap button').textContent = authMode==='signin'?'Sign In':'Create Account';
+  document.querySelector('.auth-toggle span').textContent = authMode==='signin'?'Sign up':'Sign in';
+}
+async function authSubmit() {
+  const email    = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const errEl    = document.getElementById('auth-error');
+  errEl.textContent = '';
+  if (!email||!password){errEl.textContent='Email and password required';return;}
+  const res = authMode==='signup'
+    ? await sb.auth.signUp({email,password})
+    : await sb.auth.signInWithPassword({email,password});
+  if (res.error){errEl.textContent=res.error.message;return;}
+  if (authMode==='signup'&&!res.error){errEl.style.color='var(--green)';errEl.textContent='Check your email to confirm.';return;}
+  await onLogin(res.data.user);
+}
+async function onLogin(user) {
+  STATE.user = user;
+  let {data:profile} = await sb.from('profiles').select('*').eq('id',user.id).single();
+  if (!profile) {
+    await sb.from('profiles').insert({id:user.id,email:user.email});
+    profile = {id:user.id,email:user.email,tier:1};
+  }
+  STATE.profile = profile;
+  /* Admin check is cosmetic only -- it shows/hides the tab. Real
+     enforcement is the "Admins have full access" RLS policies from
+     admin-setup.sql; nothing here grants any actual permission. This
+     also tolerates profiles.is_admin not existing yet on the live
+     database (admin-setup.sql not run) -- profile.is_admin is just
+     undefined/falsy in that case, so the tab simply stays hidden. */
+  STATE.isAdmin = !!profile.is_admin;
+  if (STATE.isAdmin) document.getElementById('nav-admin').style.display = '';
+  document.getElementById('auth-wrap').style.display = 'none';
+  document.getElementById('app').style.display       = 'block';
+  document.getElementById('main-nav').style.display  = 'flex';
+  await loadData();
+  render();
+}
+async function signOut(){await sb.auth.signOut();location.reload();}
+
+// ─── LOAD DATA ────────────────────────────────────────────────────────────────
+async function loadData() {
+  const [jobsRes, kslRes] = await Promise.all([
+    sb.from('jobs').select('*').eq('status','open').eq('source','tradedeck').order('created_at',{ascending:false}).limit(50),
+    sb.from('jobs').select('*').eq('source','ksl').order('created_at',{ascending:false}).limit(200),
+  ]);
+  STATE.jobs    = jobsRes.data  || [];
+  STATE.kslJobs = kslRes.data   || [];
+
+  /* Only load draw schedules for jobs this user posted -- not every
+     schedule on the platform. */
+  STATE.draws = [];
+  if (STATE.user) {
+    const myJobsRes = await sb.from('jobs').select('id').eq('owner_id', STATE.user.id);
+    const myJobIds = (myJobsRes.data || []).map(j => j.id);
+    if (myJobIds.length) {
+      const drawRes = await sb.from('draw_schedules').select('*, draws(*)').in('job_id', myJobIds).order('created_at', { ascending: false });
+      STATE.draws = drawRes.data || [];
+    }
+  }
+
+  /* Applied state (mine only -- RLS on applications only lets a user
+     see their own rows or rows on a job they posted, so this can't leak
+     anyone else's applications) + privacy-safe applicant counts via the
+     job_application_counts() RPC, which returns totals only, never who
+     applied. */
+  const jobIds = STATE.jobs.map(j=>j.id);
+  STATE.appliedJobIds = {};
+  STATE.applicantCounts = {};
+  if (jobIds.length && STATE.user) {
+    const [mineRes, countsRes] = await Promise.all([
+      sb.from('applications').select('job_id').eq('applicant_id',STATE.user.id).in('job_id',jobIds),
+      sb.rpc('job_application_counts',{p_job_ids:jobIds}),
+    ]);
+    (mineRes.data||[]).forEach(a=>{STATE.appliedJobIds[a.job_id]=true;});
+    (countsRes.data||[]).forEach(row=>{STATE.applicantCounts[row.job_id]=row.applicant_count;});
+  }
+}
+
+// ─── TABS ─────────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('screen-'+tab).classList.add('active');
+  document.getElementById('nav-'+tab).classList.add('active');
+  if (tab==='admin') loadAdmin();
+}
+function workTab(tab,btn) {
+  STATE.activeWorkTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('county-tabs').style.display = tab==='ksl'?'flex':'none';
+  renderWork();
+}
+
+// ─── RENDER ───────────────────────────────────────────────────────────────────
+function render(){renderHome();renderWork();renderDraws();renderProfile();}
+
+function renderHome() {
+  if (!STATE.profile) return;
+  const tiers = ['','Verified','Active','Proven','Trusted','TradeDeck Pro'];
+  document.getElementById('home-tier').textContent = tiers[STATE.profile.tier||1]||'Verified';
+  document.getElementById('home-stats').innerHTML = `
+    <div class="flex between"><span class="text-muted">Jobs available</span><strong>${STATE.jobs.length}</strong></div>
+    <div class="flex between mt8"><span class="text-muted">Active draws</span><strong>${STATE.draws.length}</strong></div>
+  `;
+}
+
+const COUNTIES = ['All','Box Elder','Cache','Carbon','Daggett','Davis','Duchesne','Emery',
+  'Garfield','Grand','Iron','Juab','Kane','Millard','Morgan','Piute','Rich','Salt Lake',
+  'San Juan','Sanpete','Sevier','Summit','Tooele','Uintah','Utah','Wasatch','Washington','Wayne','Weber'];
+
+const LEAD_CATEGORIES = [
+  {cat:'Boots on the Ground — Free', items:[
+    {name:'Jobsite Cold Outreach', cost:'free', link:'https://tradedeckapp.com', linkLabel:'Post on TradeDeck',
+     desc:"Drive active job sites. Write down names and numbers from sub trucks. Call the numbers, visit the websites. Ask the landscaper if he knows an electrician — the highest-close-rate lead in the trades is a warm referral from another sub on the same site."},
+    {name:'Lumber Yards & Supply Houses', cost:'free', link:'https://www.84lumber.com', linkLabel:'Visit',
+     desc:"Counter staff at ProDesk, 84 Lumber, Marjam, and local yards know every GC in the market. Drop cards, build relationships, ask directly."},
+    {name:'Equipment Rental Yards', cost:'free', link:'https://www.unitedrentals.com', linkLabel:'Visit',
+     desc:"Anyone renting gear is actively working a job right now. United Rentals, Sunbelt, local yards — drop cards and QR codes at the counter."},
+    {name:'Local Home & Trade Shows', cost:'free', link:'https://www.utahnahb.org', linkLabel:'Utah HBA Events',
+     desc:"Home and garden shows, builder expos, and local trade events draw GCs, developers, and homeowners in the same room."},
+    {name:'City & County Permit Records', cost:'free', link:'https://www.utah.gov', linkLabel:'Utah.gov',
+     desc:"Building permits are public record. Search your city or county permitting portal — they show the GC, address, and project scope before the GC even needs you."},
+  ]},
+  {cat:'Digital — Free', items:[
+    {name:'Google Business Profile', cost:'free', link:'https://business.google.com', linkLabel:'Visit',
+     desc:'The most important free tool in the trades. When someone searches "contractor near me," your GBP determines whether you show up. Fill every field, add 20+ project photos, post updates weekly.'},
+    {name:'PlanHub', cost:'free', link:'https://planhub.com/subcontractors', linkLabel:'Visit',
+     desc:"Free sub plan — receive bid invitations from GCs in your trade and region. 400,000+ subs and 30,000+ suppliers."},
+    {name:'LookingForSubs.com', cost:'free', link:'https://lookingforsubs.com', linkLabel:'Visit',
+     desc:"GCs search this directory by ZIP code and trade to find subs directly. Free listing, no verification."},
+    {name:'LinkedIn', cost:'free', link:'https://linkedin.com', linkLabel:'Visit',
+     desc:'Search "General Contractor Utah" and send direct messages offering to fill their trade gaps.'},
+    {name:'Facebook Groups', cost:'free', link:'https://facebook.com/groups', linkLabel:'Visit',
+     desc:'Search "[Trade] Contractors [City/State]" — dozens of active groups. Engage as a member first, do not just post ads.'},
+    {name:'Craigslist — Skilled Trades', cost:'free', link:'https://craigslist.org', linkLabel:'Visit',
+     desc:"Subs still browse it. Post open jobs cheap ($5-25/post) to seed your pipeline during launch."},
+    {name:'Nextdoor Pro', cost:'free', link:'https://nextdoor.com/business', linkLabel:'Visit',
+     desc:"Hyperlocal community with high trust signal. Homeowners ask neighbors for contractor recs constantly."},
+    {name:'SAM.gov', cost:'free', link:'https://sam.gov', linkLabel:'Visit',
+     desc:"Federal system for government contract notices. Free to search and register — federal facilities need every trade."},
+    {name:'State & DOT Bid Portals', cost:'free', link:'https://purchasing.utah.gov', linkLabel:'Utah Purchasing',
+     desc:"State procurement portals and DOT lettings list public construction opportunities — parks, facilities, sidewalks, roofing."},
+    {name:'BuildingConnected', cost:'free', link:'https://app.buildingconnected.com', linkLabel:'Visit',
+     desc:"Free sub profile — GCs using BuildingConnected (Autodesk) invite subs from its directory."},
+    {name:'ContractorTalk Forum', cost:'free', link:'https://www.contractortalk.com', linkLabel:'Visit',
+     desc:"Active forum where trades professionals discuss finding subs, referrals, and work."},
+  ]},
+  {cat:'Digital — Paid', items:[
+    {name:'Google LSA', cost:'paid', link:'https://ads.google.com/local-services-ads', linkLabel:'Visit',
+     desc:"Local Services Ads — Google-verified badge, pay-per-lead ($20-150). Best for urgent residential jobs; first caller wins."},
+    {name:'Thumbtack', cost:'paid', link:'https://thumbtack.com', linkLabel:'Visit',
+     desc:"Pay-per-lead ($2-50). Good for residential trades at every level."},
+    {name:'Angi', cost:'paid', link:'https://angi.com', linkLabel:'Visit',
+     desc:"Shifted to verified reviews in 2026. Subscription $100-400/mo — the more reviews you have, the higher you rank."},
+    {name:'Houzz Pro', cost:'paid', link:'https://houzz.com/pro', linkLabel:'Visit',
+     desc:"Best for high-end residential. Subscription $65-350/mo. Photo portfolio quality is the feature here."},
+    {name:'Construct-A-Lead', cost:'paid', link:'https://constructalead.com', linkLabel:'Visit',
+     desc:"Human-verified commercial project intelligence across the US and Canada, 6-18 months before bids drop."},
+    {name:'ConstructConnect', cost:'paid', link:'https://constructconnect.com', linkLabel:'Visit',
+     desc:"Largest North American commercial bid database. Get in front of GCs before they finalize their sub list."},
+    {name:'Dodge Construction Network', cost:'paid', link:'https://construction.com', linkLabel:'Visit',
+     desc:"Strongest pre-planning intelligence — find projects at the design phase, months before anyone else bids."},
+    {name:'ConstructionBids.ai', cost:'paid', link:'https://constructionbids.ai', linkLabel:'Visit',
+     desc:"AI-powered bid matching across 12,500+ procurement sources. ~$99/mo, 7-day free trial."},
+    {name:'HomeAdvisor', cost:'paid', link:'https://homeadvisor.com', linkLabel:'Visit',
+     desc:"Pay-per-lead, shared leads ($15-100). First caller wins — literally, so speed-to-lead matters most here."},
+    {name:'BuildMapper', cost:'paid', link:'https://buildmapper.com', linkLabel:'Visit',
+     desc:"AI reads every permit pull, scores it against your trade and timing window, tells you who to call first."},
+  ]},
+  {cat:'Associations & Trade Networks', items:[
+    {name:'AGC Utah', cost:'paid', link:'https://agcutah.com', linkLabel:'Visit',
+     desc:"Associated General Contractors — Utah chapter. Direct warm-intro channel to GCs who hire subs."},
+    {name:'Home Builders Association of Utah', cost:'paid', link:'https://www.utahnahb.org', linkLabel:'Visit',
+     desc:"Residential-focused and aligned with the Wasatch Back custom home market."},
+    {name:'ABC (Associated Builders & Contractors)', cost:'paid', link:'https://abc.org', linkLabel:'Visit',
+     desc:"67 chapters nationwide. Strong for commercial sub networks."},
+    {name:'Local Union Halls', cost:'free', link:'https://www.ibew.org', linkLabel:'IBEW',
+     desc:"IBEW, UA, Carpenters, Laborers — union halls post work boards for licensed members (electrical, plumbing, piping)."},
+  ]},
+  {cat:'Job Boards', items:[
+    {name:'Indeed', cost:'free', link:'https://indeed.com', linkLabel:'Visit',
+     desc:"GCs post sub and crew positions here constantly. Search your trade + city and set a daily email alert."},
+    {name:'ZipRecruiter', cost:'free', link:'https://ziprecruiter.com', linkLabel:'Visit',
+     desc:"AI-powered job matching with better quality filtering than raw boards."},
+    {name:'Monster', cost:'free', link:'https://monster.com', linkLabel:'Visit',
+     desc:"Older but still active for construction trades — more traction for licensed tradespeople."},
+  ]},
+];
+
+function renderWork() {
+  const el = document.getElementById('work-content');
+  const countyEl = document.getElementById('county-tabs');
+  if (STATE.activeWorkTab==='ksl') {
+    countyEl.style.display = 'flex';
+    countyEl.innerHTML = COUNTIES.map(c=>`
+      <button class="county-tab${(c==='All'&&STATE.activeCounty==='all')||(c===STATE.activeCounty)?' active':''}"
+        onclick="filterCounty('${c==='All'?'all':c}',this)">${c}</button>`).join('');
+    const jobs = STATE.activeCounty==='all'?STATE.kslJobs:STATE.kslJobs.filter(j=>j.county===STATE.activeCounty);
+    el.innerHTML = jobs.length ? jobs.map(j=>`
+      <div class="card">
+        <div class="flex between"><h3>${j.title}</h3><span class="badge badge-ksl">KSL</span></div>
+        <p>${j.company||''} · ${j.location||''}, ${j.county||''}</p>
+        <p style="margin-top:6px">${(j.description||'').slice(0,120)}…</p>
+        <p class="text-muted" style="margin-top:4px;font-size:12px">${j.rate||''}</p>
+      </div>`).join('') : '<p class="text-muted" style="padding:20px 0">No KSL jobs in this area yet.</p>';
+  } else if (STATE.activeWorkTab==='leads') {
+    countyEl.style.display = 'none';
+    el.innerHTML = LEAD_CATEGORIES.map(group=>`
+      <div class="lead-category">${group.cat}</div>
+      ${group.items.map(l=>`
+        <div class="card">
+          <div class="flex between"><h3>${l.name}</h3><span class="lead-tag lead-tag-${l.cost}">${l.cost}</span></div>
+          <p style="margin-top:4px">${l.desc}</p>
+          <a class="lead-link" href="${l.link}" target="_blank" rel="noopener">${l.linkLabel} →</a>
+        </div>`).join('')}`).join('');
+  } else {
+    countyEl.style.display = 'none';
+    el.innerHTML = STATE.jobs.length ? STATE.jobs.map(j=>{
+      const isOwn = !!(j.owner_id && STATE.user && j.owner_id === STATE.user.id);
+      const canRate = !!(j.owner_id && STATE.user && j.owner_id !== STATE.user.id);
+      const applied = !!STATE.appliedJobIds[j.id];
+      const count = STATE.applicantCounts[j.id]||0;
+      return `
+      <div class="card">
+        <div class="flex between"><h3>${j.title}</h3><span class="badge badge-teal">${j.trade||'Trade'}</span></div>
+        <p>${j.location||''}, ${j.county||''}</p>
+        <p style="margin-top:4px">${j.rate||j.budget||''}</p>
+        <p class="text-muted" style="margin-top:6px;font-size:12px">${(j.description||'').slice(0,100)}</p>
+        <div class="flex between mt8" style="align-items:center">
+          <span class="applicant-count">${count} applicant${count!==1?'s':''}</span>
+          ${isOwn
+            ? '<span class="text-muted" style="font-size:12px">Your job post</span>'
+            : `<button class="btn ${applied?'btn-outline':'btn-primary'} btn-sm" ${applied?'disabled':''} onclick="applyToJob('${j.id}',this)">${applied?'Applied':'Apply'}</button>`}
+        </div>
+        ${canRate ? `<button class="btn btn-outline btn-sm mt8" onclick="openRating('${j.id}','${j.owner_id}')">Rate Job</button>` : ''}
+      </div>`;
+    }).join('') : '<p class="text-muted" style="padding:20px 0">No open jobs yet. Be the first to post.</p>';
+  }
+}
+function filterCounty(county,btn){
+  STATE.activeCounty=county;
+  document.querySelectorAll('.county-tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderWork();
+}
+
+// ─── APPLY ────────────────────────────────────────────────────────────────────
+async function applyToJob(jobId,btn){
+  if (!STATE.user){alert('Please sign in again to apply.');return;}
+  if (STATE.appliedJobIds[jobId]) return;
+  btn.disabled = true;
+  const existing = await sb.from('applications').select('id').eq('job_id',jobId).eq('applicant_id',STATE.user.id).maybeSingle();
+  if (existing.data) {
+    STATE.appliedJobIds[jobId] = true;
+    btn.textContent = 'Applied'; btn.classList.remove('btn-primary'); btn.classList.add('btn-outline');
+    return;
+  }
+  const {error} = await sb.from('applications').insert({job_id:jobId,applicant_id:STATE.user.id});
+  if (error){alert('Could not submit your application. '+error.message);btn.disabled=false;return;}
+  STATE.appliedJobIds[jobId] = true;
+  STATE.applicantCounts[jobId] = (STATE.applicantCounts[jobId]||0)+1;
+  btn.textContent = 'Applied'; btn.classList.remove('btn-primary'); btn.classList.add('btn-outline');
+}
+
+// ─── POST JOB ─────────────────────────────────────────────────────────────────
+let milestones = [];
+function addMilestone(){milestones.push({name:'',pct:0,verifier:'owner'});renderMilestones();}
+function removeMilestone(i){milestones.splice(i,1);renderMilestones();}
+function renderMilestones(){
+  const el = document.getElementById('milestone-rows');
+  el.innerHTML = milestones.map((m,i)=>`
+    <div class="milestone-row">
+      <input placeholder="Name" value="${m.name}" oninput="milestones[${i}].name=this.value"/>
+      <input class="pct-input" type="number" placeholder="%" value="${m.pct||''}" min="1" max="100"
+        oninput="milestones[${i}].pct=+this.value;updatePct()"/>
+      <select style="width:100px;margin-bottom:0" onchange="milestones[${i}].verifier=this.value">
+        <option value="owner" ${m.verifier==='owner'?'selected':''}>Owner</option>
+        <option value="inspector" ${m.verifier==='inspector'?'selected':''}>Inspector</option>
+      </select>
+      <button class="btn btn-outline btn-sm" onclick="removeMilestone(${i})">✕</button>
+    </div>`).join('');
+  updatePct();
+}
+function updatePct(){
+  const total = milestones.reduce((s,m)=>s+(+m.pct||0),0);
+  const el = document.getElementById('pct-total');
+  el.textContent = milestones.length?`${total}% of 100%`:'';
+  el.style.color = total===100?'var(--green)':total>100?'var(--danger)':'var(--muted)';
+}
+async function submitJob(){
+  const title = document.getElementById('post-title').value.trim();
+  if (!title){alert('Title required');return;}
+  const total = milestones.reduce((s,m)=>s+(+m.pct||0),0);
+  if (milestones.length&&total!==100){alert('Draw percentages must total 100%');return;}
+  const {data:job,error} = await sb.from('jobs').insert({
+    title,
+    trade:    document.getElementById('post-trade').value,
+    location: document.getElementById('post-city').value,
+    county:   document.getElementById('post-county').value,
+    state:    'UT',
+    description: document.getElementById('post-desc').value,
+    rate:     document.getElementById('post-budget').value,
+    owner_id: STATE.user.id,
+    source:   'tradedeck',
+    status:   'open'
+  }).select().single();
+  if (error){alert('Error: '+error.message);return;}
+  if (milestones.length) {
+    const budget = parseInt(document.getElementById('post-budget').value.replace(/\D/g,''))||0;
+    const {data:sched} = await sb.from('draw_schedules').insert({
+      job_id:         job.id,
+      owner_id:       STATE.user.id,
+      contract_value: budget||1
+    }).select().single();
+    if (sched) {
+      // NOTE: draws.job_id is misleadingly named -- its FK actually points
+      // at draw_schedules.id, not jobs.id (confirmed via the live FK
+      // constraint "draws_schedule_id_fkey"). sched.id is correct here.
+      await sb.from('draws').insert(milestones.map((m,i)=>({
+        job_id:          sched.id,
+        milestone_order: i+1,
+        milestone_name:  m.name,
+        percentage:      m.pct,
+        amount_cents:    Math.round((budget||1)*100*(m.pct/100)),
+        verifier_type:   m.verifier,
+        status:          'pending'
+      })));
+    }
+  }
+  milestones=[];renderMilestones();
+  ['post-title','post-city','post-desc','post-budget'].forEach(id=>document.getElementById(id).value='');
+  await loadData();render();
+  switchTab('work');
+}
+
+// ─── DRAW MANAGER ─────────────────────────────────────────────────────────────
+function renderDraws(){
+  const el = document.getElementById('draws-content');
+  if (!STATE.draws.length){
+    el.innerHTML='<p class="text-muted" style="padding:20px 0">No draw schedules yet. Add milestones when posting a job.</p>';
+    return;
+  }
+  el.innerHTML = STATE.draws.map(s=>{
+    const draws = (s.draws||[]).sort((a,b)=>(a.milestone_order||0)-(b.milestone_order||0));
+    const releasedPct = draws.filter(d=>d.status==='approved'||d.status==='released').reduce((sum,d)=>sum+(d.percentage||0),0);
+    return `<div class="card">
+      <div class="flex between"><h3>Draw Schedule</h3><span class="text-muted">$${(s.contract_value||0).toLocaleString()}</span></div>
+      <div class="escrow-bar"><div class="escrow-fill" style="width:${releasedPct}%"></div></div>
+      <p class="text-muted" style="font-size:12px;margin-bottom:12px">${releasedPct}% released</p>
+      ${draws.map(d=>`
+        <div class="flex between mt8" style="align-items:center">
+          <span style="font-size:14px">${d.milestone_order}. ${d.milestone_name} <span class="text-muted">(${d.percentage}%)</span></span>
+          <div class="flex gap8" style="align-items:center">
+            <span class="draw-status ${d.status}">${d.status}</span>
+            ${d.status==='pending'?`<button class="btn btn-outline btn-sm" onclick="drawAction('${d.id}','submitted')">Submit Photo</button>`:''}
+            ${d.status==='submitted'?`
+              <button class="btn btn-primary btn-sm" onclick="drawAction('${d.id}','approved')">Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="drawAction('${d.id}','disputed')">Dispute</button>`:''}
+          </div>
+        </div>`).join('')}
+    </div>`;
+  }).join('');
+}
+async function drawAction(id, status){
+  try {
+    if (status === 'submitted') {
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async function() {
+        var file = input.files && input.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = async function() {
+          try {
+            var b64 = reader.result.split(',')[1];
+            await TradeDeckAPI.uploadDrawPhoto(id, b64);
+            await loadData();
+            renderDraws();
+          } catch (e) {
+            alert('Photo upload failed: ' + e.message);
+          }
+        };
+        reader.readAsDataURL(file);
+      };
+      input.click();
+      return;
+    }
+    if (status === 'approved') {
+      await TradeDeckAPI.approveDraw(id);
+    } else if (status === 'disputed') {
+      if (!confirm('Dispute this milestone? This may trigger an escrow refund.')) return;
+      await TradeDeckAPI.refundDraw(id);
+    } else {
+      await sb.from('draws').update({status}).eq('id', id);
+    }
+    await loadData();
+    renderDraws();
+  } catch (e) {
+    alert('Draw action failed: ' + e.message);
+  }
+}
+
+// ─── PROFILE ──────────────────────────────────────────────────────────────────
+function renderProfile(){
+  const el = document.getElementById('profile-content');
+  if (!STATE.profile){el.innerHTML='';return;}
+  const p = STATE.profile;
+  const tiers=['','Verified','Active','Proven','Trusted','TradeDeck Pro'];
+  el.innerHTML=`
+    <div class="card">
+      <h3>${p.full_name||p.email}</h3>
+      <p class="text-muted">${p.trade||'No trade set'} · Tier: ${tiers[p.tier||1]||'Verified'}</p>
+      ${p.rating>0?`<p class="text-muted" style="margin-top:4px">★ ${p.rating} · ${p.repeat_hire_rate}% repeat hire</p>`:''}
+    </div>
+    <div class="card">
+      <h3>Edit Profile</h3>
+      <label>Full Name</label>
+      <input id="edit-name" value="${p.full_name||''}"/>
+      <label>Company</label>
+      <input id="edit-company" value="${p.company||''}"/>
+      <label>Trade</label>
+      <select id="edit-trade">
+        ${['Framing','Concrete','Roofing','Electrical','Plumbing','HVAC','Drywall','Flooring','Excavation','Landscaping','General Contractor','Other']
+          .map(t=>`<option ${p.trade===t?'selected':''}>${t}</option>`).join('')}
+      </select>
+      <label>Phone</label>
+      <input id="edit-phone" value="${p.phone||''}" placeholder="435-555-0100"/>
+      <button class="btn btn-primary btn-block" onclick="saveProfile()">Save</button>
+    </div>
+    <div class="card">
+      <h3>Stripe Payouts</h3>
+      <p class="text-muted" style="font-size:13px;margin-bottom:12px">Connect Stripe to receive milestone draw payments.</p>
+      <button class="btn btn-outline btn-block" onclick="connectStripe()">Connect Stripe Account</button>
+    </div>
+    <button class="btn btn-outline btn-block mt8" onclick="signOut()">Sign Out</button>
+  `;
+}
+async function saveProfile(){
+  const updates = {
+    full_name: document.getElementById('edit-name').value,
+    company:   document.getElementById('edit-company').value,
+    trade:     document.getElementById('edit-trade').value,
+    phone:     document.getElementById('edit-phone').value,
+  };
+  const {error} = await sb.from('profiles').update(updates).eq('id',STATE.user.id);
+  if (error){alert(error.message);return;}
+  STATE.profile = {...STATE.profile,...updates};
+  renderProfile();
+}
+async function connectStripe(){
+  if (!STATE.user){alert('Sign in required');return;}
+  try {
+    const data = await TradeDeckAPI.connectStripe(STATE.user.id, STATE.user.email);
+    if (data.url) window.location.href = data.url;
+  } catch (e) {
+    alert('Stripe connect failed: ' + e.message);
+  }
+}
+
+// ─── ADMIN ────────────────────────────────────────────────────────────────────
+// Ported from app.html's Admin tab, adapted to the columns actually
+// confirmed live (no jobs.hired_by/trade_type — those never existed on
+// the real table). Gated cosmetically on STATE.isAdmin (nav button
+// hidden unless profiles.is_admin is true) -- real enforcement is the
+// "Admins have full access" RLS policies from admin-setup.sql.
+function loadAdmin(){
+  if (STATE.admLoaded) return;
+  STATE.admLoaded = true;
+  admLoadUsers();
+}
+function admTab(tab,btn){
+  STATE.activeAdmTab = tab;
+  document.querySelectorAll('.adm-subtab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.adm-subview').forEach(v=>v.classList.remove('active'));
+  document.getElementById('adm-'+tab).classList.add('active');
+  if (tab==='jobs') admLoadJobs(); else admLoadUsers();
+}
+async function admLoadUsers(){
+  const el = document.getElementById('adm-users');
+  el.innerHTML = '<p class="text-muted" style="padding:20px 0">Loading…</p>';
+  const {data,error} = await sb.from('profiles').select('id,email,full_name,tier,jobs_completed,is_admin').order('created_at',{ascending:false});
+  if (error){el.innerHTML = `<p class="text-muted" style="padding:20px 0">Could not load users. ${error.message}</p>`;return;}
+  admRenderUsers(data||[]);
+}
+function admRenderUsers(users){
+  const el = document.getElementById('adm-users');
+  if (!users.length){el.innerHTML='<p class="text-muted" style="padding:20px 0">No users yet.</p>';return;}
+  el.innerHTML = users.map(u=>`
+    <div class="card">
+      <div class="adm-row">
+        <div>
+          <h3>${u.full_name||u.email}</h3>
+          <p class="text-muted">Tier ${u.tier!=null?u.tier:'--'} · ${u.jobs_completed||0} jobs done</p>
+        </div>
+        <span class="adm-badge ${u.is_admin?'adm-badge-admin':'adm-badge-user'}">${u.is_admin?'Admin':'User'}</span>
+      </div>
+      <button class="btn btn-sm mt8 ${u.is_admin?'btn-outline':'btn-primary'}" onclick="admSetAdmin('${u.id}',${!u.is_admin})">${u.is_admin?'Revoke Admin':'Make Admin'}</button>
+    </div>`).join('');
+}
+async function admSetAdmin(id,value){
+  if (!confirm(value?'Grant full administrator access to this user?':'Revoke administrator access from this user?')) return;
+  const {error} = await sb.from('profiles').update({is_admin:value}).eq('id',id);
+  if (error){alert('Could not update admin status. '+error.message);return;}
+  admLoadUsers();
+}
+async function admLoadJobs(){
+  const el = document.getElementById('adm-jobs');
+  el.innerHTML = '<p class="text-muted" style="padding:20px 0">Loading…</p>';
+  const {data,error} = await sb.from('jobs').select('id,title,trade,owner_id,status').order('created_at',{ascending:false});
+  if (error){el.innerHTML = `<p class="text-muted" style="padding:20px 0">Could not load jobs. ${error.message}</p>`;return;}
+  const jobs = data||[];
+  const ids = [...new Set(jobs.map(j=>j.owner_id).filter(Boolean))];
+  const profiles = await admFetchProfiles(ids);
+  admRenderJobs(jobs,profiles);
+}
+async function admFetchProfiles(ids){
+  const map = {};
+  if (!ids.length) return map;
+  const {data} = await sb.from('profiles').select('id,full_name,email').in('id',ids);
+  (data||[]).forEach(p=>{map[p.id]=p;});
+  return map;
+}
+function admRenderJobs(jobs,profiles){
+  const el = document.getElementById('adm-jobs');
+  if (!jobs.length){el.innerHTML='<p class="text-muted" style="padding:20px 0">No jobs yet.</p>';return;}
+  const statuses = ['open','filled','closed'];
+  el.innerHTML = jobs.map(j=>{
+    const poster = profiles[j.owner_id];
+    const posterName = poster ? (poster.full_name||poster.email) : '--';
+    return `
+    <div class="card">
+      <h3>${j.title}</h3>
+      <p class="text-muted">${j.trade||'--'} · Posted by ${posterName}</p>
+      <div class="flex gap8 mt8" style="align-items:center;flex-wrap:wrap">
+        <select style="width:auto;margin-bottom:0" onchange="admUpdateJobStatus('${j.id}',this.value)">
+          ${statuses.map(s=>`<option value="${s}" ${s===j.status?'selected':''}>${s}</option>`).join('')}
+        </select>
+        <button class="btn btn-danger btn-sm" onclick="admDeleteJob('${j.id}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+async function admUpdateJobStatus(id,status){
+  const {error} = await sb.from('jobs').update({status}).eq('id',id);
+  if (error){alert('Could not update job status. '+error.message);admLoadJobs();}
+}
+async function admDeleteJob(id){
+  if (!confirm('Permanently delete this job? This cannot be undone.')) return;
+  const {error} = await sb.from('jobs').delete().eq('id',id);
+  if (error){alert('Could not delete job. '+error.message);return;}
+  admLoadJobs();
+}
+
+// ─── RATINGS ──────────────────────────────────────────────────────────────────
+function openRating(jobId,revieweeId){
+  STATE.currentRatingJobId=jobId;STATE.currentRatingRevieweeId=revieweeId;STATE.currentRating=0;
+  document.querySelectorAll('#star-picker span').forEach(s=>s.classList.remove('on'));
+  document.getElementById('review-text').value='';
+  document.getElementById('rating-overlay').classList.add('open');
+}
+function setRating(n){
+  STATE.currentRating=n;
+  document.querySelectorAll('#star-picker span').forEach((s,i)=>s.classList.toggle('on',i<n));
+}
+async function submitRating(){
+  if (!STATE.currentRating){alert('Select a rating');return;}
+  if (!STATE.currentRatingRevieweeId){alert('Could not determine who this review is for.');return;}
+  const {error} = await sb.from('reviews').insert({
+    job_id:      STATE.currentRatingJobId,
+    reviewer_id: STATE.user.id,
+    reviewee_id: STATE.currentRatingRevieweeId, // the job's poster — set by openRating(), not the reviewer
+    rating:      STATE.currentRating,
+    body:        document.getElementById('review-text').value
+  });
+  if (error){alert(error.message);return;}
+  closeOverlay('rating-overlay');
+}
+function closeOverlay(id){document.getElementById(id).classList.remove('open');}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+(async()=>{
+  const {data:{session}} = await sb.auth.getSession();
+  if (session?.user) await onLogin(session.user);
+})();
+</script>
+</body>
+</html>
