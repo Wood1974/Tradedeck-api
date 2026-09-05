@@ -379,7 +379,7 @@ def _send_completion_email(packet, sha256):
 # POST /shield/webhook
 # ─────────────────────────────────────────────────
 @shield_bp.route('/webhook', methods=['POST'])
-def stripe_webhook():
+def shield_stripe_webhook():
     payload    = request.data
     sig_header = request.headers.get('Stripe-Signature')
     try:
