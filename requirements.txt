@@ -2,5 +2,6 @@ flask==3.0.3
 flask-cors==4.0.1
 gunicorn==22.0.0
 supabase==2.31.0
-anthropic==1.0.0
-stripe==15.5.1
+anthropic==0.40.0
+stripe==11.4.0
+requests==2.32.3
