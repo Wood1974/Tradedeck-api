@@ -25,6 +25,7 @@ from auth import (
     utc_now_iso,
 )
 from config import get_env, jobs_page_size, max_image_bytes
+from shield_api import shield_bp
 from escrow import (
     EscrowError,
     create_escrow_payment,
@@ -44,6 +45,7 @@ CORS(
     allow_headers=["Authorization", "Content-Type"],
     methods=["GET", "POST", "OPTIONS"],
 )
+app.register_blueprint(shield_bp)
 stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
 STRIPE_WEBHOOK_SECRET = os.environ["STRIPE_WEBHOOK_SECRET"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -499,3 +501,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
  
+
