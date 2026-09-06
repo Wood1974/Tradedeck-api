@@ -1031,6 +1031,55 @@ document.addEventListener('DOMContentLoaded', function() {
     _activeJobId = null;
   };
 
+  /* Offer Shield when job has none */
+  function _offerShieldUpgrade(job, shieldSection, shieldMount) {
+    shieldSection.style.display = 'block';
+    shieldMount.innerHTML = [
+      '<div style="background:linear-gradient(135deg,rgba(245,158,11,0.07),rgba(245,158,11,0.02));border:1px solid rgba(245,158,11,0.2);border-radius:10px;padding:16px;">',
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">',
+          '<span style="font-size:1rem;">🛡️</span>',
+          '<span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.9rem;color:var(--amber);text-transform:uppercase;">Add Shield to This Job</span>',
+        '</div>',
+        '<p style="color:var(--steel);font-size:0.8rem;line-height:1.5;margin:0 0 14px;">',
+          'AI photo verification at 5 key checkpoints. Tamper-proof completion record. $29 one-time.',
+        '</p>',
+        '<button id="jdpAddShieldBtn" style="background:var(--amber);color:#000;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.06em;padding:9px 20px;border:none;border-radius:8px;cursor:pointer;">',
+          'Add Shield — $29',
+        '</button>',
+      '</div>'
+    ].join('');
+
+    var btn = document.getElementById('jdpAddShieldBtn');
+    if (btn) {
+      btn.addEventListener('click', function() {
+        if (typeof window.purchaseShieldPerJob !== 'function') {
+          alert('Shield is loading — try again in a moment.');
+          return;
+        }
+        btn.textContent = 'Processing...';
+        btn.disabled = true;
+        window.purchaseShieldPerJob(job.id, 29, job.description || '')
+          .then(function(shieldJobId) {
+            // Replace the offer with the upload flow
+            shieldMount.innerHTML = '';
+            if (typeof window.renderContractorUploadFlow === 'function') {
+              window.renderContractorUploadFlow(shieldMount, shieldJobId, null);
+            } else {
+              shieldMount.innerHTML = '<p style="color:#4ADE80;font-size:0.85rem;">✓ Shield activated! Reload to see checkpoints.</p>';
+            }
+          })
+          .catch(function(err) {
+            btn.textContent = 'Add Shield — $29';
+            btn.disabled = false;
+            if (err && err.message !== 'Payment cancelled') {
+              alert('Could not activate Shield: ' + (err.message || 'Unknown error'));
+            }
+          });
+      });
+    }
+  }
+
+
   function openJobDetail(job) {
     _activeJobId = job.id;
     document.getElementById('jdpTitle').textContent = job.title || 'Job Details';
@@ -1065,13 +1114,20 @@ document.addEventListener('DOMContentLoaded', function() {
         .single()
         .then(function(res) {
           if (res.data && res.data.id) {
+            // Shield is active — show contractor upload flow
             shieldSection.style.display = 'block';
             if (typeof window.renderContractorUploadFlow === 'function') {
               window.renderContractorUploadFlow(shieldMount, res.data.id, null);
             }
+          } else {
+            // No Shield on this job — offer it to the homeowner
+            _offerShieldUpgrade(job, shieldSection, shieldMount);
           }
         })
-        .catch(function() {}); // no shield = silently ignore
+        .catch(function() {
+          // Query failed or no row — offer Shield
+          _offerShieldUpgrade(job, shieldSection, shieldMount);
+        });
     }
 
     // Show panel
