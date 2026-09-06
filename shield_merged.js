@@ -709,6 +709,16 @@ function getGpsLocation() {
   })
 }
 
+/** Compute SHA-256 hash of a File using Web Crypto API.
+ *  Returns hex string. Used for tamper-evident chain of custody. */
+async function computeSHA256(file) {
+  const buf    = await file.arrayBuffer()
+  const digest = await crypto.subtle.digest('SHA-256', buf)
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 /** Read EXIF data from a File. Returns parsed tags or empty object. */
 function readExif(file) {
   return new Promise(resolve => {
@@ -800,11 +810,20 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
           <div style="font-size:0.78rem;color:var(--steel);margin-bottom:10px;">${p.description}</div>
           ${p.status === 'approved'
             ? '<div style="font-size:0.78rem;color:#4ADE80;">✓ Photo approved</div>'
-            : `<label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
-                <span style="font-size:0.78rem;color:var(--amber);font-weight:600;">📷 Take / Select Photo</span>
-                <input type="file" class="shield-point-file" accept="image/jpeg,image/heic,image/heif" capture="environment" style="display:none;" data-point-id="${p.id}" />
-               </label>
-               <div class="shield-point-status-msg" style="margin-top:8px;font-size:0.78rem;"></div>`
+            : `<div style="font-size:0.72rem;color:rgba(255,255,255,0.35);margin-bottom:6px;">
+                  📋 Take a wide shot (whole area) then a close-up detail shot. Both required.
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:6px;padding:6px 10px;">
+                    <span style="font-size:0.78rem;color:var(--amber);font-weight:600;">📷 Wide Shot</span>
+                    <input type="file" class="shield-point-file shield-wide-file" accept="image/jpeg,image/heic,image/heif" capture="environment" style="display:none;" data-point-id="${p.id}" data-shot-type="wide" />
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:6px;padding:6px 10px;">
+                    <span style="font-size:0.78rem;color:var(--amber);font-weight:600;">🔍 Detail Shot</span>
+                    <input type="file" class="shield-point-file shield-detail-file" accept="image/jpeg,image/heic,image/heif" capture="environment" style="display:none;" data-point-id="${p.id}" data-shot-type="detail" />
+                  </label>
+                </div>
+                <div class="shield-point-status-msg" style="margin-top:8px;font-size:0.78rem;"></div>`
           }
         </div>`).join('')
     : `<div style="font-size:0.85rem;color:var(--steel);padding:12px 0;">Loading checkpoints…</div>`
@@ -839,17 +858,18 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
   // ── Wire up each checkpoint file input ──
   box.querySelectorAll('.shield-point-file').forEach(fileInput => {
     fileInput.addEventListener('change', async function() {
-      const file = this.files[0]
+      const file      = this.files[0]
       if (!file) return
       const thisPointId = this.dataset.pointId
-      const row       = box.querySelector(`.shield-point-row[data-point-id="${thisPointId}"]`)
-      const statusMsg = row.querySelector('.shield-point-status-msg')
+      const shotType    = this.dataset.shotType || 'detail'  // 'wide' or 'detail'
+      const row         = box.querySelector(`.shield-point-row[data-point-id="${thisPointId}"]`)
+      const statusMsg   = row.querySelector('.shield-point-status-msg')
       const statusBadge = row.querySelector('.shield-point-status')
 
       statusMsg.style.color = 'var(--steel)'
       statusMsg.textContent = '🔍 Checking photo…'
 
-      // ── Originality & EXIF check ──
+      // ── Layer 1: EXIF + Originality ──
       const exifTags = await readExif(file)
       const issues   = checkOriginality(file, exifTags)
       if (issues.length > 0) {
@@ -859,11 +879,20 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
         return
       }
 
+      // ── Layer 2: Compute SHA-256 hash (tamper-evident proof of file contents) ──
+      statusMsg.textContent = '🔒 Computing integrity hash…'
+      let fileHash = null
+      try {
+        fileHash = await computeSHA256(file)
+      } catch (hashErr) {
+        console.warn('SHA-256 failed (non-blocking):', hashErr)
+      }
+
       statusMsg.textContent = '📤 Uploading…'
 
       try {
         const ts   = Date.now()
-        const path = `shield-photos/${shieldJobId}/${thisPointId}/${ts}_${file.name}`
+        const path = `shield-photos/${shieldJobId}/${thisPointId}/${ts}_${shotType}_${file.name}`
 
         const { error: storageErr } = await sb.storage
           .from('draw-photos')
@@ -872,25 +901,43 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
 
         const { data: { publicUrl } } = sb.storage.from('draw-photos').getPublicUrl(path)
 
-        // Store photo with GPS + metadata
+        // ── Store photo with full chain-of-custody metadata ──
+        const photoInsert = {
+          point_id:        thisPointId,
+          shield_job_id:   shieldJobId,
+          contractor_id:   session.user.id,
+          storage_path:    path,
+          public_url:      publicUrl,
+          gps_lat:         gpsData.lat,
+          gps_lng:         gpsData.lng,
+          gps_accuracy_m:  gpsData.accuracy,
+          has_exif:        exifTags.hasExif || false,
+          file_size_bytes: file.size,
+          captured_at:     new Date(ts).toISOString(),
+          device_user_agent: navigator.userAgent,
+        }
+        if (fileHash) {
+          photoInsert.photo_hash      = fileHash
+          photoInsert.hash_algorithm  = 'SHA-256'
+        }
+        // Store wide vs detail shot in correct column
+        if (shotType === 'wide')   photoInsert.wide_shot_url   = publicUrl
+        if (shotType === 'detail') photoInsert.detail_shot_url = publicUrl
+
         const { data: photoRow, error: dbErr } = await sb
           .from('shield_photos')
-          .insert({
-            point_id:       thisPointId,
-            shield_job_id:  shieldJobId,
-            contractor_id:  session.user.id,
-            storage_path:   path,
-            public_url:     publicUrl,
-            gps_lat:        gpsData.lat,
-            gps_lng:        gpsData.lng,
-            gps_accuracy_m: gpsData.accuracy,
-            has_exif:       exifTags.hasExif || false,
-            file_size_bytes: file.size,
-            captured_at:    new Date(ts).toISOString()
-          })
+          .insert(photoInsert)
           .select('id')
           .single()
         if (dbErr) throw new Error(dbErr.message)
+
+        // ── Only run AI analysis on the detail shot ──
+        // (Wide shot is just an anchor — AI judges the detail)
+        if (shotType === 'wide') {
+          statusMsg.style.color = '#4ADE80'
+          statusMsg.textContent = '✅ Wide shot saved. Now take the detail shot.'
+          return
+        }
 
         statusMsg.textContent = '🤖 Running AI analysis…'
 
@@ -901,12 +948,14 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
             'Authorization': `Bearer ${session.access_token}`
           },
           body: JSON.stringify({
-            photo_id:   photoRow.id,
-            public_url: publicUrl,
-            point_id:   thisPointId,
-            gps_lat:    gpsData.lat,
-            gps_lng:    gpsData.lng,
-            has_exif:   exifTags.hasExif || false
+            photo_id:    photoRow.id,
+            public_url:  publicUrl,
+            point_id:    thisPointId,
+            gps_lat:     gpsData.lat,
+            gps_lng:     gpsData.lng,
+            has_exif:    exifTags.hasExif || false,
+            photo_hash:  fileHash,
+            shot_type:   shotType,
           })
         })
         if (!analysisRes.ok) throw new Error('AI analysis failed')
