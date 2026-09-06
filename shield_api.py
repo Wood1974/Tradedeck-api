@@ -159,7 +159,8 @@ def analyze_photo():
     point_id   = data.get('point_id')
     gps_lat    = data.get('gps_lat')
     gps_lng    = data.get('gps_lng')
-    has_exif   = data.get('has_exif', False)
+    has_exif       = data.get('has_exif', False)
+    code_reference = data.get('code_reference', None)
     if not all([photo_id, public_url, point_id]):
         return jsonify({'error': 'photo_id, public_url, and point_id required'}), 400
     # GPS required — reject if missing
@@ -170,6 +171,7 @@ def analyze_photo():
     point_label = point.get('label', 'Checkpoint') if point else 'Checkpoint'
     point_desc  = point.get('description', '') if point else ''
 
+    code_ref_line = code_reference if code_reference else 'Not specified'
     img_r = requests.get(public_url, timeout=15)
     if img_r.status_code != 200:
         return jsonify({'error': 'Could not fetch photo'}), 502
@@ -202,6 +204,7 @@ Required condition: {point_desc}
 
 METADATA PROVIDED BY THE APP:
 - GPS captured: {f"{gps_lat:.5f}, {gps_lng:.5f}" if gps_lat else "NOT PROVIDED"}
+- Code Requirement: {code_ref_line}
 - Camera EXIF data present: {"YES" if has_exif else "NO — possible screenshot or downloaded image"}
 
 STEP 1 — AUTHENTICITY CHECK (check ALL of these):
@@ -268,6 +271,7 @@ If verdict is fake, set confidence to 1.0 and notes must explain specifically wh
         'photo_hash':        server_hash,
         'hash_algorithm':    'SHA-256',
         'server_received_at': datetime.now(timezone.utc).isoformat(),
+        **(({'code_reference': code_reference}) if code_reference else {}),
     })
     point_status = 'approved' if verdict == 'pass' else 'flagged'
     supa_update('shield_pivotal_points', 'id', point_id, {'status': point_status})
