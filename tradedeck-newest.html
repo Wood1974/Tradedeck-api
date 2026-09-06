@@ -228,6 +228,7 @@ footer p{font-size:0.8rem;color:var(--steel)}
   <button class="page-tab" data-page="findwork">Find Work</button>
   <button class="page-tab" data-page="sitephotos">Site Photos</button>
   <button class="page-tab" data-page="postjob">Post a Job</button>
+  <button class="page-tab" data-page="shield">🛡️ Shield</button>
 </div>
 
 <!-- HOME -->
@@ -582,6 +583,16 @@ footer p{font-size:0.8rem;color:var(--steel)}
   </div>
 </div>
 
+
+<!-- SHIELD DASHBOARD -->
+<div class="page-view" id="page-shield">
+  <div style="max-width:700px;margin:60px auto;padding:0 24px;">
+    <div style="font-family:'Barlow Condensed',sans-serif;font-size:0.75rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--amber);margin-bottom:8px;">TradeDeck Shield</div>
+    <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:2rem;text-transform:uppercase;color:var(--white);margin-bottom:20px;">Your Protected Jobs</div>
+    <div id="shieldDashboardMount"></div>
+  </div>
+</div>
+
 <!-- FLOW OVERLAY -->
 <div class="flow-overlay" id="flowOverlay">
   <div class="flow-panel">
@@ -788,6 +799,17 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   document.getElementById('navLogo').addEventListener('click', function(){ showPage('home'); });
+
+  /* Shield tab — load dashboard on click */
+  document.addEventListener('click', function(e) {
+    var tab = e.target.closest('[data-page="shield"]');
+    if (!tab) return;
+    showPage('shield');
+    var mount = document.getElementById('shieldDashboardMount');
+    if (mount && mount.children.length === 0 && typeof window.renderShieldDashboard === 'function') {
+      window.renderShieldDashboard(mount);
+    }
+  });
   document.getElementById('heroFindWork').addEventListener('click', function(){ showPage('findwork'); });
   document.getElementById('postPageBtn').addEventListener('click', openFlow);
 
@@ -1028,7 +1050,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (shieldEnabled && data && data.job && data.job.id) {
           setTimeout(function() {
             if (typeof window.purchaseShieldPerJob === 'function') {
-              window.purchaseShieldPerJob(data.job.id, desc, selectedTrade);
+              window.purchaseShieldPerJob(data.job.id, 29, desc);
             }
           }, 800);
         }
