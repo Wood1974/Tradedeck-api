@@ -208,6 +208,7 @@ STEP 1 — AUTHENTICITY CHECK (check ALL of these):
 - Is this a real on-site construction photo, or a stock image / screenshot / render / AI image?
 - Does it show genuine construction conditions (dust, tools, materials, real lighting, shadows)?
 - Are there signs of digital manipulation, compositing, or watermarks from another source?
+- Look for: unnatural lighting, impossible shadows, blurred/sharp edges where objects meet, repeated texture patterns, unnatural noise, AI rendering artifacts, or inconsistent image quality across regions?
 - Does the image content appear consistent with a real active job site?
 - EXIF status: if EXIF is missing, treat this as a strong authenticity concern.
 - Screens/monitors in frame: if the photo appears to be of a screen or printed image, mark fake.
@@ -251,12 +252,51 @@ If verdict is fake, set confidence to 1.0 and notes must explain specifically wh
         confidence = 1.0
         notes      = f'⚠️ Photo flagged as inauthentic: {auth_note} This checkpoint has not been verified.'
 
+    # ── Server-side hash of the fetched image bytes ──
+    server_hash = hashlib.sha256(img_r.content).hexdigest()
+
+    # ── Get the shield_job_id from the photo record ──
+    photo_row  = SUPA.table('shield_photos').select('shield_job_id, contractor_id').eq('id', photo_id).single().execute().data or {}
+    s_job_id   = photo_row.get('shield_job_id')
+    contractor = photo_row.get('contractor_id')
+
     supa_update('shield_photos', 'id', photo_id, {
-        'ai_verdict': verdict, 'ai_confidence': confidence, 'ai_notes': notes,
-        'ai_authentic': authentic
+        'ai_verdict':        verdict,
+        'ai_confidence':     confidence,
+        'ai_notes':          notes,
+        'ai_authentic':      authentic,
+        'photo_hash':        server_hash,
+        'hash_algorithm':    'SHA-256',
+        'server_received_at': datetime.now(timezone.utc).isoformat(),
     })
     point_status = 'approved' if verdict == 'pass' else 'flagged'
     supa_update('shield_pivotal_points', 'id', point_id, {'status': point_status})
+
+    # ── Log chain-of-custody event ──
+    log_custody(
+        photo_id    = photo_id,
+        shield_job_id = s_job_id,
+        event_type  = 'ai_analyzed',
+        actor_id    = contractor,
+        actor_type  = 'ai',
+        event_data  = {
+            'verdict':          verdict,
+            'confidence':       confidence,
+            'authentic':        authentic,
+            'authenticity_note': auth_note,
+            'server_hash':      server_hash,
+            'gps_provided':     gps_lat is not None,
+            'exif_present':     has_exif,
+        },
+        gps_lat = gps_lat,
+        gps_lng = gps_lng,
+    )
+    if verdict == 'flagged' or verdict == 'fake':
+        log_custody(
+            photo_id=photo_id, shield_job_id=s_job_id,
+            event_type='flagged', actor_type='ai',
+            event_data={'reason': auth_note or notes}
+        )
 
     return jsonify({'verdict': verdict, 'confidence': confidence, 'notes': notes, 'authentic': authentic})
 
