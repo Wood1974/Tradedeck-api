@@ -660,6 +660,24 @@ footer p{font-size:0.8rem;color:var(--steel)}
           </div>
         </div>
         <div class="field-group"><label>Description</label><textarea id="jobDesc" placeholder="Scope, requirements, anything subs need to know..."></textarea></div>
+
+        <div id="shieldToggleWrap" style="margin-top:18px;background:linear-gradient(135deg,rgba(245,158,11,0.08),rgba(245,158,11,0.03));border:1px solid rgba(245,158,11,0.25);border-radius:12px;padding:16px 18px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <div style="flex:1;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                <span style="font-size:1.1rem;">🛡️</span>
+                <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:1rem;color:var(--amber);text-transform:uppercase;letter-spacing:0.05em;">TradeDeck Shield</span>
+                <span style="font-size:0.65rem;background:rgba(245,158,11,0.15);color:var(--amber);border-radius:4px;padding:2px 6px;font-weight:700;letter-spacing:0.06em;">$29</span>
+              </div>
+              <div style="font-size:0.8rem;color:var(--steel);line-height:1.5;">AI photo verification at 5 key checkpoints. Tamper-proof completion record.</div>
+            </div>
+            <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;">
+              <input type="checkbox" id="shieldToggle" style="opacity:0;width:0;height:0;">
+              <span id="shieldSlider" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#374151;border-radius:24px;transition:0.3s;"></span>
+            </label>
+          </div>
+          <div id="shieldActiveNote" style="display:none;margin-top:10px;font-size:0.78rem;color:var(--amber);opacity:0.85;">✓ Shield will activate after your job is posted. Payment collected at that step.</div>
+        </div>
         <div class="flow-footer">
           <button class="btn-back" id="step2Back">Back</button>
           <button class="btn-primary" id="step2Next">Preview</button>
@@ -961,6 +979,69 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('flowOverlay').addEventListener('click',function(e){ if(e.target===this) closeFlow(); });
   document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeFlow(); });
 
+  /* --- SHIELD TOGGLE --- */
+  var shieldEnabled = false;
+  var shieldToggleEl = document.getElementById('shieldToggle');
+  var shieldSliderEl = document.getElementById('shieldSlider');
+  var shieldNoteEl   = document.getElementById('shieldActiveNote');
+
+  if (shieldToggleEl) {
+    shieldToggleEl.addEventListener('change', function() {
+      shieldEnabled = this.checked;
+      shieldSliderEl.style.background = shieldEnabled ? '#F59E0B' : '#374151';
+      shieldSliderEl.style.transform  = shieldEnabled ? 'none' : 'none';
+      // move the circle
+      shieldSliderEl.style.boxShadow  = shieldEnabled
+        ? 'inset 0 0 0 0 #F59E0B'
+        : 'inset 0 0 0 0 #374151';
+      shieldNoteEl.style.display = shieldEnabled ? 'block' : 'none';
+    });
+    // CSS pseudo-element trick: draw the circle via a real element
+    shieldSliderEl.innerHTML = '<span id="shieldKnob" style="position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:0.3s;"></span>';
+    shieldToggleEl.addEventListener('change', function() {
+      document.getElementById('shieldKnob').style.transform = this.checked ? 'translateX(20px)' : 'translateX(0)';
+    });
+  }
+
+  /* patch submitPost to capture shield flag */
+  var _origSubmitPost = submitPost;
+  submitPost = function() {
+    var city = document.getElementById('city').value || 'Unknown';
+    var state = document.getElementById('stateSelect').value || 'UT';
+    var desc  = document.getElementById('jobDesc').value;
+    var payload = {
+      title:       document.getElementById('jobTitle').value || 'Untitled Job',
+      trade:       selectedTrade || 'General',
+      location:    [city, state].filter(Boolean).join(', '),
+      description: desc,
+      shield_requested: shieldEnabled
+    };
+    TradeDeckAPI.apiFetch('/api/jobs', { method: 'POST', body: payload, requireAuth: true })
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        document.querySelectorAll('.step-pane').forEach(function(p){ p.classList.remove('active'); });
+        document.querySelector('.progress-wrap').style.display='none';
+        document.querySelector('.flow-body').style.display='none';
+        document.getElementById('successPane').classList.add('active');
+        loadJobs();
+        // If shield was elected, kick off Shield purchase flow
+        if (shieldEnabled && data && data.job && data.job.id) {
+          setTimeout(function() {
+            if (typeof window.purchaseShieldPerJob === 'function') {
+              window.purchaseShieldPerJob(data.job.id, desc, selectedTrade);
+            }
+          }, 800);
+        }
+      })
+      .catch(function(err){
+        if (!handleAuthError(err)) alert('Failed to post job. Please try again.');
+      });
+  };
+  // re-bind the button to the patched version
+  document.getElementById('step3Submit').removeEventListener('click', _origSubmitPost);
+  document.getElementById('step3Submit').addEventListener('click', submitPost);
+
+
   /* --- COMPANYCAM --- */
   var CC_KEY='td_cc_api_key';
   var ccApiKey='';
@@ -1053,5 +1134,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 });
 </script>
+
+<script src="shield_merged.js"></script>
 </body>
 </html>
