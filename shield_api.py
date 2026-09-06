@@ -174,10 +174,12 @@ def analyze_photo():
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     msg = client.messages.create(
         model='claude-sonnet-4-6',
-        max_tokens=400,
+        max_tokens=600,
         system=(
-            'You are a licensed building inspector and construction quality analyst. '
-            'Evaluate contractor-submitted photos for a homeowner project. '
+            'You are a licensed building inspector and fraud detection analyst. '
+            'You evaluate contractor-submitted photos for homeowner protection. '
+            'Your job has TWO parts: (1) verify the photo is authentic and taken on-site, '
+            '(2) verify the work meets the checkpoint requirement. '
             'Respond ONLY with a valid JSON object — no preamble, no markdown.'
         ),
         messages=[{
@@ -192,16 +194,32 @@ def analyze_photo():
                     'text': f'''Checkpoint: {point_label}
 Required condition: {point_desc}
 
+STEP 1 — AUTHENTICITY CHECK (check ALL of these):
+- Is this a real on-site construction photo, or a stock image / screenshot / render / AI image?
+- Does it show genuine construction conditions (dust, tools, materials, real lighting)?
+- Are there signs it was digitally manipulated or is a generic internet photo?
+- Does it appear to show the actual job site (not a different project or manufacturer photo)?
+
+STEP 2 — QUALITY CHECK (only if authentic):
+- Does the photo show what the checkpoint requires?
+- Is the work complete, correct, and up to standard?
+
 Respond with this exact JSON:
 {{
-  "verdict": "pass" | "flag" | "fail",
+  "authentic": true | false,
+  "authenticity_note": "<one sentence — why authentic or why suspicious>",
+  "verdict": "pass" | "flag" | "fail" | "fake",
   "confidence": <float 0-1>,
   "notes": "<2-3 sentence assessment for the homeowner>"
 }}
 
-pass = complete and up to standard
-flag = mostly correct but worth noting
-fail = incomplete, incorrect, or quality concern visible'''
+verdict rules:
+- fake  = photo is not authentic (stock image, screenshot, render, wrong site, manipulated)
+- fail  = authentic but work is incomplete, wrong, or quality concern visible
+- flag  = authentic, mostly correct but worth noting
+- pass  = authentic and complete and up to standard
+
+If verdict is fake, set confidence to 1.0 and notes should explain what gave it away.'''
                 }
             ]
         }]
@@ -209,17 +227,26 @@ fail = incomplete, incorrect, or quality concern visible'''
 
     raw = msg.content[0].text.strip().replace('```json','').replace('```','').strip()
     result     = json.loads(raw)
+    authentic  = result.get('authentic', True)
     verdict    = result.get('verdict', 'flag')
     confidence = float(result.get('confidence', 0.7))
     notes      = result.get('notes', '')
+    auth_note  = result.get('authenticity_note', '')
+
+    # Force fail if fake — override any other verdict
+    if not authentic or verdict == 'fake':
+        verdict    = 'fake'
+        confidence = 1.0
+        notes      = f'⚠️ Photo flagged as inauthentic: {auth_note} This checkpoint has not been verified.'
 
     supa_update('shield_photos', 'id', photo_id, {
-        'ai_verdict': verdict, 'ai_confidence': confidence, 'ai_notes': notes
+        'ai_verdict': verdict, 'ai_confidence': confidence, 'ai_notes': notes,
+        'ai_authentic': authentic
     })
     point_status = 'approved' if verdict == 'pass' else 'flagged'
     supa_update('shield_pivotal_points', 'id', point_id, {'status': point_status})
 
-    return jsonify({'verdict': verdict, 'confidence': confidence, 'notes': notes})
+    return jsonify({'verdict': verdict, 'confidence': confidence, 'notes': notes, 'authentic': authentic})
 
 
 # ─────────────────────────────────────────────────
