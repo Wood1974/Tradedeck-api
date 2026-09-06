@@ -157,8 +157,14 @@ def analyze_photo():
     photo_id   = data.get('photo_id')
     public_url = data.get('public_url')
     point_id   = data.get('point_id')
+    gps_lat    = data.get('gps_lat')
+    gps_lng    = data.get('gps_lng')
+    has_exif   = data.get('has_exif', False)
     if not all([photo_id, public_url, point_id]):
         return jsonify({'error': 'photo_id, public_url, and point_id required'}), 400
+    # GPS required — reject if missing
+    if gps_lat is None or gps_lng is None:
+        return jsonify({'error': 'GPS coordinates required for Shield photo verification'}), 400
 
     point       = supa_select('shield_pivotal_points', {'id': point_id})
     point_label = point.get('label', 'Checkpoint') if point else 'Checkpoint'
@@ -194,11 +200,17 @@ def analyze_photo():
                     'text': f'''Checkpoint: {point_label}
 Required condition: {point_desc}
 
+METADATA PROVIDED BY THE APP:
+- GPS captured: {f"{gps_lat:.5f}, {gps_lng:.5f}" if gps_lat else "NOT PROVIDED"}
+- Camera EXIF data present: {"YES" if has_exif else "NO — possible screenshot or downloaded image"}
+
 STEP 1 — AUTHENTICITY CHECK (check ALL of these):
 - Is this a real on-site construction photo, or a stock image / screenshot / render / AI image?
-- Does it show genuine construction conditions (dust, tools, materials, real lighting)?
-- Are there signs it was digitally manipulated or is a generic internet photo?
-- Does it appear to show the actual job site (not a different project or manufacturer photo)?
+- Does it show genuine construction conditions (dust, tools, materials, real lighting, shadows)?
+- Are there signs of digital manipulation, compositing, or watermarks from another source?
+- Does the image content appear consistent with a real active job site?
+- EXIF status: if EXIF is missing, treat this as a strong authenticity concern.
+- Screens/monitors in frame: if the photo appears to be of a screen or printed image, mark fake.
 
 STEP 2 — QUALITY CHECK (only if authentic):
 - Does the photo show what the checkpoint requires?
@@ -214,12 +226,12 @@ Respond with this exact JSON:
 }}
 
 verdict rules:
-- fake  = photo is not authentic (stock image, screenshot, render, wrong site, manipulated)
-- fail  = authentic but work is incomplete, wrong, or quality concern visible
-- flag  = authentic, mostly correct but worth noting
-- pass  = authentic and complete and up to standard
+- fake  = photo is not authentic (stock image, screenshot, render, photo of screen, manipulated, EXIF absent)
+- fail  = authentic but work is incomplete, incorrect, or quality concern visible
+- flag  = authentic, mostly correct but worth homeowner attention
+- pass  = authentic, GPS confirmed on-site, work complete and up to standard
 
-If verdict is fake, set confidence to 1.0 and notes should explain what gave it away.'''
+If verdict is fake, set confidence to 1.0 and notes must explain specifically what gave it away.'''
                 }
             ]
         }]
