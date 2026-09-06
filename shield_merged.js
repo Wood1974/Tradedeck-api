@@ -54,115 +54,419 @@ function loadStripeScript() {
 // ============================================================
 
 const TRADE_PROFILES = {
-  roofing: {
-    keywords: ['roof','roofing','shingle','flashing','gutter','fascia','soffit','ridge','underlayment','decking'],
-    questions: ['What is the total square footage of the roof?','What roofing material — asphalt shingle, metal, tile, or flat?','Is the existing deck being replaced or just the surface?','Any skylights, chimneys, or penetrations that need flashing?'],
+  "framing": {
+    name:     "Framing / Structural",
+    keywords: ["framing","addition","room","wall","joist","beam","header","stud","lumber","structure"],
     points: [
-      { label: 'Deck Inspection',       description: 'Photo of the exposed roof deck showing condition of sheathing before any new material goes down.' },
-      { label: 'Underlayment Complete', description: 'Photo showing full coverage of felt or synthetic underlayment across all roof planes.' },
-      { label: 'Flashing Installed',    description: 'Photo of all flashing at valleys, penetrations, and wall transitions before shingles cover them.' },
-      { label: 'Shingles at Midpoint',  description: 'Photo showing shingle installation progress at the halfway point with visible nailing pattern.' },
-      { label: 'Final Surface + Ridge', description: 'Photo of completed roof surface including ridge cap, all penetrations sealed, and gutters reattached.' },
-    ],
+      {
+        label:             "Foundation Sill Plate & Anchor Bolts",
+        description:       "Sill plate installed, anchor bolts in place and correctly spaced",
+        irc:               "IRC R403.1.6 — Anchor bolts ≥½\" dia., ≤6ft o.c., within 12\" of each plate end, ≥7\" embedment, 3\"×3\" plate washer",
+        ibc:               "IBC §1905.1.8 / ACI 318",
+        photo_instruction: "Photograph the full sill plate run showing anchor bolt locations, nuts, and washers. Include a tape measure showing bolt spacing.",
+        must_show:         "Bolt spacing, embedment depth marker if visible, washers and nuts torqued",
+      },
+      {
+        label:             "Wall Framing — Studs, Headers & Bracing",
+        description:       "Studs plumb, headers sized correctly, wall bracing installed per plan",
+        irc:               "IRC R602.3 (stud spacing/size), R602.7 (header spans), R602.10 (wall bracing) — studs ≤16\" or 24\" o.c. per table",
+        ibc:               "IBC §2308.4",
+        photo_instruction: "Photograph full wall section showing stud spacing, header at each opening, and diagonal bracing or sheathing. Include corner assembly.",
+        must_show:         "Stud spacing, header size visible, bracing method",
+      },
+      {
+        label:             "Fireblocking & Draftstopping",
+        description:       "Fireblocking installed at all required horizontal and vertical locations before concealment",
+        irc:               "IRC R302.11 — fireblocking required at ceiling/floor lines, stair stringers, around chimneys; R302.12 — draftstopping in floor-ceiling concealed spaces ≤1,000 sq ft",
+        ibc:               "IBC §718",
+        photo_instruction: "Photograph each fireblocking location — between studs at floor/ceiling lines, around penetrations. Take before drywall covers it.",
+        must_show:         "Fireblock material in place, all gaps sealed, location matches IRC R302.11 requirements",
+      },
+      {
+        label:             "Floor Joists — Notching, Boring & Connections",
+        description:       "Floor joists sized per span table, notches and bores within code limits, joist hangers installed",
+        irc:               "IRC R502.8 — joist notches ≤1/6 depth, not in middle ⅓ of span; bored holes ≤⅓ depth, ≥2\" from edge; R502.6 (bearing), R602.3(1) (fastening table)",
+        ibc:               "IBC §2308.8",
+        photo_instruction: "Photograph any notched or bored joists with tape measure showing notch depth vs joist depth. Photograph joist hanger connections at bearing points.",
+        must_show:         "Notch/bore measurements, joist hanger fastening, bearing length",
+      },
+      {
+        label:             "Roof Framing — Rafters, Ridge & Connectors",
+        description:       "Rafters at correct spacing, ridge board sized, hurricane/seismic connectors installed",
+        irc:               "IRC R802.4 (rafter spans), R802.3 (ridge board ≥1\" nominal depth greater than rafter cut), R802.11 (rafter ties), R301.2.1 (wind uplift connectors per SDC)",
+        ibc:               "IBC §2308.10",
+        photo_instruction: "Photograph rafter-to-ridge connections, rafter-to-top-plate connections, and any hurricane straps or clips. Include span measurement.",
+        must_show:         "Connector type and installation, rafter spacing, ridge board size",
+      },
+    ]
   },
-  kitchen: {
-    keywords: ['kitchen','cabinet','countertop','backsplash','sink','appliance','island','pantry','remodel','renovation'],
-    questions: ['Are you moving or adding plumbing or electrical?','Are the cabinets being replaced or refaced?','What countertop material — quartz, granite, laminate, butcher block?','Is the flooring being replaced as part of this project?'],
+  "roofing": {
+    name:     "Roofing",
+    keywords: ["roof","roofing","shingle","flashing","gutter","fascia","soffit","ridge","underlayment","decking"],
     points: [
-      { label: 'Demo Complete',          description: 'Photo of stripped kitchen showing all removed cabinets, flooring, and wall surfaces before new work begins.' },
-      { label: 'Rough-In Inspected',     description: 'Photo of all rough plumbing and electrical in walls before drywall or cabinets cover them.' },
-      { label: 'Cabinets Installed',     description: 'Photo of all upper and lower cabinets hung, level, and secured — before countertops arrive.' },
-      { label: 'Countertops + Plumbing', description: 'Photo of countertops set and sink/faucet connected with supply lines visible.' },
-      { label: 'Final — Appliances In',  description: 'Photo of fully completed kitchen with appliances installed, backsplash done, and all trim in place.' },
-    ],
+      {
+        label:             "Roof Deck & Sheathing",
+        description:       "Roof sheathing installed, thickness correct, edges supported",
+        irc:               "IRC R803.2 — wood structural panel sheathing per span rating; R803.2.4 — edge support (H-clips or blocking) for panels with span > 24\"",
+        ibc:               "IBC §2304.8",
+        photo_instruction: "Photograph sheathing grade stamp visible on panels. Photograph H-clips or blocking at unsupported edges. Include any gaps or damage.",
+        must_show:         "APA grade stamp, H-clips or blocking at edges, no visible gaps >⅛\"",
+      },
+      {
+        label:             "Ice & Water Barrier + Underlayment",
+        description:       "Ice barrier installed in required climate zones; felt/synthetic underlayment covering entire deck",
+        irc:               "IRC R905.1.2 — ice barrier required where Jan avg temp ≤25°F, extending ≥24\" inside exterior wall line; R905.2.7 — No. 15 felt underlayment or approved synthetic",
+        ibc:               "IBC §1507.2.8",
+        photo_instruction: "Photograph ice barrier at eaves showing it extends past interior wall line. Photograph overlapping underlayment rows. Include any valleys.",
+        must_show:         "Ice barrier extent (measure 24\" past wall line), underlayment overlap ≥2\", valley coverage",
+      },
+      {
+        label:             "Drip Edge & Flashing",
+        description:       "Drip edge installed at eaves and rakes; step, counter, and valley flashing installed",
+        irc:               "IRC R905.2.8.5 — drip edge ≥¼\" below sheathing, ≥2\" up deck, fastened ≤12\" o.c.; R905.2.8.3 — valley flashing ≥24\" wide with ≥36\" underlayment beneath",
+        ibc:               "IBC §1507.2.9",
+        photo_instruction: "Photograph drip edge at eave showing overlap onto sheathing. Photograph each valley with flashing in place. Photograph step flashing at any wall/chimney intersections.",
+        must_show:         "Drip edge overlap measurements, valley flashing width, step flashing at all wall intersections",
+      },
+      {
+        label:             "Shingle Installation & Nailing Pattern",
+        description:       "Shingles installed with correct exposure, offset, and fastener pattern",
+        irc:               "IRC R905.2.5 — fasteners: minimum 4 per strip shingle, 6 in high-wind zones; R905.2.6 — exposure per manufacturer; R905.2.4.1 — starter strip at eaves",
+        ibc:               "IBC §1507.2.5",
+        photo_instruction: "Photograph a lifted shingle showing nail placement (must be in nailing zone, not above). Photograph starter course at eave. Photograph offset pattern.",
+        must_show:         "Nail placement in manufacturer nailing zone, 4 nails minimum visible, starter strip in place",
+      },
+      {
+        label:             "Ridge Cap, Vents & Final Weathertight Inspection",
+        description:       "Ridge cap installed; ridge/soffit vents in place; all penetrations flashed and sealed",
+        irc:               "IRC R806.2 — ventilation area ≥1/150 of insulated ceiling area (or 1/300 with balanced intake/exhaust); R905.2 — all penetrations flashed per manufacturer",
+        ibc:               "IBC §1503.4",
+        photo_instruction: "Photograph completed ridge cap. Photograph each vent location. Photograph all pipe boot flashings and any skylight or chimney flashing.",
+        must_show:         "Ridge cap fully installed, vent locations, all penetration flashings sealed",
+      },
+    ]
   },
-  bathroom: {
-    keywords: ['bathroom','bath','shower','tub','tile','vanity','toilet','plumbing','fixture','grout'],
-    questions: ['Is the shower or tub being replaced?','Are you moving any plumbing or adding a fixture?','What is the approximate square footage of the bathroom?','Is the flooring being replaced?'],
+  "plumbing": {
+    name:     "Plumbing",
+    keywords: ["plumbing","pipe","drain","water heater","sewer","leak","fixture","supply line","shutoff","pressure"],
     points: [
-      { label: 'Demo + Waterproofing',   description: 'Photo showing cement board or waterproof membrane on shower walls before any tile is set.' },
-      { label: 'Rough Plumbing',         description: 'Photo of all rough plumbing — supply and drain — before walls close.' },
-      { label: 'Tile at Midpoint',       description: 'Photo showing tile installation in progress with visible layout and grout lines.' },
-      { label: 'Fixture Rough-In',       description: 'Photo of toilet, vanity, and shower fixture rough-ins before final trim pieces.' },
-      { label: 'Final Complete',         description: 'Photo of completed bathroom with all fixtures installed, grout sealed, and accessories in place.' },
-    ],
+      {
+        label:             "DWV Rough-In — Drain Slope & Pipe Support",
+        description:       "Drain, waste, and vent pipes installed with correct slope and support spacing",
+        irc:               "IRC P3005.3 — horizontal drainage pipe slope: ¼\"/ft for ≤3\" pipe, ⅛\"/ft for 4\"+ pipe; P2605.1 — support intervals per pipe material (PVC: 4ft horizontal, 10ft vertical)",
+        ibc:               "IPC §308 (support), §704 (slope)",
+        photo_instruction: "Place a level and ruler on horizontal drain runs to show slope. Photograph pipe hangers/straps showing spacing. Include pipe size markings.",
+        must_show:         "Slope measurement (level + measurement), hanger spacing, pipe size stamps",
+      },
+      {
+        label:             "DWV Air / Water Pressure Test",
+        description:       "DWV system tested and holding pressure before concealment",
+        irc:               "IRC P2503.5.1 — water test: fill to ≥10ft head above highest fitting, hold 15 minutes with no leaks; OR air test: 5 psi, 15 minutes",
+        ibc:               "IPC §312.2",
+        photo_instruction: "Photograph test gauge showing 5 psi (air) or water level at test plug. Photograph the timer/clock showing test start and end. Photograph each visible joint.",
+        must_show:         "Gauge reading at start and end of 15-minute hold, no visible moisture at joints",
+      },
+      {
+        label:             "Water Supply Lines — Material, Sizing & Pressure Test",
+        description:       "Supply lines installed in correct material, sized per fixture count, pressure tested",
+        irc:               "IRC P2903.5 — static pressure test at 1.5× working pressure (min 50 psi) for 15 minutes; P2905 — approved pipe materials; P2903.1 — minimum ¾\" building supply",
+        ibc:               "IPC §604, §312.5",
+        photo_instruction: "Photograph pressure gauge on supply system showing test pressure. Photograph pipe material markings. Photograph main shutoff valve location.",
+        must_show:         "Test pressure gauge reading, pipe material stamp/marking, shutoff valve accessible",
+      },
+      {
+        label:             "Vent Stack & Air Admittance Valves",
+        description:       "Vent stack extends through roof; all fixtures properly vented per code",
+        irc:               "IRC P3103.1 — vent through roof ≥6\" above roof surface (≥24\" in snow country); P3114 — AAVs permitted only where code allows; P3105 — each trap must be vented",
+        ibc:               "IPC §903, §917",
+        photo_instruction: "Photograph vent stack penetration through roof from exterior showing height above roof. Photograph each trap-to-vent connection. If AAVs used, photograph their location and accessibility.",
+        must_show:         "Vent height above roof surface (measure it), all traps connected to vent system",
+      },
+      {
+        label:             "Fixture Rough-In & Cleanout Locations",
+        description:       "Fixture rough-in heights correct; cleanouts accessible per code",
+        irc:               "IRC P3005.2.7 — cleanouts required at base of each stack and each horizontal run >100ft; P2708 (shower), P2705 (lavatory), P2711 (kitchen sink) rough-in requirements",
+        ibc:               "IPC §708",
+        photo_instruction: "Photograph each rough-in location with measurement from finished floor. Photograph cleanout plugs showing they are accessible (not behind permanent wall).",
+        must_show:         "Rough-in measurements matching fixture specs, cleanout locations accessible",
+      },
+    ]
   },
-  electrical: {
-    keywords: ['electrical','wiring','panel','circuit','outlet','switch','breaker','lighting','generator','EV charger'],
-    questions: ['Is this a panel upgrade, new circuits, or fixture replacements?','Is a permit required in your municipality?','How many circuits or outlets are being added?','Is this work being done in a finished or unfinished space?'],
+  "electrical": {
+    name:     "Electrical",
+    keywords: ["electrical","wiring","panel","circuit","outlet","switch","breaker","lighting","generator","EV charger"],
     points: [
-      { label: 'Panel / Service Photo',  description: 'Photo of the main panel before work begins showing existing breaker layout and service rating.' },
-      { label: 'Wire Rough-In',          description: 'Photo of all new wire runs in walls or ceiling before drywall covers them.' },
-      { label: 'Connections at Box',     description: 'Photo of wire terminations inside junction and device boxes before cover plates.' },
-      { label: 'Permit Inspection',      description: 'Photo of the permit inspection card or inspector sign-off document posted on site.' },
-      { label: 'Final — Devices Live',   description: 'Photo of all outlets, switches, and fixtures installed and covers plates on.' },
-    ],
+      {
+        label:             "Panel, Service Entry & Grounding Electrode",
+        description:       "Panel installed, service conductors sized correctly, grounding electrode system complete",
+        irc:               "IRC E3607 / NEC 250.50 — all grounding electrodes present must be bonded; NEC 250.52(A)(3) — Ufer/concrete-encased electrode: ≥20ft rebar ≥½\" dia. or #4 bare copper in ≥2\" concrete",
+        ibc:               "NEC Article 250, §230",
+        photo_instruction: "Photograph the Ufer electrode BEFORE concrete pour showing rebar continuity and pigtail. Photograph the grounding electrode conductor connection at panel. Photograph service entrance conductors and meter.",
+        must_show:         "Ufer rebar length and pigtail visible, GEC connection at panel, service conductor size marking",
+      },
+      {
+        label:             "Branch Circuit Rough-In — Box Fill & Wire Routing",
+        description:       "All boxes installed, wire fill within limits, cables secured and protected",
+        irc:               "NEC 314.16 — box fill calculation (2.0 cu in per #14, 2.25 per #12); NEC 314.20 — box front within ¼\" of finished surface; NEC 300.4 — cable protection through studs (nail plate if ≤1¼\" from edge)",
+        ibc:               "NEC Article 314, 300",
+        photo_instruction: "Photograph each box showing wire count and box cubic-inch rating marked. Photograph nail plates on any cable within 1¼\" of stud edge. Photograph cable stapling at correct intervals.",
+        must_show:         "Box cu-in rating stamp, nail plates where required, staple spacing ≤4.5ft (NEC 334.30)",
+      },
+      {
+        label:             "GFCI & AFCI Protection",
+        description:       "GFCI protection at all required locations; AFCI protection on all required circuits",
+        irc:               "NEC 210.8 — GFCI required: bathrooms, garages, outdoors, crawl spaces, unfinished basements, kitchens within 6ft of sink, laundry, boathouses; NEC 210.12 — AFCI required on all 15A/20A 120V branch circuits in dwelling units (bedrooms, living areas, kitchens, etc.)",
+        ibc:               "NEC §210.8, §210.12",
+        photo_instruction: "Photograph GFCI outlet or breaker at each required location. Photograph AFCI breakers in panel. Test button visible on GFCI devices.",
+        must_show:         "GFCI devices at all wet/outdoor locations, AFCI breakers for bedroom/living circuits, test buttons visible",
+      },
+      {
+        label:             "Rough-In Inspection — All Circuits, Working Clearances",
+        description:       "All rough wiring complete, panel working clearances maintained, ready for inspection",
+        irc:               "NEC 110.26 — working clearance in front of panel: ≥30\" wide, ≥36\" deep, ≥6.5ft high; NEC 230.70 — service disconnect accessible and labeled",
+        ibc:               "NEC §110.26",
+        photo_instruction: "Photograph panel working clearance with tape showing 36\" depth from panel face. Photograph service disconnect label. Photograph completed rough-in from multiple angles.",
+        must_show:         "36\" clearance measured in photo, service disconnect labeled, no obstructions in clearance zone",
+      },
+      {
+        label:             "Final — Devices, Fixtures & Load Center Labeling",
+        description:       "All outlets, switches, fixtures installed; panel circuits labeled; no open knockouts",
+        irc:               "NEC 408.4 — every circuit breaker must be legibly identified; NEC 110.12 — no open knockouts in panels or boxes; NEC 410 — luminaire installation",
+        ibc:               "NEC §408.4, §110.12",
+        photo_instruction: "Photograph completed panel directory. Photograph representative outlet and switch installations. Photograph any junction box covers in place. Check for open knockouts.",
+        must_show:         "Complete panel directory, all boxes covered, no open knockouts, circuit labels legible",
+      },
+    ]
   },
-  plumbing: {
-    keywords: ['plumbing','pipe','drain','water heater','sewer','leak','fixture','supply line','shutoff','pressure'],
-    questions: ['Is this repair, replacement, or new installation?','Copper, PEX, or PVC?','Is a permit required?','Is the water heater being replaced as part of this?'],
+  "hvac": {
+    name:     "HVAC / Mechanical",
+    keywords: ["HVAC","furnace","AC","air conditioning","ductwork","heat pump","thermostat","ventilation","mini split","boiler"],
     points: [
-      { label: 'Existing Condition',    description: 'Photo of existing pipe condition, connections, and any visible damage before work begins.' },
-      { label: 'Pipe Rough-In',         description: 'Photo of all new supply and drain lines before walls or floors close.' },
-      { label: 'Pressure Test',         description: 'Photo of pressure gauge showing system holding pressure — or the gauge reading during test.' },
-      { label: 'Connections Complete',  description: 'Photo of all finished connections at fixtures, shutoffs, and main tie-ins.' },
-      { label: 'Final — Water On',      description: 'Photo confirmation all fixtures run, no visible leaks, and water heater operational if replaced.' },
-    ],
+      {
+        label:             "Equipment Installation & Clearances",
+        description:       "Furnace/air handler installed with required clearances to combustibles",
+        irc:               "IRC M1306 — clearances to combustibles per equipment listing label; M1305.1 — appliance access: passageway ≥22\"×30\", solid flooring, lighting and outlet within 25ft",
+        ibc:               "IMC §304, §306",
+        photo_instruction: "Photograph equipment label showing required clearances. Photograph measured distance from unit to nearest combustible. Photograph access passageway dimensions.",
+        must_show:         "Equipment label clearance requirements, measured clearance in photo, access path dimensions",
+      },
+      {
+        label:             "Duct Installation — Support, Joints & Sealing",
+        description:       "Ducts supported at correct intervals, all joints sealed with mastic or UL 181 tape",
+        irc:               "IRC M1601.4.1 — joints and seams sealed with mastic, mastic-plus-mesh, or UL 181A/B tape (NOT standard duct tape); M1601.4.4 — round duct supported ≤10ft, rectangular ≤4ft",
+        ibc:               "IMC §603",
+        photo_instruction: "Photograph duct joints showing mastic or approved tape (not gray duct tape). Photograph duct hangers showing spacing. Photograph any flex duct connections.",
+        must_show:         "Mastic or UL 181 tape at all joints, hanger spacing within limits, flex duct not kinked",
+      },
+      {
+        label:             "Combustion Air & Gas Piping",
+        description:       "Adequate combustion air provided; gas piping installed and pressure tested",
+        irc:               "IRC G2407 — combustion air: ≥50 cu ft per 1,000 BTU/hr input for indoor air; M1703 — combustion air openings; G2417 — gas piping test: 10 psi air for 15 min (or 3 psi for ≥½ hr) before appliances connected",
+        ibc:               "IMC §701, §303.3; IFC §6303",
+        photo_instruction: "Photograph combustion air opening size with measurement. Photograph gas piping pressure gauge showing test pressure. Photograph gas shutoff valve location.",
+        must_show:         "Combustion air opening dimensions, gas test gauge reading, shutoff valve accessible and labeled",
+      },
+      {
+        label:             "Condensate Drainage & Secondary Drain",
+        description:       "Primary condensate drain installed; secondary/overflow drain or float switch in place",
+        irc:               "IRC M1411.3 — secondary drain or auxiliary drain pan required for equipment in attic or above finished ceiling; pan ≥1.5\" deep, ≥3\" wider than unit on all sides",
+        ibc:               "IMC §307.2",
+        photo_instruction: "Photograph primary drain connection and routing to exterior or drain. Photograph secondary drain pan dimensions. Photograph float switch or secondary drain line if used.",
+        must_show:         "Primary drain connection, secondary pan or float switch installed, drain terminates visible",
+      },
+      {
+        label:             "Final — Duct Insulation, Filter, & System Test",
+        description:       "Ducts in unconditioned space insulated to R-8; filter installed; system operates correctly",
+        irc:               "IRC N1103.3.3 — ducts in unconditioned space: R-8 insulation; M1401.3 — equipment installed per listing and manufacturer instructions",
+        ibc:               "IECC C403.2.2, IMC §607",
+        photo_instruction: "Photograph duct insulation in attic/crawl space showing R-value label. Photograph filter installed in correct slot. Photograph thermostat set to test with system running.",
+        must_show:         "R-8 or higher insulation label visible, filter in place, system operational (thermostat and supply air)",
+      },
+    ]
   },
-  hvac: {
-    keywords: ['HVAC','furnace','AC','air conditioning','ductwork','heat pump','thermostat','ventilation','mini split','boiler'],
-    questions: ['Full system replacement or repair?','What is the square footage being conditioned?','Forced air, mini-split, or radiant?','Is new ductwork required?'],
+  "concrete": {
+    name:     "Concrete / Foundation",
+    keywords: ["concrete","foundation","slab","driveway","patio","footing","pour","rebar","form","sidewalk"],
     points: [
-      { label: 'Equipment Delivery',    description: 'Photo of new equipment — unit model and serial number visible — before installation begins.' },
-      { label: 'Duct Rough-In',         description: 'Photo of ductwork installation before drywall or ceiling tiles cover it.' },
-      { label: 'Equipment Set',         description: 'Photo of indoor and outdoor units fully mounted and connected — refrigerant lines visible.' },
-      { label: 'Electrical + Controls', description: 'Photo of disconnect, thermostat wiring, and control connections before covers.' },
-      { label: 'Performance Test',      description: 'Photo of system operating — thermostat set point and actual temperature reading visible.' },
-    ],
+      {
+        label:             "Footing Excavation & Soil Bearing",
+        description:       "Footings at correct depth, bearing on undisturbed soil, frost depth met",
+        irc:               "IRC R403.1 — footings bear on undisturbed soil; R301.2(7) — frost depth per Table R301.2(1) (varies by location); R403.1.1 — footing depth ≥12\" below undisturbed ground surface",
+        ibc:               "IBC §1809.4",
+        photo_instruction: "Photograph footing trench showing depth measurement from grade to bottom. Photograph undisturbed soil at footing base. Include tape measure showing frost-depth compliance.",
+        must_show:         "Footing depth measurement, undisturbed soil visible at base, no loose backfill under footing",
+      },
+      {
+        label:             "Rebar Placement & Concrete-Encased Electrode",
+        description:       "Rebar sized and positioned per plan; Ufer electrode in place before pour",
+        irc:               "IRC R403.1.3 — footing reinforcement per Table R403.1.3(1); NEC 250.52(A)(3) — Ufer: ≥20ft of ≥½\" rebar or #4 bare copper encased in ≥2\" concrete",
+        ibc:               "IBC §1905 / ACI 318 §20.6.1 — minimum cover: 3\" cast against earth, 2\" exposed to weather",
+        photo_instruction: "Photograph rebar chairs/supports showing minimum concrete cover. Photograph Ufer pigtail extending from footing form. Include tape showing rebar size and spacing.",
+        must_show:         "Rebar chairs maintaining minimum cover, Ufer pigtail visible and tagged, rebar size and spacing per plan",
+      },
+      {
+        label:             "Vapor Retarder & Sub-Slab Preparation",
+        description:       "Vapor retarder installed over compacted fill before slab pour",
+        irc:               "IRC R506.2.3 — vapor retarder: ≥10-mil Class A per ASTM E1745 (2021 IRC), joints lapped ≥6\", extended up stem walls",
+        ibc:               "IBC §1805.4.1",
+        photo_instruction: "Photograph vapor barrier material showing 10-mil specification or ASTM E1745 markings. Photograph joint laps with tape showing ≥6\" overlap. Photograph edges turned up at walls.",
+        must_show:         "Vapor barrier material spec marking, 6\" lap at joints, edges turned up at stem walls",
+      },
+      {
+        label:             "Concrete Pour — Mix, Placement & Consolidation",
+        description:       "Correct concrete mix design; proper placement and vibration/consolidation",
+        irc:               "IRC R402.2 — minimum f'c per exposure: 2,500 psi interior slabs, 3,000 psi exposed to weather, 3,500 psi in severe freeze-thaw; R402.2 Table — w/c ratio per exposure",
+        ibc:               "IBC §1905.3 / ACI 318 Table 19.3.3.1",
+        photo_instruction: "Photograph concrete delivery ticket showing mix design and PSI strength. Photograph vibrator being used during pour. Photograph finished surface before curing compound applied.",
+        must_show:         "Concrete ticket with f'c and w/c ratio, vibration occurring during pour, surface finish",
+      },
+      {
+        label:             "Anchor Bolts, Curing & Slab Tolerances",
+        description:       "Anchor bolts set while concrete is wet; curing compound applied; slab level within tolerance",
+        irc:               "IRC R403.1.6 — anchor bolts ≥½\" dia., ≤6ft o.c., within 12\" of plate ends, ≥7\" embedment, 3\"×3\"×0.229\" plate washer; R506.2.4 — slab thickness ≥3.5\" (IRC residential)",
+        ibc:               "IBC §1905.1.8 / ACI 117 — slab tolerance: flatness F-number or ¼\" in 10ft",
+        photo_instruction: "Photograph anchor bolts set in wet concrete while still plastic. Measure and photograph bolt spacing and distance from plate ends. Photograph curing compound being applied.",
+        must_show:         "Anchor bolt spacing measured, embedment depth marker, curing compound application",
+      },
+    ]
   },
-  concrete: {
-    keywords: ['concrete','foundation','slab','driveway','patio','footing','pour','rebar','form','sidewalk'],
-    questions: ['Is this a structural pour or decorative flatwork?','What is the square footage?','Is rebar or wire mesh being used?','Any drainage or slope requirements?'],
+  "flooring": {
+    name:     "Flooring / Subfloor",
+    keywords: ["floor","flooring","hardwood","LVP","tile","carpet","laminate","subfloor","underlayment","install"],
     points: [
-      { label: 'Sub-Base Ready',        description: 'Photo of compacted sub-base, forms set, and any reinforcement in place before the pour.' },
-      { label: 'Rebar / Mesh',          description: 'Photo of all rebar or wire mesh positioned and supported at correct height in forms.' },
-      { label: 'Pour in Progress',       description: 'Photo during the pour showing concrete being placed and screeded.' },
-      { label: 'Finish + Cure',         description: 'Photo of finished surface texture and curing compound or blanket applied.' },
-      { label: 'Forms Stripped',        description: 'Photo of completed slab with forms removed showing edges and any control joints cut.' },
-    ],
+      {
+        label:             "Subfloor Condition & Moisture Testing",
+        description:       "Subfloor flat, structurally sound, moisture content within limits before flooring",
+        irc:               "IRC R503.2 — wood structural panel subfloor: APA rated sheathing per span table; most flooring manufacturers require MC ≤14% (wood flooring) or ≤3 lbs/1000 sf/24hr MVER (concrete)",
+        ibc:               "IBC §2304.9",
+        photo_instruction: "Photograph moisture meter reading on subfloor in multiple locations. Photograph any high-spot/low-spot measurements with straightedge. Document any squeaks or soft spots found.",
+        must_show:         "Moisture meter reading visible, flatness measurement with 10ft straightedge, any repairs made",
+      },
+      {
+        label:             "Underlayment Installation",
+        description:       "Correct underlayment installed per flooring manufacturer and code",
+        irc:               "IRC R503 — subfloor per span table; manufacturer installation instructions govern underlayment type and thickness for warranty compliance",
+        ibc:               "IBC §2304.9",
+        photo_instruction: "Photograph underlayment material label showing specification. Photograph seam treatment (tape, stapling). Photograph any transitions between underlayment sections.",
+        must_show:         "Underlayment spec label, seams properly treated, no voids or bubbles",
+      },
+      {
+        label:             "Flooring Layout & Acclimation",
+        description:       "Flooring material acclimated on-site; layout lines established",
+        irc:               "Manufacturer installation requirements (NWFA for hardwood: acclimate 3–5 days at job-site conditions); IRC R302.7 — under-stair space protection",
+        ibc:               "NWFA Installation Guidelines; ANSI A108 (tile)",
+        photo_instruction: "Photograph flooring material stored and acclimating on-site (not sealed in boxes). Photograph chalk line layout. Photograph room temperature and humidity reading.",
+        must_show:         "Flooring open and acclimating, temp/humidity reading, layout lines established",
+      },
+      {
+        label:             "Flooring Installation — Fastening & Pattern",
+        description:       "Flooring fastened correctly, pattern consistent, expansion gaps maintained",
+        irc:               "NWFA Installation Guidelines: ¾\" solid hardwood — cleat/staple every 6–8\"; expansion gap ¾\" at all walls; ANSI A108.02 — tile: thin-set coverage ≥80% interior (≥95% wet areas)",
+        ibc:               "NWFA / ANSI A108 / manufacturer specs",
+        photo_instruction: "Photograph expansion gap at wall with spacer in place. Photograph fastening pattern (pull back carpet/lift a plank where accessible). For tile: lift a tile immediately after setting to check mortar coverage.",
+        must_show:         "Expansion gap at perimeter, fastener spacing visible, mortar coverage on tile back",
+      },
+      {
+        label:             "Transitions, Thresholds & Final Inspection",
+        description:       "All transitions installed; no trip hazards; floor flat and clean",
+        irc:               "IRC R311.7.5 — stair treads: uniform rise ≤7¾\", run ≥10\"; R311.8 — ramp slope; ADA 303.3 — vertical change ≤¼\" without bevel (if ADA applies)",
+        ibc:               "IBC §1003.3 (floor surfaces)",
+        photo_instruction: "Photograph all threshold transitions from room to room. Photograph any change-in-level measurement. Photograph finished floor surface overall condition.",
+        must_show:         "All transitions in place, level changes measured, no protruding fasteners or gaps",
+      },
+    ]
   },
-  framing: {
-    keywords: ['framing','addition','room','wall','joist','beam','header','stud','lumber','structure'],
-    questions: ['Is this new construction, an addition, or interior remodel?','Any load-bearing walls being moved?','Is an engineer stamp required?','What is the approximate square footage?'],
+  "painting": {
+    name:     "Painting / Finishes",
+    keywords: ["paint","painting","primer","coat","drywall","finish","stain","caulk","texture"],
     points: [
-      { label: 'Foundation / Plate',    description: 'Photo of sill plate or bottom plate anchored to foundation or subfloor.' },
-      { label: 'Wall Framing',          description: 'Photo of all exterior and interior walls framed, plumb, and braced.' },
-      { label: 'Header + Beam',         description: 'Photo of all headers over openings and any structural beams installed.' },
-      { label: 'Roof / Floor System',   description: 'Photo of roof rafters or floor joists complete with blocking and hangers.' },
-      { label: 'Sheathing Complete',    description: 'Photo of exterior sheathing fully applied and nailed before wrap or siding.' },
-    ],
+      {
+        label:             "Surface Preparation — Drywall & Substrate",
+        description:       "Drywall taped, mudded, and sanded to correct level before paint",
+        irc:               "GA-214 Recommended Levels of Gypsum Board Finish — Level 4 minimum for flat paint; Level 5 for gloss/semi-gloss or critical lighting",
+        ibc:               "GA-214 / ASTM C840",
+        photo_instruction: "Photograph drywall seams under raking (side) light to show finish level. Photograph any remaining imperfections before primer. Document finish level agreed on with homeowner.",
+        must_show:         "Seams smooth under raking light, no mud ridges, corner bead straight",
+      },
+      {
+        label:             "Primer Application",
+        description:       "Correct primer applied to all surfaces; coverage even; no bare spots",
+        irc:               "Manufacturer specs and PDCA Standards (P1, P2, P3, P4 series)",
+        ibc:               "PDCA / MPI Architectural Painting Specification Manual",
+        photo_instruction: "Photograph primed surfaces showing even coverage. Photograph primer product label (manufacturer, type). Note any areas with bleed-through staining requiring second primer coat.",
+        must_show:         "Even primer coverage, no bare spots, product label visible, tinted to topcoat color if specified",
+      },
+      {
+        label:             "First Coat — Application & Coverage",
+        description:       "First coat applied at correct spread rate; even coverage, no holidays",
+        irc:               "PDCA P4 / MPI Standards — spread rate per manufacturer; mil thickness per spec sheet",
+        ibc:               "MPI Architectural Painting Specification Manual §9",
+        photo_instruction: "Photograph first coat wet mil thickness using a wet film gauge if specified. Photograph any areas with thin coverage or holidays (misses). Photograph product label and batch number.",
+        must_show:         "Wet mil reading if gauged, even sheen, product batch number recorded",
+      },
+      {
+        label:             "Second Coat & Finish Inspection",
+        description:       "Final coat applied; uniform sheen; no drips, laps, or brush marks visible",
+        irc:               "PDCA P12 — inspection standard: uniform color and sheen, no defects visible at 5ft in normal light",
+        ibc:               "MPI §9; ASTM D3730 (paint film testing)",
+        photo_instruction: "Photograph finished walls under normal lighting and under raking light. Photograph any defects found. Photograph final coat product label.",
+        must_show:         "Uniform sheen at 5ft viewing distance, no drips or laps, final coat label",
+      },
+      {
+        label:             "Trim, Cut Lines & Cleanup",
+        description:       "Trim painted cleanly; cut lines straight; hardware replaced; job site clean",
+        irc:               "PDCA P5 (protection of adjacent surfaces); PDCA P1 (workmanship standard)",
+        ibc:               "PDCA Standards",
+        photo_instruction: "Photograph trim cut lines at ceiling and floor. Photograph hardware reinstalled. Photograph overall room condition showing clean job site.",
+        must_show:         "Straight cut lines (no bleed onto trim or ceiling), hardware in place, no paint on floors or fixtures",
+      },
+    ]
   },
-  flooring: {
-    keywords: ['floor','flooring','hardwood','LVP','tile','carpet','laminate','subfloor','underlayment','install'],
-    questions: ['What flooring material is being installed?','Is the subfloor being replaced or repaired?','What is the square footage?','Is this a floating floor or nail/glue down?'],
+  "general": {
+    name:     "General Contractor / Other",
+    keywords: ["general","renovation","remodel","repair","installation","construction","project"],
     points: [
-      { label: 'Subfloor Inspection',   description: 'Photo of existing subfloor showing condition — any soft spots, squeaks, or height transitions marked.' },
-      { label: 'Subfloor Prep',         description: 'Photo of subfloor after any repairs, leveling compound cured, and moisture barrier if required.' },
-      { label: 'Layout Line',           description: 'Photo showing chalk lines and starting wall before first row of flooring is set.' },
-      { label: 'Install at Midpoint',   description: 'Photo of flooring installation at approximately 50% complete showing pattern and seams.' },
-      { label: 'Final + Trim',          description: 'Photo of completed floor with all transitions, thresholds, and base trim installed.' },
-    ],
-  },
-  general: {
-    keywords: [],
-    questions: ['What is the primary trade involved — roofing, plumbing, electrical, HVAC, or other?','What is the approximate square footage or scope?','Is a permit required?','Are there any existing conditions we should know about?'],
-    points: [
-      { label: 'Site Condition',        description: 'Photo documenting existing site conditions before any work begins.' },
-      { label: 'Demo / Prep Complete',  description: 'Photo showing demolition or prep work completed and area ready for new work.' },
-      { label: 'Rough Work',            description: 'Photo of primary structural, mechanical, or rough work before it is covered.' },
-      { label: 'At Midpoint',           description: 'Photo of project at approximately 50% completion.' },
-      { label: 'Final Complete',        description: 'Photo of fully completed work ready for homeowner inspection.' },
-    ],
+      {
+        label:             "Site Safety & Permit Posted",
+        description:       "Building permit posted visibly; PPE in use; site safe and organized",
+        irc:               "IRC R105.7 — permit must be posted on site and visible from street until final inspection",
+        ibc:               "IBC §105.7",
+        photo_instruction: "Photograph building permit posted at front of property (readable). Photograph crew wearing PPE. Photograph overall site organization.",
+        must_show:         "Permit visible and readable, PPE in use, no obvious safety violations",
+      },
+      {
+        label:             "Work-in-Progress Milestone",
+        description:       "Substantial progress on agreed scope of work visible",
+        irc:               "Contractual milestone — specific IRC section depends on trade being performed",
+        ibc:               "Contractual / as applicable",
+        photo_instruction: "Photograph wide view of work area showing scope of work in progress. Photograph specific work completed since last checkpoint. Include reference objects for scale.",
+        must_show:         "Clear progress visible, scope matches contract, work area identified",
+      },
+      {
+        label:             "Materials On-Site & Specification",
+        description:       "Specified materials on site; product labels confirm correct specification",
+        irc:               "IRC R101.2 — materials must meet referenced standards; specific IRC section per material",
+        ibc:               "IBC §1703 — product approval",
+        photo_instruction: "Photograph material specification labels for all major materials (lumber grade stamps, concrete bags, etc.). Photograph materials stored properly off ground and covered.",
+        must_show:         "Grade stamps and spec labels visible, materials protected from weather, quantities match scope",
+      },
+      {
+        label:             "Subcontractor Work Complete",
+        description:       "Specialist trade work (mechanical, electrical, plumbing) completed and inspected",
+        irc:               "IRC R109 — required inspections must be completed before concealment",
+        ibc:               "IBC §110",
+        photo_instruction: "Photograph any rough-in work by subcontractors before walls are closed. Photograph any required inspection approval cards or certificates posted on site.",
+        must_show:         "All rough-in work visible before concealment, inspection tags if applicable",
+      },
+      {
+        label:             "Final Walkthrough & Punch List",
+        description:       "All agreed work complete; punch list items resolved; site cleaned",
+        irc:               "IRC R110 — Certificate of Occupancy required before occupancy; final inspection must pass",
+        ibc:               "IBC §111",
+        photo_instruction: "Photograph each completed area of agreed scope. Photograph final cleanup. Photograph any outstanding items noted for the homeowner.",
+        must_show:         "All contracted work visible and complete, site clean, no materials left behind",
+      },
+    ]
   },
 }
 
@@ -807,7 +1111,23 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
             <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.85rem;color:var(--white);">${p.point_number}. ${p.label}</span>
             <span class="shield-point-status" style="font-size:0.7rem;padding:2px 8px;border-radius:4px;background:${p.status === 'approved' ? 'rgba(74,222,128,0.15)' : 'rgba(245,158,11,0.12)'};color:${p.status === 'approved' ? '#4ADE80' : 'var(--amber)'};">${p.status || 'pending'}</span>
           </div>
-          <div style="font-size:0.78rem;color:var(--steel);margin-bottom:10px;">${p.description}</div>
+          <div style="font-size:0.78rem;color:var(--steel);margin-bottom:6px;">${p.description}</div>
+          ${p.irc ? `
+          <div style="background:rgba(245,158,11,0.05);border:1px solid rgba(245,158,11,0.15);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
+            <div style="font-size:0.68rem;color:rgba(245,158,11,0.7);font-weight:700;margin-bottom:3px;">📋 CODE REQUIREMENT</div>
+            <div style="font-size:0.72rem;color:rgba(255,255,255,0.55);margin-bottom:4px;">${p.irc}</div>
+            ${p.ibc ? `<div style="font-size:0.68rem;color:rgba(255,255,255,0.3);">IBC: ${p.ibc}</div>` : ''}
+          </div>
+          ` : ''}
+          ${p.photo_instruction ? `
+          <div style="background:rgba(255,255,255,0.03);border-left:2px solid rgba(245,158,11,0.3);padding:6px 10px;margin-bottom:8px;">
+            <div style="font-size:0.68rem;color:rgba(245,158,11,0.6);font-weight:700;margin-bottom:2px;">📷 WHAT TO PHOTOGRAPH</div>
+            <div style="font-size:0.72rem;color:rgba(255,255,255,0.5);">${p.photo_instruction}</div>
+          </div>
+          ` : ''}
+          ${p.must_show ? `
+          <div style="font-size:0.68rem;color:rgba(74,222,128,0.6);margin-bottom:8px;">✓ Must show: ${p.must_show}</div>
+          ` : ''}
           ${p.status === 'approved'
             ? '<div style="font-size:0.78rem;color:#4ADE80;">✓ Photo approved</div>'
             : `<div style="font-size:0.72rem;color:rgba(255,255,255,0.35);margin-bottom:6px;">
@@ -948,14 +1268,15 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
             'Authorization': `Bearer ${session.access_token}`
           },
           body: JSON.stringify({
-            photo_id:    photoRow.id,
-            public_url:  publicUrl,
-            point_id:    thisPointId,
-            gps_lat:     gpsData.lat,
-            gps_lng:     gpsData.lng,
-            has_exif:    exifTags.hasExif || false,
-            photo_hash:  fileHash,
-            shot_type:   shotType,
+            photo_id:       photoRow.id,
+            public_url:     publicUrl,
+            point_id:       thisPointId,
+            gps_lat:        gpsData.lat,
+            gps_lng:        gpsData.lng,
+            has_exif:       exifTags.hasExif || false,
+            photo_hash:     fileHash,
+            shot_type:      shotType,
+            code_reference: p.irc || null,
           })
         })
         if (!analysisRes.ok) throw new Error('AI analysis failed')
