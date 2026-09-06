@@ -678,88 +678,261 @@ function renderPointCard(point) {
 // PART 4 — CONTRACTOR PHOTO UPLOAD
 // ============================================================
 
+// ─────────────────────────────────────────────────
+// SHIELD PHOTO VALIDATION HELPERS
+// GPS, EXIF, and originality enforcement
+// ─────────────────────────────────────────────────
+
+/** Request GPS from browser. Returns {lat, lng, accuracy} or throws. */
+function getGpsLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('GPS is not available on this device.'))
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({
+        lat:      pos.coords.latitude,
+        lng:      pos.coords.longitude,
+        accuracy: pos.coords.accuracy   // metres
+      }),
+      err => {
+        const msgs = {
+          1: 'Location permission denied. Enable GPS in your browser settings to upload Shield photos.',
+          2: 'Could not get GPS signal. Step outside or check your signal and try again.',
+          3: 'GPS timed out. Try again.'
+        }
+        reject(new Error(msgs[err.code] || 'GPS error.'))
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    )
+  })
+}
+
+/** Read EXIF data from a File. Returns parsed tags or empty object. */
+function readExif(file) {
+  return new Promise(resolve => {
+    // Use FileReader to get ArrayBuffer, then parse EXIF manually (lightweight)
+    const reader = new FileReader()
+    reader.onload = e => {
+      try {
+        const buf  = e.target.result
+        const view = new DataView(buf)
+        // JPEG starts with FFD8
+        if (view.getUint16(0) !== 0xFFD8) { resolve({}); return }
+        const tags = {}
+        let offset = 2
+        while (offset < buf.byteLength - 2) {
+          const marker = view.getUint16(offset)
+          offset += 2
+          if (marker === 0xFFE1) {   // APP1 — EXIF block
+            const segLen = view.getUint16(offset)
+            const exifStr = String.fromCharCode(...new Uint8Array(buf, offset + 2, 6))
+            if (exifStr.startsWith('Exif')) {
+              // We have EXIF — note its presence and rough size
+              tags.hasExif     = true
+              tags.exifBytes   = segLen
+              // Check for DateTimeOriginal marker (0x9003) — presence indicates camera metadata
+              const segData = new Uint8Array(buf, offset, segLen)
+              tags.hasDateTime = segData.includes(0x90) // rough heuristic
+            }
+            offset += segLen
+          } else if ((marker & 0xFF00) === 0xFF00) {
+            if (offset + 1 >= buf.byteLength) break
+            offset += view.getUint16(offset)
+          } else {
+            break
+          }
+        }
+        resolve(tags)
+      } catch {
+        resolve({})
+      }
+    }
+    reader.onerror = () => resolve({})
+    reader.readAsArrayBuffer(file)
+  })
+}
+
+/** Check if file looks like a screenshot or re-photo of a screen */
+function checkOriginality(file, exifTags) {
+  const issues = []
+  // Screenshots typically have no EXIF at all
+  if (!exifTags.hasExif) {
+    issues.push('No camera metadata found — this may be a screenshot or downloaded image.')
+  }
+  // PNG is almost always a screenshot (real cameras save JPEG)
+  if (file.type === 'image/png') {
+    issues.push('PNG format detected. Shield requires a direct camera photo (JPEG/HEIC), not a screenshot.')
+  }
+  // Very small file size for an "on-site" photo is suspicious
+  if (file.size < 150 * 1024) {   // under 150KB
+    issues.push('Photo file size is unusually small for an on-site construction photo.')
+  }
+  return issues
+}
+
 async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
   const { data: { session } } = await sb.auth.getSession()
-  if (!session) { containerEl.innerHTML = '<p>Sign in to upload.</p>'; return }
+  if (!session) { containerEl.innerHTML = '<p style="color:var(--steel)">Sign in to upload.</p>'; return }
+
+  // Load pivotal points if no specific pointId given
+  let points = []
+  if (!pointId) {
+    const { data } = await sb
+      .from('shield_pivotal_points')
+      .select('id, point_number, label, description, status')
+      .eq('shield_job_id', shieldJobId)
+      .order('point_number')
+    points = data || []
+  }
 
   const box = document.createElement('div')
   box.className = 'shield-upload-box'
+
+  const pointsHtml = points.length > 0
+    ? points.map(p => `
+        <div class="shield-point-row" data-point-id="${p.id}" style="border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.85rem;color:var(--white);">${p.point_number}. ${p.label}</span>
+            <span class="shield-point-status" style="font-size:0.7rem;padding:2px 8px;border-radius:4px;background:${p.status === 'approved' ? 'rgba(74,222,128,0.15)' : 'rgba(245,158,11,0.12)'};color:${p.status === 'approved' ? '#4ADE80' : 'var(--amber)'};">${p.status || 'pending'}</span>
+          </div>
+          <div style="font-size:0.78rem;color:var(--steel);margin-bottom:10px;">${p.description}</div>
+          ${p.status === 'approved'
+            ? '<div style="font-size:0.78rem;color:#4ADE80;">✓ Photo approved</div>'
+            : `<label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                <span style="font-size:0.78rem;color:var(--amber);font-weight:600;">📷 Take / Select Photo</span>
+                <input type="file" class="shield-point-file" accept="image/jpeg,image/heic,image/heif" capture="environment" style="display:none;" data-point-id="${p.id}" />
+               </label>
+               <div class="shield-point-status-msg" style="margin-top:8px;font-size:0.78rem;"></div>`
+          }
+        </div>`).join('')
+    : `<div style="font-size:0.85rem;color:var(--steel);padding:12px 0;">Loading checkpoints…</div>`
+
   box.innerHTML = `
-    <p class="shield-upload-label">Upload checkpoint photo</p>
-    <input type="file" id="shield-file-input" accept="image/*" capture="environment" />
-    <button class="shield-pay-btn" id="shield-upload-btn" style="margin-top:0.75rem">
-      Upload &amp; Submit for AI Review
-    </button>
-    <p id="shield-upload-status" class="shield-upload-status"></p>
+    <div style="margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <span style="font-size:0.85rem;">📍</span>
+        <span id="shield-gps-status" style="font-size:0.78rem;color:var(--steel);">Requesting GPS location…</span>
+      </div>
+      <div style="font-size:0.72rem;color:rgba(255,255,255,0.3);">GPS is required for all Shield photos. Enable location in your browser.</div>
+    </div>
+    <div id="shield-points-list">${pointsHtml}</div>
   `
-
-  const fileInput = box.querySelector('#shield-file-input')
-  const uploadBtn = box.querySelector('#shield-upload-btn')
-  const statusEl  = box.querySelector('#shield-upload-status')
-
-  uploadBtn.addEventListener('click', async () => {
-    const file = fileInput.files[0]
-    if (!file) { statusEl.textContent = 'Select a photo first.'; return }
-
-    uploadBtn.disabled = true
-    uploadBtn.textContent = 'Uploading…'
-    statusEl.textContent = ''
-
-    try {
-      const path = `shield-photos/${shieldJobId}/${pointId}/${Date.now()}_${file.name}`
-      const { error: storageErr } = await sb.storage
-        .from('draw-photos')
-        .upload(path, file, { contentType: file.type })
-      if (storageErr) throw new Error(storageErr.message)
-
-      const { data: { publicUrl } } = sb.storage.from('draw-photos').getPublicUrl(path)
-
-      const { data: photoRow, error: dbErr } = await sb
-        .from('shield_photos')
-        .insert({
-          point_id:      pointId,
-          shield_job_id: shieldJobId,
-          contractor_id: session.user.id,
-          storage_path:  path,
-          public_url:    publicUrl
-        })
-        .select('id')
-        .single()
-      if (dbErr) throw new Error(dbErr.message)
-
-      statusEl.textContent = '📸 Uploaded. Running AI analysis…'
-
-      const analysisRes = await fetch(`${API_BASE}/shield/analyze-photo`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({
-          photo_id:   photoRow.id,
-          public_url: publicUrl,
-          point_id:   pointId
-        })
-      })
-      if (!analysisRes.ok) throw new Error('Analysis request failed')
-      const { verdict, confidence, notes } = await analysisRes.json()
-
-      statusEl.innerHTML = `
-        <strong>AI Verdict: ${verdict.toUpperCase()}</strong>
-        (${Math.round(confidence * 100)}% confidence)<br/>${notes}
-      `
-      statusEl.style.color = verdict === 'pass' ? '#2d7a4f' : verdict === 'flag' ? '#d4a017' : '#c0392b'
-      uploadBtn.textContent = '✅ Submitted'
-
-    } catch (err) {
-      uploadBtn.disabled = false
-      uploadBtn.textContent = 'Upload & Submit for AI Review'
-      statusEl.textContent = 'Error: ' + err.message
-      statusEl.style.color = '#c0392b'
-    }
-  })
-
   containerEl.appendChild(box)
+
+  // ── Get GPS first ──
+  const gpsStatusEl = box.querySelector('#shield-gps-status')
+  let gpsData = null
+  try {
+    gpsData = await getGpsLocation()
+    gpsStatusEl.textContent = `✅ GPS locked (±${Math.round(gpsData.accuracy)}m)`
+    gpsStatusEl.style.color = '#4ADE80'
+  } catch (err) {
+    gpsStatusEl.textContent = '❌ ' + err.message
+    gpsStatusEl.style.color = '#EF4444'
+    // Block uploads — GPS required
+    box.querySelectorAll('.shield-point-file').forEach(inp => inp.disabled = true)
+    return
+  }
+
+  // ── Wire up each checkpoint file input ──
+  box.querySelectorAll('.shield-point-file').forEach(fileInput => {
+    fileInput.addEventListener('change', async function() {
+      const file = this.files[0]
+      if (!file) return
+      const thisPointId = this.dataset.pointId
+      const row       = box.querySelector(`.shield-point-row[data-point-id="${thisPointId}"]`)
+      const statusMsg = row.querySelector('.shield-point-status-msg')
+      const statusBadge = row.querySelector('.shield-point-status')
+
+      statusMsg.style.color = 'var(--steel)'
+      statusMsg.textContent = '🔍 Checking photo…'
+
+      // ── Originality & EXIF check ──
+      const exifTags = await readExif(file)
+      const issues   = checkOriginality(file, exifTags)
+      if (issues.length > 0) {
+        statusMsg.style.color = '#EF4444'
+        statusMsg.innerHTML = '❌ ' + issues.join('<br>❌ ')
+        this.value = ''
+        return
+      }
+
+      statusMsg.textContent = '📤 Uploading…'
+
+      try {
+        const ts   = Date.now()
+        const path = `shield-photos/${shieldJobId}/${thisPointId}/${ts}_${file.name}`
+
+        const { error: storageErr } = await sb.storage
+          .from('draw-photos')
+          .upload(path, file, { contentType: file.type })
+        if (storageErr) throw new Error(storageErr.message)
+
+        const { data: { publicUrl } } = sb.storage.from('draw-photos').getPublicUrl(path)
+
+        // Store photo with GPS + metadata
+        const { data: photoRow, error: dbErr } = await sb
+          .from('shield_photos')
+          .insert({
+            point_id:       thisPointId,
+            shield_job_id:  shieldJobId,
+            contractor_id:  session.user.id,
+            storage_path:   path,
+            public_url:     publicUrl,
+            gps_lat:        gpsData.lat,
+            gps_lng:        gpsData.lng,
+            gps_accuracy_m: gpsData.accuracy,
+            has_exif:       exifTags.hasExif || false,
+            file_size_bytes: file.size,
+            captured_at:    new Date(ts).toISOString()
+          })
+          .select('id')
+          .single()
+        if (dbErr) throw new Error(dbErr.message)
+
+        statusMsg.textContent = '🤖 Running AI analysis…'
+
+        const analysisRes = await fetch(`${API_BASE}/shield/analyze-photo`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({
+            photo_id:   photoRow.id,
+            public_url: publicUrl,
+            point_id:   thisPointId,
+            gps_lat:    gpsData.lat,
+            gps_lng:    gpsData.lng,
+            has_exif:   exifTags.hasExif || false
+          })
+        })
+        if (!analysisRes.ok) throw new Error('AI analysis failed')
+        const result = await analysisRes.json()
+        const { verdict, confidence, notes, authentic } = result
+
+        const colors = { pass: '#4ADE80', flag: '#F59E0B', fail: '#EF4444', fake: '#EF4444' }
+        const icons  = { pass: '✅', flag: '⚠️', fail: '❌', fake: '🚫' }
+        statusMsg.style.color = colors[verdict] || 'var(--steel)'
+        statusMsg.innerHTML = `
+          ${icons[verdict] || '?'} <strong>${verdict.toUpperCase()}</strong> (${Math.round(confidence * 100)}% confidence)<br>
+          <span style="opacity:0.85">${notes}</span>
+        `
+        if (statusBadge) {
+          statusBadge.textContent = verdict
+          statusBadge.style.background = verdict === 'pass' ? 'rgba(74,222,128,0.15)' : 'rgba(245,158,11,0.12)'
+          statusBadge.style.color = colors[verdict]
+        }
+
+      } catch (err) {
+        statusMsg.style.color = '#EF4444'
+        statusMsg.textContent = '❌ ' + err.message
+        this.value = ''
+      }
+    })
+  })
 }
 
 // ============================================================
