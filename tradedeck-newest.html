@@ -308,6 +308,26 @@ footer p{font-size:0.8rem;color:var(--steel)}
       <div class="fw-empty" id="jobsEmpty" style="display:none;"><div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:1.4rem;text-transform:uppercase;color:var(--steel);">No Jobs Match</div><p style="font-size:0.875rem;margin-top:8px;">Try adjusting your filters.</p></div>
     </div>
   </div>
+
+<!-- JOB DETAIL PANEL (slides in when a job card is clicked) -->
+<div id="jobDetailPanel" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:900;background:var(--slate);border-top:2px solid var(--amber);border-radius:16px 16px 0 0;max-height:80vh;overflow-y:auto;padding:24px 20px 40px;transition:transform 0.3s ease;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <div id="jdpTitle" style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:1.3rem;text-transform:uppercase;color:var(--white);"></div>
+    <button onclick="closeJobDetail()" style="background:none;border:none;color:var(--steel);font-size:1.4rem;cursor:pointer;">&#x2715;</button>
+  </div>
+  <div id="jdpMeta" style="color:var(--steel);font-size:0.8rem;margin-bottom:12px;"></div>
+  <div id="jdpDesc" style="color:var(--light);font-size:0.875rem;line-height:1.6;margin-bottom:20px;white-space:pre-wrap;"></div>
+  <div id="jdpApplyRow" style="margin-bottom:20px;"></div>
+  <!-- Shield upload section — only shown if job has Shield active -->
+  <div id="jdpShieldSection" style="display:none;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+      <span style="font-size:1rem;">🛡️</span>
+      <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.9rem;color:var(--amber);text-transform:uppercase;letter-spacing:0.05em;">Shield Checkpoints</span>
+    </div>
+    <div id="jdpShieldMount"></div>
+  </div>
+</div>
+<div id="jobDetailBackdrop" onclick="closeJobDetail()" style="display:none;position:fixed;inset:0;z-index:899;background:rgba(0,0,0,0.5);"></div>
   <div class="fw-subview" id="sub-sources">
     <div class="fw-body">
       <div id="leadSourcesList">
@@ -829,6 +849,7 @@ document.addEventListener('DOMContentLoaded', function() {
           card.className = 'job-card';
           card.dataset.trade = job.trade;
           card.dataset.location = job.location;
+          card.dataset.description = job.description || '';
           card.innerHTML =
             '<div class="jc-head"><div><div class="jc-title">' + job.title + '</div>' +
             '<div class="jc-meta">' + job.location + ' &middot; ' + job.age + '</div></div>' +
@@ -1000,6 +1021,102 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('step3Submit').addEventListener('click',submitPost);
   document.getElementById('flowOverlay').addEventListener('click',function(e){ if(e.target===this) closeFlow(); });
   document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeFlow(); });
+
+  /* --- JOB DETAIL PANEL --- */
+  var _activeJobId = null;
+
+  window.closeJobDetail = function() {
+    document.getElementById('jobDetailPanel').style.display = 'none';
+    document.getElementById('jobDetailBackdrop').style.display = 'none';
+    _activeJobId = null;
+  };
+
+  function openJobDetail(job) {
+    _activeJobId = job.id;
+    document.getElementById('jdpTitle').textContent = job.title || 'Job Details';
+    document.getElementById('jdpMeta').textContent =
+      [job.trade, job.location, job.age].filter(Boolean).join(' · ');
+    document.getElementById('jdpDesc').textContent =
+      job.description || 'No description provided.';
+
+    // Apply button
+    var applyRow = document.getElementById('jdpApplyRow');
+    applyRow.innerHTML = '<button id="jdpApplyBtn" style="background:var(--amber);color:#000;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.9rem;text-transform:uppercase;letter-spacing:0.06em;padding:10px 24px;border:none;border-radius:8px;cursor:pointer;">Apply for This Job</button>';
+    document.getElementById('jdpApplyBtn').addEventListener('click', function() {
+      var btn = this;
+      TradeDeckAPI.apiFetch('/api/jobs/' + job.id + '/apply', { method: 'POST', requireAuth: true })
+        .then(function() { btn.textContent = '✓ Applied'; btn.style.background = '#4ADE80'; btn.disabled = true; })
+        .catch(function(err) { if (!handleAuthError(err)) alert('Could not apply. Try again.'); });
+    });
+
+    // Check if this job has Shield active — query Supabase directly
+    var shieldSection = document.getElementById('jdpShieldSection');
+    var shieldMount   = document.getElementById('jdpShieldMount');
+    shieldSection.style.display = 'none';
+    shieldMount.innerHTML = '';
+
+    // Use Supabase JS to check for shield_jobs row
+    if (window._supabaseClient) {
+      window._supabaseClient
+        .from('shield_jobs')
+        .select('id, status')
+        .eq('job_id', job.id)
+        .eq('status', 'active')
+        .single()
+        .then(function(res) {
+          if (res.data && res.data.id) {
+            shieldSection.style.display = 'block';
+            if (typeof window.renderContractorUploadFlow === 'function') {
+              window.renderContractorUploadFlow(shieldMount, res.data.id, null);
+            }
+          }
+        })
+        .catch(function() {}); // no shield = silently ignore
+    }
+
+    // Show panel
+    document.getElementById('jobDetailPanel').style.display = 'block';
+    document.getElementById('jobDetailBackdrop').style.display = 'block';
+  }
+
+  /* Patch loadJobs to make cards clickable */
+  var _origLoadJobs = loadJobs;
+  loadJobs = function() {
+    _origLoadJobs();
+    // After jobs render, attach click handlers (use event delegation)
+  };
+
+  // Event delegation on jobsGrid — catch card clicks
+  document.getElementById('jobsGrid').addEventListener('click', function(e) {
+    // Ignore if they clicked the Apply button (handled separately)
+    if (e.target.classList.contains('jc-apply-btn')) return;
+    var card = e.target.closest('.job-card');
+    if (!card) return;
+    // Find matching job data from the card's DOM
+    var title    = card.querySelector('.jc-title') ? card.querySelector('.jc-title').textContent : '';
+    var meta     = card.querySelector('.jc-meta')  ? card.querySelector('.jc-meta').textContent  : '';
+    var fields   = card.querySelectorAll('.jval');
+    var jobId    = card.querySelector('.jc-apply-btn') ? card.querySelector('.jc-apply-btn').dataset.jobId : null;
+    openJobDetail({
+      id:          jobId,
+      title:       title,
+      trade:       fields[0] ? fields[0].textContent : '',
+      location:    meta.split('·')[0].trim(),
+      age:         meta.split('·')[1] ? meta.split('·')[1].trim() : '',
+      description: card.dataset.description || ''
+    });
+  });
+
+  /* Store Supabase client reference for Shield check */
+  document.addEventListener('DOMContentLoaded', function() {
+    if (window.supabase && window.TRADEDECK_SUPABASE_ANON_KEY) {
+      window._supabaseClient = window.supabase.createClient(
+        'https://jlaajejpqjldpbinktln.supabase.co',
+        window.TRADEDECK_SUPABASE_ANON_KEY
+      );
+    }
+  }, { once: true });
+
 
   /* --- SHIELD TOGGLE --- */
   var shieldEnabled = false;
