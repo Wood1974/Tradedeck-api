@@ -21,7 +21,16 @@ from auth import (
     require_draw_access, require_draw_owner, require_draw_payee, utc_now_iso,
 )
 from config import get_env, jobs_page_size, max_image_bytes
-from shield_api import shield_bp
+try:
+    from shield_api import shield_bp
+except Exception as _shield_import_err:
+    import logging as _log
+    _log.getLogger(__name__).error("SHIELD IMPORT FAILED: %s", _shield_import_err, exc_info=True)
+    from flask import Blueprint, jsonify
+    shield_bp = Blueprint("shield", __name__, url_prefix="/shield")
+    @shield_bp.route("/status")
+    def _shield_error():
+        return jsonify({"error": str(_shield_import_err)}), 500
 from escrow import EscrowError, create_escrow_payment, mark_escrow_held, refund_escrow, release_escrow
 
 config.validate_env()
