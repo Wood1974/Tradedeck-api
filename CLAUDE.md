@@ -63,7 +63,12 @@ enforces authorization in Flask; it does **not** have its own user database.
   `supabase/migrations/`. As of Sep 2026 the `stripe_webhook_events` table
   (webhook idempotency, required by `app.py`) **has been applied** and the
   `draws.payee_id` column added. Search_path was pinned on the six flagged
-  DB functions.
+  DB functions. `20260911140000_accept_application_rpc.sql` adds the hire
+  RPC (see below). `20260911150000_tier_inputs.sql` adds the tier machinery:
+  `jobs_completed` increments for the payee when a job's draws are all
+  released, and `tier` is derived from `jobs_completed` + `rating` on every
+  profile write (a documented starter formula; rating already recomputes
+  from `reviews`).
 
 ## Structural issues — status
 
@@ -93,10 +98,12 @@ enforces authorization in Flask; it does **not** have its own user database.
 - **Nothing below jobs has been exercised end-to-end** (live DB shows 1
   draw, 0 applications, 0 photos, 0 escrow rows). Run one full escrow cycle
   in Stripe test mode before real users.
-- Two static HTML files (`tradedeck.html`, `tradedeck-newest.html`) and
-  `shield_merged.js` still sit in this repo root, unwired to any Flask
-  route. `tradedeck-newest.html` / `shield_merged.js` are the Shield UI and
-  should move into the frontend repo; then these can be deleted.
+- The Shield UI (`shield_merged.js`) and its old host shell
+  (`tradedeck-newest.html`) have been **moved out** — `shield_merged.js` now
+  lives in the frontend repo as `shield.js`, wired into `index.html` as a
+  Shield tab. Only `tradedeck.html` (an older, unwired static build) remains
+  in this repo root; it is served by no Flask route and can be deleted once
+  you confirm nothing depends on it.
 
 ## Environment variables (set in Render; never commit real values)
 
