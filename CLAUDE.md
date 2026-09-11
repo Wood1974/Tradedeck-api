@@ -76,11 +76,16 @@ enforces authorization in Flask; it does **not** have its own user database.
 
 ## Known breaks / things to watch (Sep 2026)
 
-- **Contractor draw side needs the accept-application flow.** `draws.payee_id`
-  now exists and `auth.draw_payee_id()` reads it, but **nothing sets it
-  yet**, so `require_draw_payee` still denies every contractor until an
-  accept-application step writes the payee. This is the remaining half of
-  the escrow flow.
+- **Contractor draw side — now wired.** `draws.payee_id` is set by the
+  `accept_application(p_application_id)` RPC
+  (`supabase/migrations/20260911140000_accept_application_rpc.sql`): when a
+  job owner hires an applicant in the frontend, it atomically marks the
+  application accepted, rejects the siblings, and writes `payee_id` onto the
+  job's `draw_schedules` and every `draw` under them — the value
+  `auth.draw_payee_id()` / `require_draw_payee` reads. Verified end-to-end
+  (happy path + non-owner denial) against the live DB. `escrow.py` needs no
+  change; it already reads the payee. What remains is exercising a full
+  escrow cycle in Stripe test mode (below).
 - **Render may drift from git.** A `/internal/deploy` route used to let code
   be pushed straight into the running container; it has been **removed** now
   that everything is committed. If the deployed service behaves differently
