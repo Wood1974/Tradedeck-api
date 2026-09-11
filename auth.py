@@ -106,10 +106,10 @@ def is_schedule_owner(schedule, user_id):
     return bool(schedule) and schedule.get("owner_id") == user_id
  
  
-# TODO (product decision pending): draws has no payee_id / contractor_id
-# column today, so this always returns None and require_draw_payee()
-# below will deny every contractor until that's resolved. See the
-# accompanying note about where the hired contractor should be recorded.
+# The hired contractor. draws.payee_id is set by the accept_application()
+# RPC when a job owner accepts an applicant (contractor_id kept as a fallback
+# for any legacy rows). require_draw_payee() gates the contractor draw actions
+# on this.
 def draw_payee_id(draw):
     return draw.get("payee_id") or draw.get("contractor_id")
  

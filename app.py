@@ -6,10 +6,7 @@ import json
 import logging
 import os
 import re
-import shutil
-import tempfile
 import anthropic
-import requests
 import stripe
 from flask import Flask, g, jsonify, request
 from flask_cors import CORS
@@ -48,10 +45,7 @@ SUPABASE_URL              = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY      = os.environ["SUPABASE_SERVICE_KEY"]
 DRAW_PHOTOS_BUCKET        = get_env("DRAW_PHOTOS_BUCKET", "draw-photos")
 ANTHROPIC_MODEL           = get_env("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-DEPLOY_SECRET             = os.environ.get("DEPLOY_SECRET", "")
-RENDER_DEPLOY_HOOK        = os.environ.get("RENDER_DEPLOY_HOOK_URL", "")
-
-DEPLOY_ALLOWED_PATHS = {"shield_api.py", "app.py", "requirements.txt", "auth.py", "config.py", "escrow.py"}
+INTERNAL_ANALYZE_KEY      = os.environ.get("INTERNAL_ANALYZE_KEY", "")
 
 supabase_admin    = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 anthropic_client  = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -335,48 +329,15 @@ def stripe_webhook():
         return _error("Webhook processing failed", 500)
     return jsonify({"received":True})
 
-# ── SELF-DEPLOY ROUTE ──────────────────────────────────────────────────────
-# Claude calls POST /internal/deploy to push file content and trigger redeploy.
-# Locked behind DEPLOY_SECRET env var. Path allowlist prevents traversal.
-# ---------------------------------------------------------------------------
-@app.route("/internal/deploy", methods=["POST"])
-def internal_deploy():
-    auth  = request.headers.get("Authorization", "")
-    token = auth.removeprefix("Bearer ").strip()
-    if not DEPLOY_SECRET or not hmac.compare_digest(token, DEPLOY_SECRET):
-        return jsonify({"error": "Unauthorized"}), 401
-    data    = request.get_json(silent=True) or {}
-    path    = data.get("path", "").strip()
-    content = data.get("content", "")
-    trigger = data.get("trigger_redeploy", True)
-    if not path or path not in DEPLOY_ALLOWED_PATHS:
-        return jsonify({"error": f"Path not in allowlist: {path}"}), 400
-    if not content:
-        return jsonify({"error": "content required"}), 400
-    abs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
-    try:
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(abs_path))
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-        shutil.move(tmp, abs_path)
-        log.info("deploy: wrote %s (%d bytes)", path, len(content))
-    except Exception:
-        log.exception("deploy: write failed for %s", path)
-        return jsonify({"error": "File write failed"}), 500
-    redeployed = False
-    if trigger and RENDER_DEPLOY_HOOK:
-        try:
-            r = requests.get(RENDER_DEPLOY_HOOK, timeout=10)
-            redeployed = r.status_code == 200
-        except Exception:
-            log.warning("deploy: Render hook call failed")
-    return jsonify({"ok": True, "path": path, "bytes": len(content), "redeployed": redeployed})
-
-
 @app.route('/internal/analyze-photos', methods=['POST'])
 def internal_analyze_photos():
-    key = request.headers.get('X-Deploy-Key', '')
-    if key != 'xdI1O1XSQ9Y':
+    # Gated behind INTERNAL_ANALYZE_KEY (set in Render). Denies all if unset,
+    # so a missing env var never leaves the route open. Fetches remote images
+    # and bills the Anthropic key, so this must never be publicly callable.
+    if not INTERNAL_ANALYZE_KEY:
+        return jsonify({'error': 'Route disabled'}), 503
+    key = request.headers.get('X-Internal-Key', '')
+    if not hmac.compare_digest(key, INTERNAL_ANALYZE_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
     import anthropic as ac, requests as rq, base64 as b64
     client = ac.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))

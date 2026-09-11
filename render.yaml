@@ -15,6 +15,10 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Optional. Gates POST /internal/analyze-photos. Leave unset to keep
+      # that route disabled (returns 503).
+      - key: INTERNAL_ANALYZE_KEY
+        sync: false
       - key: APP_URL
         value: https://tradedeckapp.com
       - key: ALLOWED_ORIGINS
