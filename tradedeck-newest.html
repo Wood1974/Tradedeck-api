@@ -769,7 +769,94 @@ function switchTab(tabName) {
 
   window.TRADEDECK_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsYWFqZWpwcWpsZHBiaW5rdGxuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyMDg3MTksImV4cCI6MjEwMTc4NDcxOX0.tP-seLGoJnivrYmNhhTDmDJw4Uk92D95-zrwWB1G_S4';
 </script>
-<script src="api-client.js"></script>
+<script>
+(function (global) {
+  var API_URL = global.TRADEDECK_API_URL || 'https://tradedeck-api.onrender.com';
+  var SUPABASE_URL = global.TRADEDECK_SUPABASE_URL || 'https://jlaajejpqjldpbinktln.supabase.co';
+  var SUPABASE_ANON_KEY = global.TRADEDECK_SUPABASE_ANON_KEY || '';
+
+  var supabaseClient = null;
+
+  function getSupabase() {
+    if (!global.supabase || !global.supabase.createClient) {
+      throw new Error('Supabase JS SDK is not loaded');
+    }
+    if (!SUPABASE_ANON_KEY) {
+      throw new Error('TRADEDECK_SUPABASE_ANON_KEY is not configured');
+    }
+    if (!supabaseClient) {
+      supabaseClient = global.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    }
+    return supabaseClient;
+  }
+
+  async function getAccessToken() {
+    try {
+      var result = await getSupabase().auth.getSession();
+      return (result.data && result.data.session && result.data.session.access_token) || null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  async function apiFetch(path, options) {
+    options = options || {};
+    var headers = Object.assign({}, options.headers || {});
+    var token = await getAccessToken();
+
+    if (token) {
+      headers.Authorization = 'Bearer ' + token;
+    } else if (options.requireAuth) {
+      var authError = new Error('Sign in required');
+      authError.code = 'AUTH_REQUIRED';
+      throw authError;
+    }
+
+    var fetchOptions = {
+      method: options.method || 'GET',
+      headers: headers,
+      credentials: 'omit',
+    };
+
+    if (options.body !== undefined && options.body !== null) {
+      if (typeof options.body === 'object' && !(options.body instanceof FormData)) {
+        headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+        fetchOptions.body = JSON.stringify(options.body);
+      } else {
+        fetchOptions.body = options.body;
+      }
+    }
+
+    fetchOptions.headers = headers;
+    var response = await fetch(API_URL + path, fetchOptions);
+    var payload = null;
+    var contentType = response.headers.get('content-type') || '';
+
+    if (contentType.indexOf('application/json') !== -1) {
+      payload = await response.json();
+    } else if (!response.ok) {
+      payload = { error: response.statusText || 'Request failed' };
+    }
+
+    if (!response.ok) {
+      var error = new Error((payload && payload.error) || response.statusText || 'Request failed');
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
+    }
+
+    return payload;
+  }
+
+  global.TradeDeckAPI = {
+    API_URL: API_URL,
+    getSupabase: getSupabase,
+    getAccessToken: getAccessToken,
+    apiFetch: apiFetch,
+  };
+})(window);
+
+</script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
 
@@ -1059,12 +1146,12 @@ document.addEventListener('DOMContentLoaded', function() {
       '<div style="background:linear-gradient(135deg,rgba(245,158,11,0.07),rgba(245,158,11,0.02));border:1px solid rgba(245,158,11,0.2);border-radius:10px;padding:16px;">',
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">',
           '<span style="font-size:1rem;">🛡️</span>',
-          '<span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.9rem;color:var(--amber);text-transform:uppercase;">Add Shield to This Job</span>',
+          '<span style="font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:0.9rem;color:var(--amber);text-transform:uppercase;">Add Shield to This Job</span>',
         '</div>',
         '<p style="color:var(--steel);font-size:0.8rem;line-height:1.5;margin:0 0 14px;">',
           'AI photo verification at 5 key checkpoints. Tamper-proof completion record. $29 one-time.',
         '</p>',
-        '<button id="jdpAddShieldBtn" style="background:var(--amber);color:#000;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.06em;padding:9px 20px;border:none;border-radius:8px;cursor:pointer;">',
+        '<button id="jdpAddShieldBtn" style="background:var(--amber);color:#000;font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.06em;padding:9px 20px;border:none;border-radius:8px;cursor:pointer;">',
           'Add Shield — $29',
         '</button>',
       '</div>'
@@ -1111,7 +1198,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Apply button
     var applyRow = document.getElementById('jdpApplyRow');
-    applyRow.innerHTML = '<button id="jdpApplyBtn" style="background:var(--amber);color:#000;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.9rem;text-transform:uppercase;letter-spacing:0.06em;padding:10px 24px;border:none;border-radius:8px;cursor:pointer;">Apply for This Job</button>';
+    applyRow.innerHTML = '<button id="jdpApplyBtn" style="background:var(--amber);color:#000;font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:0.9rem;text-transform:uppercase;letter-spacing:0.06em;padding:10px 24px;border:none;border-radius:8px;cursor:pointer;">Apply for This Job</button>';
     document.getElementById('jdpApplyBtn').addEventListener('click', function() {
       var btn = this;
       TradeDeckAPI.apiFetch('/api/jobs/' + job.id + '/apply', { method: 'POST', requireAuth: true })
@@ -2462,7 +2549,7 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
     ? points.map(p => `
         <div class="shield-point-row" data-point-id="${p.id}" style="border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-bottom:10px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:0.85rem;color:var(--white);">${p.point_number}. ${p.label}</span>
+            <span style="font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:0.85rem;color:var(--white);">${p.point_number}. ${p.label}</span>
             <span class="shield-point-status" style="font-size:0.7rem;padding:2px 8px;border-radius:4px;background:${p.status === 'approved' ? 'rgba(74,222,128,0.15)' : 'rgba(245,158,11,0.12)'};color:${p.status === 'approved' ? '#4ADE80' : 'var(--amber)'};">${p.status || 'pending'}</span>
           </div>
           <div style="font-size:0.78rem;color:var(--steel);margin-bottom:6px;">${p.description}</div>
@@ -3147,24 +3234,6 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
 
 
 
-function switchTab(tabName) {
-    // Hide all tab content
-    const contents = document.querySelectorAll('[id$="-content"]');
-    contents.forEach(el => el.style.display = 'none');
-    
-    // Remove active class from all buttons
-    const buttons = document.querySelectorAll('[role="tab"]');
-    buttons.forEach(btn => btn.classList.remove('active'));
-    
-    // Show selected tab content
-    const selectedContent = document.getElementById(tabName + '-content');
-    if (selectedContent) {
-        selectedContent.style.display = 'block';
-    }
-    
-    // Add active class to clicked button
-    event.target.classList.add('active');
-}
 
 </script>
 </body>
