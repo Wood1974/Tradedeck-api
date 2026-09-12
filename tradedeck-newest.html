@@ -221,6 +221,7 @@ footer p{font-size:0.8rem;color:var(--steel)}
   <div class="logo" id="navLogo">Trade<span>Deck</span></div>
   <div class="nav-links">
     <button class="btn-primary" id="navPostBtn">Post a Job</button>
+    <button class="page-tab" id="navAuthBtn" style="margin-left:8px">Sign In</button>
   </div>
 </nav>
 
@@ -3236,5 +3237,56 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
 
 
 </script>
+
+<div id="tdAuthModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#1b1b1b;padding:28px;border-radius:12px;width:min(360px,92vw);color:#eee;">
+    <h3 style="margin:0 0 14px">Sign in to TradeDeck</h3>
+    <input id="tdAuthEmail" type="email" placeholder="Email" style="width:100%;padding:12px;margin-bottom:10px;border-radius:8px;border:1px solid #444;background:#111;color:#eee;">
+    <input id="tdAuthPass" type="password" placeholder="Password" style="width:100%;padding:12px;margin-bottom:14px;border-radius:8px;border:1px solid #444;background:#111;color:#eee;">
+    <div style="display:flex;gap:8px">
+      <button class="btn-primary" id="tdAuthSignIn" style="flex:1">Sign In</button>
+      <button class="page-tab" id="tdAuthSignUp" style="flex:1">Sign Up</button>
+    </div>
+    <div id="tdAuthMsg" style="margin-top:10px;font-size:.85rem;color:#f5a623;min-height:1.2em"></div>
+    <button id="tdAuthClose" style="margin-top:12px;background:none;border:none;color:#999;cursor:pointer">Cancel</button>
+  </div>
+</div>
+<script>
+(function(){
+  var sbc = window._supabaseClient;
+  var btn = document.getElementById('navAuthBtn');
+  var modal = document.getElementById('tdAuthModal');
+  var msg = document.getElementById('tdAuthMsg');
+  function show(m){ msg.textContent = m || ''; }
+  async function refresh(){
+    if(!sbc){ btn.textContent='Sign In'; return; }
+    var r = await sbc.auth.getSession();
+    var s = r && r.data && r.data.session;
+    btn.textContent = s ? 'Sign Out (' + (s.user.email||'').split('@')[0] + ')' : 'Sign In';
+    btn.dataset.signedIn = s ? '1' : '';
+  }
+  btn.addEventListener('click', async function(){
+    if(btn.dataset.signedIn){ await sbc.auth.signOut(); await refresh(); location.reload(); return; }
+    modal.style.display='flex'; show('');
+  });
+  document.getElementById('tdAuthClose').onclick = function(){ modal.style.display='none'; };
+  document.getElementById('tdAuthSignIn').onclick = async function(){
+    show('Signing in...');
+    var r = await sbc.auth.signInWithPassword({email:document.getElementById('tdAuthEmail').value.trim(), password:document.getElementById('tdAuthPass').value});
+    if(r.error){ show(r.error.message); return; }
+    modal.style.display='none'; await refresh(); location.reload();
+  };
+  document.getElementById('tdAuthSignUp').onclick = async function(){
+    show('Creating account...');
+    var r = await sbc.auth.signUp({email:document.getElementById('tdAuthEmail').value.trim(), password:document.getElementById('tdAuthPass').value});
+    if(r.error){ show(r.error.message); return; }
+    show(r.data.session ? 'Signed up!' : 'Check your email to confirm, then Sign In.');
+    if(r.data.session){ modal.style.display='none'; await refresh(); location.reload(); }
+  };
+  if(sbc && sbc.auth.onAuthStateChange){ sbc.auth.onAuthStateChange(refresh); }
+  refresh();
+})();
+</script>
+
 </body>
 </html>
