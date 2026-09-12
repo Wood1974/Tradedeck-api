@@ -3258,15 +3258,17 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
   var modal = document.getElementById('tdAuthModal');
   var msg = document.getElementById('tdAuthMsg');
   function show(m){ msg.textContent = m || ''; }
-  async function refresh(){
-    if(!sbc){ btn.textContent='Sign In'; return; }
-    var r = await sbc.auth.getSession();
-    var s = r && r.data && r.data.session;
+  function paint(s){
     btn.textContent = s ? 'Sign Out (' + (s.user.email||'').split('@')[0] + ')' : 'Sign In';
     btn.dataset.signedIn = s ? '1' : '';
   }
+  async function refresh(){
+    if(!sbc){ btn.textContent='Sign In'; return; }
+    var r = await sbc.auth.getSession();
+    paint(r && r.data && r.data.session);
+  }
   btn.addEventListener('click', async function(){
-    if(btn.dataset.signedIn){ await sbc.auth.signOut(); await refresh(); location.reload(); return; }
+    if(btn.dataset.signedIn){ await sbc.auth.signOut(); location.reload(); return; }
     modal.style.display='flex'; show('');
   });
   document.getElementById('tdAuthClose').onclick = function(){ modal.style.display='none'; };
@@ -3274,16 +3276,16 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
     show('Signing in...');
     var r = await sbc.auth.signInWithPassword({email:document.getElementById('tdAuthEmail').value.trim(), password:document.getElementById('tdAuthPass').value});
     if(r.error){ show(r.error.message); return; }
-    modal.style.display='none'; await refresh(); location.reload();
+    modal.style.display='none'; location.reload();
   };
   document.getElementById('tdAuthSignUp').onclick = async function(){
     show('Creating account...');
     var r = await sbc.auth.signUp({email:document.getElementById('tdAuthEmail').value.trim(), password:document.getElementById('tdAuthPass').value});
     if(r.error){ show(r.error.message); return; }
     show(r.data.session ? 'Signed up!' : 'Check your email to confirm, then Sign In.');
-    if(r.data.session){ modal.style.display='none'; await refresh(); location.reload(); }
+    if(r.data.session){ modal.style.display='none'; location.reload(); }
   };
-  if(sbc && sbc.auth.onAuthStateChange){ sbc.auth.onAuthStateChange(refresh); }
+  if(sbc && sbc.auth.onAuthStateChange){ sbc.auth.onAuthStateChange(function(ev, s){ setTimeout(function(){ paint(s); }, 0); }); }
   refresh();
 })();
 </script>
