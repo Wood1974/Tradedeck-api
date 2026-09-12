@@ -3145,6 +3145,27 @@ window.renderContractorUploadFlow     = renderContractorUploadFlow
 window.renderShieldBadge              = renderShieldBadge
 window.renderShieldCloseOutModal      = renderShieldCloseOutModal
 
+
+
+function switchTab(tabName) {
+    // Hide all tab content
+    const contents = document.querySelectorAll('[id$="-content"]');
+    contents.forEach(el => el.style.display = 'none');
+    
+    // Remove active class from all buttons
+    const buttons = document.querySelectorAll('[role="tab"]');
+    buttons.forEach(btn => btn.classList.remove('active'));
+    
+    // Show selected tab content
+    const selectedContent = document.getElementById(tabName + '-content');
+    if (selectedContent) {
+        selectedContent.style.display = 'block';
+    }
+    
+    // Add active class to clicked button
+    event.target.classList.add('active');
+}
+
 </script>
 </body>
 </html>
