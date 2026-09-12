@@ -906,3 +906,85 @@ def shield_stripe_webhook():
         log.warning("Could not record webhook event %s", event_id)
 
     return jsonify({'received': True})
+
+@app.route('/shield/webhook', methods=['POST'])
+def handle_stripe_webhook():
+    """
+    Stripe webhook handler for Shield payment events.
+    Verifies Stripe signature, then processes:
+    - payment_intent.succeeded → update shield_subscriptions
+    - charge.refunded → log refund
+    - customer.subscription.created → record contractor subscription
+    - customer.subscription.deleted → cancel subscription
+    """
+    sig_header = request.headers.get('Stripe-Signature')
+    payload = request.get_data()
+    
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, os.getenv('STRIPE_WEBHOOK_SECRET')
+        )
+    except ValueError as e:
+        return jsonify({'error': 'Invalid payload'}), 400
+    except stripe.error.SignatureVerificationError as e:
+        return jsonify({'error': 'Invalid signature'}), 400
+    
+    event_type = event['type']
+    event_data = event['data']['object']
+    
+    if event_type == 'payment_intent.succeeded':
+        # One-time Shield purchase ($79)
+        intent_id = event_data['id']
+        amount = event_data['amount']  # in cents: 7900 = $79
+        metadata = event_data.get('metadata', {})
+        job_id = metadata.get('job_id')
+        homeowner_id = metadata.get('homeowner_id')
+        
+        # Record in shield_subscriptions or shield_jobs
+        supabase.table('shield_jobs').update({
+            'shield_active': True,
+            'shield_activated_at': 'now()',
+            'stripe_intent_id': intent_id
+        }).eq('id', job_id).execute()
+        
+        print(f"[WEBHOOK] Shield activated for job {job_id}")
+    
+    elif event_type == 'customer.subscription.created':
+        # Contractor monthly subscription ($49)
+        sub_id = event_data['id']
+        customer_id = event_data['customer']
+        metadata = event_data.get('metadata', {})
+        contractor_id = metadata.get('contractor_id')
+        
+        supabase.table('shield_subscriptions').insert({
+            'contractor_id': contractor_id,
+            'stripe_subscription_id': sub_id,
+            'stripe_customer_id': customer_id,
+            'status': 'active',
+            'created_at': 'now()'
+        }).execute()
+        
+        print(f"[WEBHOOK] Contractor subscription created: {sub_id}")
+    
+    elif event_type == 'customer.subscription.deleted':
+        # Subscription cancelled
+        sub_id = event_data['id']
+        
+        supabase.table('shield_subscriptions').update({
+            'status': 'cancelled',
+            'cancelled_at': 'now()'
+        }).eq('stripe_subscription_id', sub_id).execute()
+        
+        print(f"[WEBHOOK] Subscription cancelled: {sub_id}")
+    
+    elif event_type == 'charge.refunded':
+        # Refund processed
+        charge_id = event_data['id']
+        amount_refunded = event_data.get('amount_refunded')
+        
+        print(f"[WEBHOOK] Refund processed: {charge_id}, amount: {amount_refunded}")
+    
+    return jsonify({'received': True}), 200
+
+
+
