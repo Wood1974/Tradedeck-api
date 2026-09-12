@@ -1057,6 +1057,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var selectedTrade = '';
 
   function openFlow() {
+    if (!(window.tdIsSignedIn && window.tdIsSignedIn())) { if (window.tdOpenAuth) window.tdOpenAuth('Sign in to post a job'); return; }
     document.querySelector('.progress-wrap').style.display='';
     document.querySelector('.flow-body').style.display='';
     document.getElementById('successPane').classList.remove('active');
@@ -3263,7 +3264,13 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
   var modal = document.getElementById('tdAuthModal');
   var msg = document.getElementById('tdAuthMsg');
   function show(m){ msg.textContent = m || ''; }
+  window.tdIsSignedIn = function(){
+    if (window.__tdSignedIn) return true;
+    try { var t = localStorage.getItem('sb-jlaajejpqjldpbinktln-auth-token'); return !!(t && JSON.parse(t).access_token); } catch(e){ return false; }
+  };
+  window.tdOpenAuth = function(m){ modal.style.display='flex'; show(m||''); };
   function paint(s){
+    window.__tdSignedIn = !!s;
     btn.textContent = s ? 'Sign Out (' + (s.user.email||'').split('@')[0] + ')' : 'Sign In';
     btn.dataset.signedIn = s ? '1' : '';
   }
