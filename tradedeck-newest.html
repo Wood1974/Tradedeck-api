@@ -1274,7 +1274,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   /* Store Supabase client reference for Shield check */
   document.addEventListener('DOMContentLoaded', function() {
-    if (window.supabase && window.TRADEDECK_SUPABASE_ANON_KEY) {
+    if (!window._supabaseClient && window.supabase && window.TRADEDECK_SUPABASE_ANON_KEY) {
       window._supabaseClient = window.supabase.createClient(
         'https://jlaajejpqjldpbinktln.supabase.co',
         window.TRADEDECK_SUPABASE_ANON_KEY
@@ -3253,7 +3253,12 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
 </div>
 <script>
 (function(){
-  var sbc = window._supabaseClient;
+  function sbc(){
+    if (!window._supabaseClient && window.supabase && window.TRADEDECK_SUPABASE_ANON_KEY) {
+      window._supabaseClient = window.supabase.createClient('https://jlaajejpqjldpbinktln.supabase.co', window.TRADEDECK_SUPABASE_ANON_KEY);
+    }
+    return window._supabaseClient;
+  }
   var btn = document.getElementById('navAuthBtn');
   var modal = document.getElementById('tdAuthModal');
   var msg = document.getElementById('tdAuthMsg');
@@ -3262,31 +3267,39 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
     btn.textContent = s ? 'Sign Out (' + (s.user.email||'').split('@')[0] + ')' : 'Sign In';
     btn.dataset.signedIn = s ? '1' : '';
   }
+  function withTimeout(p, ms){
+    return Promise.race([p, new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('Timed out after '+ms/1000+'s')); }, ms); })]);
+  }
   async function refresh(){
-    if(!sbc){ btn.textContent='Sign In'; return; }
-    var r = await sbc.auth.getSession();
-    paint(r && r.data && r.data.session);
+    try {
+      var c = sbc(); if(!c){ paint(null); return; }
+      var r = await withTimeout(c.auth.getSession(), 8000);
+      paint(r && r.data && r.data.session);
+    } catch(e){ paint(null); }
+  }
+  async function run(kind){
+    var email = document.getElementById('tdAuthEmail').value.trim();
+    var pass = document.getElementById('tdAuthPass').value;
+    if(!email || !pass){ show('Enter email and password'); return; }
+    show(kind==='in' ? 'Signing in...' : 'Creating account...');
+    try {
+      var c = sbc(); if(!c) throw new Error('Supabase client not loaded — reload page');
+      var r = await withTimeout(kind==='in'
+        ? c.auth.signInWithPassword({email:email, password:pass})
+        : c.auth.signUp({email:email, password:pass}), 15000);
+      if(r.error){ show(r.error.message); return; }
+      if(r.data && r.data.session){ modal.style.display='none'; location.reload(); return; }
+      show('Check your email to confirm, then Sign In.');
+    } catch(e){ show('Error: ' + (e.message||e)); }
   }
   btn.addEventListener('click', async function(){
-    if(btn.dataset.signedIn){ await sbc.auth.signOut(); location.reload(); return; }
+    if(btn.dataset.signedIn){ try{ await withTimeout(sbc().auth.signOut(), 8000); }catch(e){} location.reload(); return; }
     modal.style.display='flex'; show('');
   });
   document.getElementById('tdAuthClose').onclick = function(){ modal.style.display='none'; };
-  document.getElementById('tdAuthSignIn').onclick = async function(){
-    show('Signing in...');
-    var r = await sbc.auth.signInWithPassword({email:document.getElementById('tdAuthEmail').value.trim(), password:document.getElementById('tdAuthPass').value});
-    if(r.error){ show(r.error.message); return; }
-    modal.style.display='none'; location.reload();
-  };
-  document.getElementById('tdAuthSignUp').onclick = async function(){
-    show('Creating account...');
-    var r = await sbc.auth.signUp({email:document.getElementById('tdAuthEmail').value.trim(), password:document.getElementById('tdAuthPass').value});
-    if(r.error){ show(r.error.message); return; }
-    show(r.data.session ? 'Signed up!' : 'Check your email to confirm, then Sign In.');
-    if(r.data.session){ modal.style.display='none'; location.reload(); }
-  };
-  if(sbc && sbc.auth.onAuthStateChange){ sbc.auth.onAuthStateChange(function(ev, s){ setTimeout(function(){ paint(s); }, 0); }); }
-  refresh();
+  document.getElementById('tdAuthSignIn').onclick = function(){ run('in'); };
+  document.getElementById('tdAuthSignUp').onclick = function(){ run('up'); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', refresh); else refresh();
 })();
 </script>
 
