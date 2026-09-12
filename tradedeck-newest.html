@@ -747,6 +747,26 @@ footer p{font-size:0.8rem;color:var(--steel)}
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+
+function switchTab(tabName) {
+    // Hide all tabs
+    const tabs = document.querySelectorAll('[data-tab]');
+    tabs.forEach(t => t.style.display = 'none');
+    
+    // Deactivate all tab buttons
+    const buttons = document.querySelectorAll('button[onclick*="switchTab"]');
+    buttons.forEach(b => b.classList.remove('active'));
+    
+    // Show selected tab
+    const selectedTab = document.querySelector(`[data-tab="${tabName}"]`);
+    if (selectedTab) {
+        selectedTab.style.display = 'block';
+    }
+    
+    // Activate selected button
+    event.target.classList.add('active');
+}
+
   window.TRADEDECK_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsYWFqZWpwcWpsZHBiaW5rdGxuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyMDg3MTksImV4cCI6MjEwMTc4NDcxOX0.tP-seLGoJnivrYmNhhTDmDJw4Uk92D95-zrwWB1G_S4';
 </script>
 <script src="api-client.js"></script>
