@@ -122,87 +122,158 @@ def process_job(title, description, location):
 
 # ── KSL FETCH ─────────────────────────────────────────────────────────────────
 KSL_SEARCH_URL = "https://classifieds.ksl.com/search/cat/Jobs/sub/Construction+%26+Skilled+Trades"
-KSL_PAGE_SIZE  = 24   # KSL shows ~24 listings per page
 
 
 def fetch_ksl_jobs(requests_lib):
     """
-    Scrape KSL classifieds Construction & Skilled Trades search results.
-    Paginates via ?start=N until results drop off.
-    Returns list of dicts with keys: title, description, location, url, company, pay.
+    Scrape KSL classifieds via RSC (React Server Components) payload.
+    Each page SSR contains JSON data in SearchStoreProvider initialState.
+    Cursor-based pagination via endCursor from pageInfo.
+    Returns list of dicts: title, description, location, url, company, pay.
     """
-    import os
-    from bs4 import BeautifulSoup
+    import os, re, json as _json
 
-    # Allow env override of base URL
     base_url = os.getenv('KSL_API_URL', KSL_SEARCH_URL)
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Encoding': 'gzip, deflate',
         'Accept-Language': 'en-US,en;q=0.9',
     }
 
     all_jobs = []
     seen_ids = set()
-    start = 0
+    cursor = None
+    page = 0
 
     while True:
-        url = f"{base_url}?start={start}" if start > 0 else base_url
+        url = f"{base_url}?endCursor={cursor}" if cursor else base_url
         try:
-            r = requests_lib.get(url, headers=headers, timeout=20)
+            r = requests_lib.get(url, headers=headers, timeout=25)
             r.raise_for_status()
         except Exception as e:
-            if start == 0:
+            if page == 0:
                 raise RuntimeError(f"KSL fetch failed: {e}")
-            break  # End of pages
-
-        soup = BeautifulSoup(r.text, 'html.parser')
-        cards = soup.find_all('a', attrs={'data-item-id': True})
-        if not cards:
             break
 
-        new_this_page = 0
-        for card in cards:
-            item_id = card.get('data-item-id', '')
-            if item_id in seen_ids:
+        # Parse RSC payload from <script>self.__next_f.push(...)</script> blocks
+        # The SearchStoreProvider initialState contains results + pageInfo
+        jobs, next_cursor, has_next = _parse_rsc_payload(r.text)
+
+        new_count = 0
+        for job in jobs:
+            jid = str(job.get('id', ''))
+            if jid in seen_ids:
                 continue
-            seen_ids.add(item_id)
-            new_this_page += 1
+            seen_ids.add(jid)
+            new_count += 1
 
-            title    = card.get('aria-label', '').strip()
-            href     = card.get('href', '').strip()
+            city  = job.get('location', {}).get('city', '') if isinstance(job.get('location'), dict) else ''
+            state = job.get('location', {}).get('state', '') if isinstance(job.get('location'), dict) else ''
+            pay_from = job.get('jobsPayFrom', 0) or 0
+            pay_to   = job.get('jobsPayTo', 0) or 0
+            pay_type = job.get('jobsPayRangeType', '') or ''
 
-            # Location: span with role=link
-            loc_el   = card.find('span', attrs={'role': 'link'})
-            location = loc_el.get_text(strip=True) if loc_el else ''
-
-            # Pay: div with aria-label containing "Price"
-            pay_els  = card.find_all(attrs={'aria-label': lambda x: x and 'Price' in str(x)})
-            pay      = pay_els[0].get_text(strip=True) if pay_els else ''
-
-            # Company: sometimes in a smaller text element
-            company_el = card.find('p', class_=lambda c: c and 'company' in c.lower()) or \
-                         card.find('div', class_=lambda c: c and 'employer' in c.lower())
-            company  = company_el.get_text(strip=True) if company_el else ''
-
-            if not title or not href:
-                continue
+            # Build pay string  (cents → dollars)
+            if pay_from or pay_to:
+                pf = pay_from / 100 if pay_from > 1000 else pay_from
+                pt = pay_to   / 100 if pay_to   > 1000 else pay_to
+                pay = f"${pf:.0f}–${pt:.0f}/{pay_type}" if pf and pt else f"${pf:.0f}/{pay_type}" if pf else ''
+            else:
+                pay = ''
 
             all_jobs.append({
-                'title':       title,
-                'description': f"{title} — {pay}".strip(' —'),
-                'location':    location,
-                'company':     company,
+                'title':       (job.get('title') or '').strip(),
+                'description': (job.get('title') or '').strip(),
+                'location':    f"{city}, {state}".strip(', '),
+                'company':     '',
                 'pay':         pay,
-                'url':         href,
+                'url':         f"https://classifieds.ksl.com/listing/{jid}",
             })
 
-        log.info("KSL page start=%d: %d new listings (total so far: %d)", start, new_this_page, len(all_jobs))
+        log.info("KSL page %d: %d new jobs (total: %d, cursor: %s)",
+                 page, new_count, len(all_jobs), cursor)
 
-        # Stop if we got significantly fewer than expected (last page)
-        if new_this_page < KSL_PAGE_SIZE // 2:
+        if not has_next or not next_cursor or new_count == 0:
             break
 
-        start += KSL_PAGE_SIZE
+        cursor = next_cursor
+        page  += 1
+
+        # Safety cap: 460 jobs ÷ ~11 per page = ~42 pages max
+        if page > 50:
+            log.warning("KSL: safety cap reached at 50 pages")
+            break
 
     return all_jobs
+
+
+def _parse_rsc_payload(html):
+    """
+    Extract job results and pageInfo from the RSC streaming payload.
+    Finds the initialState with 'results' and 'pageInfo' keys.
+    Returns (jobs_list, end_cursor, has_next_page).
+    """
+    import re, json as _json
+
+    jobs, end_cursor, has_next = [], None, False
+
+    # Get the single large RSC chunk
+    chunks = re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.DOTALL)
+    if not chunks:
+        return jobs, end_cursor, has_next
+
+    # Decode JS unicode escapes
+    try:
+        raw = chunks[0].encode('raw_unicode_escape').decode('unicode_escape')
+    except Exception:
+        raw = chunks[0]
+
+    # Find the initialState that has 'results' followed soon by 'pageInfo'
+    # (not the filter-options initialState which comes first)
+    for m in re.finditer(r'"initialState"\s*:', raw):
+        pos = m.end()
+        segment = raw[pos:pos + 200]
+        if not ('"results"' in segment or '"pageInfo"' in segment):
+            continue
+
+        # Locate the opening brace
+        brace_start = raw.index('{', pos)
+
+        # Walk braces to find matching close
+        depth = 0
+        end_pos = brace_start
+        for i, ch in enumerate(raw[brace_start:], brace_start):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end_pos = i + 1
+                    break
+
+        try:
+            state = _json.loads(raw[brace_start:end_pos])
+        except Exception:
+            continue
+
+        if 'results' not in state or 'pageInfo' not in state:
+            continue
+
+        # results is [[...items...]]
+        raw_results = state.get('results', [])
+        if raw_results and isinstance(raw_results[0], list):
+            raw_results = raw_results[0]
+        jobs = raw_results
+
+        # pageInfo is [{...}]
+        page_info = state.get('pageInfo', [])
+        if page_info and isinstance(page_info, list):
+            page_info = page_info[0]
+        if isinstance(page_info, dict):
+            has_next   = page_info.get('hasNextPage', False)
+            end_cursor = page_info.get('endCursor', None)
+
+        break
+
+    return jobs, end_cursor, has_next
