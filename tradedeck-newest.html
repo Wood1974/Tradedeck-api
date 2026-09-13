@@ -221,6 +221,22 @@ html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
 <script>
 (function(){ try{ var t=localStorage.getItem('sb-jlaajejpqjldpbinktln-auth-token'); if(!(t && JSON.parse(t).access_token)) document.documentElement.classList.add('td-locked'); }catch(e){ document.documentElement.classList.add('td-locked'); } })();
 </script>
+<style>
+/* mobile nav + tab bar */
+#navAuthBtn{white-space:nowrap;font-size:0.8rem;padding:8px 10px;margin-left:8px}
+.nav-links .btn-primary{white-space:nowrap}
+.page-tab{white-space:nowrap;flex:0 0 auto}
+.page-tab-bar{-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.page-tab-bar::-webkit-scrollbar{display:none}
+@media (max-width:640px){
+  nav{padding:12px 16px;gap:8px}
+  .logo{font-size:1.3rem}
+  .nav-links{gap:8px}
+  .nav-links #navPostBtn{display:none}
+  #navAuthBtn{font-size:0.75rem;padding:8px 8px;margin-left:0}
+  .page-tab{font-size:0.78rem;padding:12px 12px;letter-spacing:0.04em}
+}
+</style>
 </head>
 <body>
 
