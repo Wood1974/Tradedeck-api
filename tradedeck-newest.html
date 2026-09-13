@@ -305,20 +305,20 @@ html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
   </div>
   <div class="fw-filters">
     <div class="fw-filters-inner">
-      <input type="text" class="fw-search" id="fwSearch" placeholder="Search jobs, trades, platforms...">
-      <select class="fw-select" id="fwTrade">
+      <input type="text" class="fw-search" id="fwSearch" placeholder="Search jobs, trades, platforms..." autocomplete="off">
+      <select class="fw-select" id="fwTrade" autocomplete="off">
         <option value="">All Trades</option>
         <option>Framing</option><option>Concrete</option><option>Roofing</option>
         <option>Electrical</option><option>Plumbing</option><option>HVAC</option>
         <option>Excavation</option><option>Flooring</option><option>Siding</option>
         <option>Finish Carpentry</option><option>Painting</option><option>General</option>
       </select>
-      <select class="fw-select" id="fwLocation">
+      <select class="fw-select" id="fwLocation" autocomplete="off">
         <option value="">All Locations</option>
         <option>Park City, UT</option><option>Heber City, UT</option><option>Kamas, UT</option>
         <option>Salt Lake City, UT</option><option>Denver, CO</option><option>Boise, ID</option><option>National</option>
       </select>
-      <select class="fw-select" id="fwCost">
+      <select class="fw-select" id="fwCost" autocomplete="off">
         <option value="">All Cost Types</option>
         <option value="free">Free Only</option>
         <option value="paid">Paid</option>
@@ -594,7 +594,7 @@ html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
     <div class="cc-connect-banner" id="ccConnectBanner">
       <h3>Connect CompanyCam</h3>
       <p>Paste your CompanyCam API key to pull job site photos directly into TradeDeck.</p>
-      <input type="text" class="cc-api-input" id="ccApiKeyInput" placeholder="Paste CompanyCam API key here...">
+      <input type="text" class="cc-api-input" id="ccApiKeyInput" placeholder="Paste CompanyCam API key here..." autocomplete="off">
       <button class="btn-primary" id="ccConnectBtn">Connect</button>
       <p style="margin-top:14px;font-size:0.78rem;color:var(--steel);">Find your key: app.companycam.com &rarr; Account &rarr; API</p>
     </div>
@@ -605,7 +605,7 @@ html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
         <div class="cc-stat"><div class="num" id="ccThisWeek">--</div><div class="lbl">This Week</div></div>
       </div>
       <div class="cc-toolbar">
-        <select class="cc-job-select" id="ccJobSelect"><option value="">All Projects</option></select>
+        <select class="cc-job-select" id="ccJobSelect" autocomplete="off"><option value="">All Projects</option></select>
         <button class="btn-ghost" id="ccRefreshBtn" style="font-size:0.8rem;padding:9px 16px;">Refresh</button>
         <button class="btn-ghost" id="ccDisconnectBtn" style="font-size:0.8rem;padding:9px 16px;border-color:rgba(255,100,100,0.4);color:rgba(255,100,100,0.8);">Disconnect</button>
       </div>
@@ -674,9 +674,9 @@ html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
           </div>
         </div>
         <div class="field-row" style="margin-top:20px;">
-          <div class="field-group"><label>City</label><input type="text" id="city" placeholder="Park City"></div>
+          <div class="field-group"><label>City</label><input type="text" id="city" placeholder="Park City" autocomplete="off"></div>
           <div class="field-group"><label>State</label>
-            <select id="stateSelect">
+            <select id="stateSelect" autocomplete="off">
               <option value="">-- Select --</option>
               <option value="UT" selected>Utah</option>
               <option value="CO">Colorado</option>
@@ -696,26 +696,26 @@ html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
       </div>
       <div class="step-pane" id="step2">
         <h3>Tell subs what the job looks like</h3>
-        <div class="field-group"><label>Job Title</label><input type="text" id="jobTitle" placeholder="e.g. Framing Crew for New Custom Home"></div>
+        <div class="field-group"><label>Job Title</label><input type="text" id="jobTitle" placeholder="e.g. Framing Crew for New Custom Home" autocomplete="off"></div>
         <div class="field-row">
-          <div class="field-group"><label>Start Date</label><input type="date" id="startDate"></div>
+          <div class="field-group"><label>Start Date</label><input type="date" id="startDate" autocomplete="off"></div>
           <div class="field-group"><label>Duration</label>
-            <select id="duration">
+            <select id="duration" autocomplete="off">
               <option value="">-- Select --</option>
               <option>1 Week</option><option>2 Weeks</option><option>3-4 Weeks</option><option>1-2 Months</option><option>Ongoing</option>
             </select>
           </div>
         </div>
         <div class="field-row">
-          <div class="field-group"><label>Pay Rate</label><input type="text" id="payRate" placeholder="e.g. $65-$75 / hr"></div>
+          <div class="field-group"><label>Pay Rate</label><input type="text" id="payRate" placeholder="e.g. $65-$75 / hr" autocomplete="off"></div>
           <div class="field-group"><label>Crew Size</label>
-            <select id="crewSize">
+            <select id="crewSize" autocomplete="off">
               <option value="">-- Select --</option>
               <option>1 Person</option><option>2-3 People</option><option>4-6 People</option><option>7+ People</option>
             </select>
           </div>
         </div>
-        <div class="field-group"><label>Description</label><textarea id="jobDesc" placeholder="Scope, requirements, anything subs need to know..."></textarea></div>
+        <div class="field-group"><label>Description</label><textarea id="jobDesc" placeholder="Scope, requirements, anything subs need to know..." autocomplete="off"></textarea></div>
 
         <div id="shieldToggleWrap" style="margin-top:18px;background:linear-gradient(135deg,rgba(245,158,11,0.08),rgba(245,158,11,0.03));border:1px solid rgba(245,158,11,0.25);border-radius:12px;padding:16px 18px;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
@@ -728,7 +728,7 @@ html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
               <div style="font-size:0.8rem;color:var(--steel);line-height:1.5;">AI photo verification at 5 key checkpoints. Tamper-proof completion record.</div>
             </div>
             <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;">
-              <input type="checkbox" id="shieldToggle" style="opacity:0;width:0;height:0;">
+              <input type="checkbox" id="shieldToggle" style="opacity:0;width:0;height:0;" autocomplete="off">
               <span id="shieldSlider" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#374151;border-radius:24px;transition:0.3s;"></span>
             </label>
           </div>
@@ -2010,7 +2010,7 @@ function renderShieldBrief(container, onReady) {
       class="shield-brief-textarea"
       placeholder="Describe your project in detail. The more specific you are, the more accurate your AI checkpoints will be."
       rows="4"
-    ></textarea>
+     autocomplete="off"></textarea>
     <div id="shield-brief-score-bar-wrap" class="shield-score-bar-wrap" style="display:none">
       <div id="shield-brief-score-bar" class="shield-score-bar"></div>
     </div>
@@ -2137,7 +2137,7 @@ function renderShieldToggle(container, jobId, jobBudget = 0, jobDescription = ''
         <span class="shield-subtitle">AI monitors your project at the 5 moments that determine the outcome</span>
       </div>
       <label class="shield-switch">
-        <input type="checkbox" id="shield-toggle-input">
+        <input type="checkbox" id="shield-toggle-input" autocomplete="off">
         <span class="shield-slider"></span>
       </label>
     </div>
@@ -2606,11 +2606,11 @@ async function renderContractorUploadFlow(containerEl, shieldJobId, pointId) {
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
                   <label style="display:flex;align-items:center;gap:6px;cursor:pointer;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:6px;padding:6px 10px;">
                     <span style="font-size:0.78rem;color:var(--amber);font-weight:600;">📷 Wide Shot</span>
-                    <input type="file" class="shield-point-file shield-wide-file" accept="image/jpeg,image/heic,image/heif" capture="environment" style="display:none;" data-point-id="${p.id}" data-shot-type="wide" />
+                    <input type="file" class="shield-point-file shield-wide-file" accept="image/jpeg,image/heic,image/heif" capture="environment" style="display:none;" data-point-id="${p.id}" data-shot-type="wide" / autocomplete="off">
                   </label>
                   <label style="display:flex;align-items:center;gap:6px;cursor:pointer;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:6px;padding:6px 10px;">
                     <span style="font-size:0.78rem;color:var(--amber);font-weight:600;">🔍 Detail Shot</span>
-                    <input type="file" class="shield-point-file shield-detail-file" accept="image/jpeg,image/heic,image/heif" capture="environment" style="display:none;" data-point-id="${p.id}" data-shot-type="detail" />
+                    <input type="file" class="shield-point-file shield-detail-file" accept="image/jpeg,image/heic,image/heif" capture="environment" style="display:none;" data-point-id="${p.id}" data-shot-type="detail" / autocomplete="off">
                   </label>
                 </div>
                 <div class="shield-point-status-msg" style="margin-top:8px;font-size:0.78rem;"></div>`
@@ -2827,7 +2827,7 @@ async function renderShieldCloseOutModal(shieldJobId) {
           <div class="shield-closeout-warning">
             ⚠️ Not all checkpoints are approved.
             <label class="shield-closeout-override">
-              <input type="checkbox" id="closeout-override" />
+              <input type="checkbox" id="closeout-override" / autocomplete="off">
               Close anyway
             </label>
           </div>
@@ -3269,8 +3269,8 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
 <div id="tdAuthModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#1b1b1b;padding:28px;border-radius:12px;width:min(360px,92vw);color:#eee;">
     <div style="font-family:'Barlow Condensed',sans-serif;font-size:2rem;font-weight:700;margin-bottom:4px">Trade<span style="color:#f5a623">Deck</span></div><h3 style="margin:0 0 14px;font-weight:400;color:#bbb">Sign in or create an account to continue</h3>
-    <input id="tdAuthEmail" type="email" placeholder="Email" style="width:100%;padding:12px;margin-bottom:10px;border-radius:8px;border:1px solid #444;background:#111;color:#eee;">
-    <input id="tdAuthPass" type="password" placeholder="Password" style="width:100%;padding:12px;margin-bottom:14px;border-radius:8px;border:1px solid #444;background:#111;color:#eee;">
+    <input id="tdAuthEmail" type="email" autocomplete="username" inputmode="email" placeholder="Email" style="width:100%;padding:12px;margin-bottom:10px;border-radius:8px;border:1px solid #444;background:#111;color:#eee;">
+    <input id="tdAuthPass" type="password" autocomplete="current-password" placeholder="Password" style="width:100%;padding:12px;margin-bottom:14px;border-radius:8px;border:1px solid #444;background:#111;color:#eee;">
     <div style="display:flex;gap:8px">
       <button class="btn-primary" id="tdAuthSignIn" style="flex:1">Sign In</button>
       <button class="page-tab" id="tdAuthSignUp" style="flex:1">Sign Up</button>
