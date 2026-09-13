@@ -1139,7 +1139,7 @@ document.addEventListener('DOMContentLoaded', function() {
         loadJobs();
       })
       .catch(function(err){
-        if (!handleAuthError(err)) alert('Failed to post job. Please try again.');
+        if (!handleAuthError(err)) alert('Failed to post job: ' + (err && (err.status ? 'HTTP ' + err.status + ' — ' : '') + (err.message || err)) );
       });
   }
 
