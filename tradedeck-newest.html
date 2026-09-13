@@ -902,6 +902,10 @@ document.addEventListener('DOMContentLoaded', function() {
           return;
         }
         var job = data.jobs[0];
+        job.trade = job.trade || 'General';
+        job.location = job.location || 'Utah';
+        job.applicants = (job.applicants != null) ? job.applicants : (job.applicant_count || 0);
+        if (!job.age) { var ms = Date.now() - new Date(job.created_at || Date.now()).getTime(); var hrs = Math.floor(ms/3600000); job.age = hrs < 1 ? 'just now' : hrs < 24 ? hrs + 'h ago' : Math.floor(hrs/24) + 'd ago'; }
         document.getElementById('heroCard').innerHTML =
           '<div class="bc-header">' +
             '<div><div class="bc-title">' + job.title + '</div>' +
