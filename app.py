@@ -339,29 +339,11 @@ def stripe_webhook():
 # Scrapes KSL construction jobs, filters to Wasatch-surrounding counties,
 # categorizes by trade, writes to Supabase jobs table.
 # ---------------------------------------------------------------------------
-from ksl_scraper import process_job
-
-KSL_SEARCH_URL = "https://jobs.ksl.com/search/api"
-KSL_HEADERS    = {"User-Agent": "Mozilla/5.0 (TradeDeck/2.0; +https://tradedeckapp.com)"}
-
-def _ksl_fetch_jobs():
-    """Fetch raw job list from KSL's search API."""
-    params = {
-        "q":        "",
-        "category": "Construction & Trades",
-        "state":    "UT",
-        "perPage":  500,
-        "page":     1,
-    }
-    r = requests.get(KSL_SEARCH_URL, params=params, headers=KSL_HEADERS, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    # KSL returns {"jobs": [...]} or {"results": [...]} depending on version
-    return data.get("jobs") or data.get("results") or []
+from ksl_scraper import process_job, fetch_ksl_jobs, is_construction, categorize_county
 
 def _ksl_upsert(job, cat):
     """Insert job into Supabase; skip if external_url already exists."""
-    ext_url = job.get("url") or job.get("applyUrl") or ""
+    ext_url = (job.get("url") or "").strip()
     if not ext_url:
         return False
     existing = supabase_admin.table("jobs").select("id").eq("external_url", ext_url).limit(1).execute()
@@ -371,24 +353,24 @@ def _ksl_upsert(job, cat):
         "title":        (job.get("title") or "")[:200],
         "trade":        cat["trade"],
         "county":       cat["county"],
-        "city":         (job.get("city") or job.get("location") or "")[:100],
+        "city":         (job.get("location") or job.get("city") or "")[:100],
         "state":        "UT",
         "description":  (job.get("description") or "")[:1000],
-        "company":      (job.get("company") or job.get("employer") or "")[:200],
+        "company":      (job.get("company") or "")[:200],
         "source":       "ksl",
         "external_url": ext_url,
         "status":       "open",
     }).execute()
     return True
 
-@app.route("/api/ksl/scrape", methods=["POST"])
+
 def ksl_scrape():
     """
     Scrape KSL construction jobs → filter by county → categorize → upsert Supabase.
     Called by admin or cron. No auth required (write-only, idempotent).
     """
     try:
-        raw_jobs = _ksl_fetch_jobs()
+        raw_jobs = fetch_ksl_jobs(requests)
     except Exception as e:
         log.exception("KSL fetch failed")
         return _error(f"KSL fetch failed: {e}", 502)
@@ -404,8 +386,6 @@ def ksl_scrape():
         loc    = job.get("location") or job.get("city") or ""
         cat    = process_job(title, desc, loc)
         if cat is None:
-            # Distinguish why it was skipped for logging
-            from ksl_scraper import is_construction, categorize_county
             if not is_construction(title, desc):
                 skipped_category += 1
             else:
@@ -432,7 +412,7 @@ def ksl_scrape():
 
 @app.route("/api/ksl/scrape", methods=["GET"])
 def ksl_scrape_get():
-    """Cron-friendly GET alias for the scrape endpoint."""
+    """Cron-friendly GET alias."""
     return ksl_scrape()
 
 # ── SELF-DEPLOY ROUTE ──────────────────────────────────────────────────────
