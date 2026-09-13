@@ -7,3 +7,5 @@ stripe==11.4.0
 requests==2.32.3
 piexif>=1.1.3
 Pillow>=10.0.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
