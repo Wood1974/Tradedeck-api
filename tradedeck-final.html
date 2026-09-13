@@ -1087,7 +1087,14 @@ global.SHIELD_QUESTIONS     = SHIELD_QUESTIONS
           </div>
         </div>
         <div class="field-group"><label>Description</label><textarea id="jobDesc" placeholder="Scope, requirements, anything subs need to know..."></textarea></div>
-        <div class="flow-footer">
+        <div id="shieldBriefMeter" style="display:none;margin-bottom:16px;">
+            <div style="height:4px;background:rgba(255,255,255,0.1);border-radius:2px;margin-bottom:8px;">
+              <div id="shieldMeterBar" style="height:4px;border-radius:2px;background:var(--amber);width:0%;transition:width 0.3s;"></div>
+            </div>
+            <div id="shieldMeterLabel" style="font-size:0.75rem;color:var(--steel);margin-bottom:6px;"></div>
+            <div id="shieldMeterChips" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+          </div>
+          <div class="flow-footer">
           <button class="btn-back" id="step2Back">Back</button>
           <button class="btn-primary" id="step2Next">Preview</button>
         </div>
@@ -1520,6 +1527,25 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('step1Next').addEventListener('click',function(){ goToStep(2); });
   document.getElementById('step2Back').addEventListener('click',function(){ goToStep(1); });
   document.getElementById('step2Next').addEventListener('click',function(){ buildPreview(); goToStep(3); });
+  // Brief scoring meter — shows strength of job description
+  var _jobDescEl = document.getElementById('jobDesc');
+  if (_jobDescEl) {
+    _jobDescEl.addEventListener('input', function() {
+      if (!window.scoreBrief) return;
+      var meter = document.getElementById('shieldBriefMeter');
+      if (!meter) return;
+      var scored = window.scoreBrief(document.getElementById('jobTitle').value, this.value, {});
+      meter.style.display = 'block';
+      var bar = document.getElementById('shieldMeterBar');
+      if (bar) { bar.style.width = scored.score + '%'; bar.style.background = scored.score >= 70 ? '#4ADE80' : scored.score >= 40 ? '#F5A623' : '#EF4444'; }
+      var lbl = document.getElementById('shieldMeterLabel');
+      if (lbl) lbl.textContent = 'Brief strength ' + scored.score + '/100' + (scored.ready ? ' — strong enough for Shield' : ' — add more detail');
+      var chipsEl = document.getElementById('shieldMeterChips');
+      if (chipsEl) chipsEl.innerHTML = scored.chips.map(function(c) {
+        return '<span style="font-size:0.68rem;padding:2px 8px;border-radius:4px;background:' + (c[0]==='ok'?'rgba(74,222,128,0.15)':'rgba(239,68,68,0.12)') + ';color:' + (c[0]==='ok'?'#4ADE80':'#EF4444') + ';">' + c[1] + '</span>';
+      }).join('');
+    });
+  }
   document.getElementById('step3Back').addEventListener('click',function(){ goToStep(2); });
   document.getElementById('step3Submit').addEventListener('click',submitPost);
   document.getElementById('flowOverlay').addEventListener('click',function(e){ if(e.target===this) closeFlow(); });
@@ -1693,6 +1719,10 @@ Keep responses short and direct. No filler. Talk like a contractor, not a chatbo
     <div style="font-family:Barlow Condensed,sans-serif;font-size:0.75rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--amber);margin-bottom:8px;">TradeDeck Shield</div>
     <div style="font-family:Barlow Condensed,sans-serif;font-weight:800;font-size:2rem;text-transform:uppercase;color:var(--white);margin-bottom:20px;">Your Protected Jobs</div>
     <div id="shieldDashboardMount"></div>
+    <div style="margin-top:32px;border-top:1px solid rgba(255,255,255,0.08);padding-top:24px;">
+      <div style="font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:1rem;text-transform:uppercase;color:var(--white);margin-bottom:12px;">Closed Records — This Device</div>
+      <div id="shieldArchiveMount"></div>
+    </div>
   </div>
 </div>
 <div class="page-view" id="page-verify">
@@ -1879,6 +1909,10 @@ document.addEventListener('DOMContentLoaded', function() {
           } else {
             mount.innerHTML = '<p style="color:#EF4444;padding:24px;">Shield failed to load. Refresh and try again.</p>';
           }
+        }
+        var archiveMount = document.getElementById('shieldArchiveMount');
+        if (archiveMount && typeof window.renderShieldArchive === 'function') {
+          window.renderShieldArchive(archiveMount);
         }
       }
     });
@@ -2622,6 +2656,244 @@ async function submitWorkerVerify(userId) {
 }
 
 
+
+// ============================================================
+// SHIELD CLOSE-OUT — SHA-256 hashed packet + admin email + local archive
+// From Grok session Sept 2026, adapted for live Supabase backend
+// ============================================================
+;(function(global) {
+
+  const SCHEMA = 'tradedeck.shield.completion.v1'
+  const ADMIN  = 'woodalljosh128@gmail.com'
+
+  async function sha256Hex(text) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,'0')).join('')
+  }
+
+  function canonicalPoints(points) {
+    return (points || []).slice()
+      .sort((a,b) => (a.point_number||0) - (b.point_number||0))
+      .map(p => {
+        const photos = (p.shield_photos || p.photos || []).map(ph => ({
+          id:            ph.id || null,
+          public_url:    ph.public_url || null,
+          storage_path:  ph.storage_path || null,
+          uploaded_at:   ph.uploaded_at || null,
+          contractor_id: ph.contractor_id || null,
+          ai_verdict:    ph.ai_verdict || null,
+          ai_confidence: ph.ai_confidence == null ? null : Number(ph.ai_confidence),
+          ai_notes:      ph.ai_notes || null,
+          photo_hash:    ph.photo_hash || null,
+        }))
+        return { point_number: p.point_number, label: p.label||'', description: p.description||'', status: p.status||'pending', photos }
+      })
+  }
+
+  async function buildShieldCompletionPacket(input) {
+    const closedAt = new Date().toISOString()
+    const points   = canonicalPoints(input.points || input.shield_pivotal_points)
+    const body = {
+      schema: SCHEMA,
+      record_kind: 'job_completion',
+      closed_at: closedAt,
+      closed_by: { user_id: (input.actor||{}).user_id||null, role: (input.actor||{}).role||null, display_name: (input.actor||{}).display_name||null },
+      job: {
+        job_id:        input.jobId || (input.job||{}).id || null,
+        shield_job_id: input.shieldJobId || (input.shieldJob||{}).id || null,
+        title:         (input.job||{}).title || (input.brief||{}).title || '',
+        trade:         (input.job||{}).trade || (input.brief||{}).trade || '',
+        location:      (input.job||{}).location || null,
+      },
+      payment: {
+        payment_type:      (input.shieldJob||{}).payment_type || null,
+        stripe_payment_id: (input.shieldJob||{}).stripe_payment_id || null,
+        covered_by:        (input.shieldJob||{}).covered_by || null,
+        shield_status:     (input.shieldJob||{}).status || null,
+      },
+      brief: {
+        role:        (input.brief||{}).role || null,
+        locked_text: (input.brief||{}).job_description || (input.brief||{}).locked_text || '',
+        answers:     (input.brief||{}).answers || {},
+      },
+      points,
+      counts: {
+        points:   points.length,
+        photos:   points.reduce((n,p) => n + (p.photos||[]).length, 0),
+        approved: points.filter(p => p.status === 'approved').length,
+        flagged:  points.filter(p => p.status === 'flagged').length,
+        pending:  points.filter(p => p.status === 'pending' || p.status === 'uploaded').length,
+      },
+      notes: input.notes || '',
+      integrity: { algo: 'SHA-256', hash: null, hashed_at: closedAt },
+    }
+    const forHash = JSON.parse(JSON.stringify(body))
+    delete forHash.integrity.hash
+    body.integrity.hash = await sha256Hex(JSON.stringify(forHash))
+    return body
+  }
+
+  function packetToHtml(packet) {
+    const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    const pts = (packet.points||[]).map(p => {
+      const photos = (p.photos||[]).map(ph => `
+        <figure>
+          ${ph.public_url ? `<img src="${esc(ph.public_url)}" style="max-width:100%;border-radius:8px;" />` : '<p>No photo</p>'}
+          <figcaption>AI: <strong>${esc(ph.ai_verdict||'—')}</strong>${ph.ai_confidence!=null?` (${Math.round(ph.ai_confidence*100)}%)`:''}
+          <br>${esc(ph.ai_notes||'')} · ${esc(ph.uploaded_at||'')}
+          ${ph.photo_hash ? `<br>SHA-256: ${esc(ph.photo_hash)}` : ''}</figcaption>
+        </figure>`).join('')
+      return `<section style="border:1px solid #e6e2d6;border-radius:10px;padding:12px;margin:12px 0;">
+        <h3>Point ${esc(p.point_number)} — ${esc(p.label)} <em>${esc(p.status)}</em></h3>
+        <p>${esc(p.description)}</p>
+        ${photos || '<p style="color:#c0392b;font-style:italic;">No photo on file</p>'}
+      </section>`
+    }).join('')
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<title>Shield record ${esc(packet.job.job_id)}</title>
+<style>body{font-family:-apple-system,sans-serif;max-width:800px;margin:24px auto;color:#1a1a1a;padding:0 16px;}
+h1{font-size:1.2rem;}.meta{color:#555;font-size:.85rem;}
+pre{white-space:pre-wrap;background:#f6f3eb;padding:12px;border-radius:8px;}
+.hash{font-family:monospace;font-size:.75rem;word-break:break-all;}</style>
+</head><body>
+<h1>🛡️ TradeDeck Shield — completion record</h1>
+<p class="meta">Schema ${esc(packet.schema)}<br/>
+Closed ${esc(packet.closed_at)} by ${esc((packet.closed_by||{}).role||'unknown')} ${esc((packet.closed_by||{}).display_name||'')}<br/>
+Job ${esc(packet.job.job_id)} · Shield ${esc(packet.job.shield_job_id)}<br/>
+${esc(packet.job.title)} · ${esc(packet.job.trade)}</p>
+<p class="hash">SHA-256: ${esc(packet.integrity.hash)}</p>
+<h2>Brief</h2><pre>${esc(packet.brief.locked_text)}</pre>
+<h2>Checkpoints</h2>${pts}
+<h2>Counts</h2><pre>${esc(JSON.stringify(packet.counts,null,2))}</pre>
+${packet.notes ? `<h2>Notes</h2><pre>${esc(packet.notes)}</pre>` : ''}
+</body></html>`
+  }
+
+  function saveToLocalArchive(packet) {
+    try {
+      const archive = JSON.parse(localStorage.getItem('td_shield_archive') || '[]')
+      archive.unshift({
+        at:     packet.closed_at,
+        hash:   packet.integrity.hash,
+        title:  packet.job.title || packet.job.job_id || 'Untitled',
+        trade:  packet.job.trade || '',
+        counts: packet.counts,
+      })
+      localStorage.setItem('td_shield_archive', JSON.stringify(archive.slice(0,40)))
+    } catch(e) {}
+  }
+
+  function loadLocalArchive() {
+    try { return JSON.parse(localStorage.getItem('td_shield_archive') || '[]') }
+    catch(e) { return [] }
+  }
+
+  async function submitShieldCompletion(packet, opts) {
+    opts = opts || {}
+    const result = { local: false, storage: null, api: null, error: null }
+    const jsonText = JSON.stringify(packet, null, 2)
+    const htmlText = packetToHtml(packet)
+
+    // 1. Local archive always
+    saveToLocalArchive(packet)
+    result.local = true
+
+    // 2. Supabase storage
+    const sbClient = opts.sb || global.sb
+    if (sbClient && sbClient.storage) {
+      try {
+        const base   = `shield-records/${packet.job.job_id||'unknown'}/${packet.closed_at.replace(/[:.]/g,'-')}`
+        const jsonBlob = new Blob([jsonText], { type: 'application/json' })
+        const htmlBlob = new Blob([htmlText], { type: 'text/html' })
+        const { error: e1 } = await sbClient.storage.from('shield-photos').upload(base+'_completion.json', jsonBlob, { upsert: false })
+        const { error: e2 } = await sbClient.storage.from('shield-photos').upload(base+'_completion.html', htmlBlob, { upsert: false })
+        if (!e1 && !e2) result.storage = base
+        else result.error = (e1||e2).message
+      } catch(e) { result.error = e.message }
+    }
+
+    // 3. Backend notify admin
+    const api = opts.apiBase || global.API_BASE || 'https://tradedeck-api.onrender.com'
+    if (sbClient && sbClient.auth) {
+      try {
+        const { data: { session } } = await sbClient.auth.getSession()
+        if (session) {
+          const res = await fetch(api.replace(/\/$/,'') + '/shield/complete-job', {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${session.access_token}` },
+            body: JSON.stringify({ packet, storage: result.storage, notify_admin: true, admin_email: ADMIN }),
+          })
+          if (res.ok) result.api = await res.json().catch(() => ({ ok: true }))
+          else result.error = (result.error ? result.error + ' · ' : '') + 'api: ' + res.status
+        }
+      } catch(e) { result.error = (result.error ? result.error + ' · ' : '') + e.message }
+    }
+
+    return result
+  }
+
+  // ── Brief scoring meter ───────────────────────────────────────────────
+  function scoreBrief(title, description, answers) {
+    const text  = ((title||'') + ' ' + (description||'')).trim()
+    const lower = text.toLowerCase()
+    const chips = []
+    let score   = 0
+
+    if (text.replace(/\s+/g,' ').length >= 80) { score += 20; chips.push(['ok','Enough detail']) }
+    else chips.push(['miss','Too short'])
+
+    if (/\d/.test(text) || /\b(sq|sf|square|squares|ton|amp|yard|lf|lin|ft)\b/i.test(text)) { score += 15; chips.push(['ok','Size / quantity']) }
+    else chips.push(['miss','No size / quantity'])
+
+    if (/\b(shingle|metal|tile|pex|copper|lvp|hardwood|wrap|membrane|quartz|granite|pvc|osb|plywood)\b/i.test(lower)) { score += 15; chips.push(['ok','Material']) }
+    else chips.push(['miss','No material'])
+
+    if (/\b(roof|kitchen|bath|garage|east|west|north|south|front|rear|elevation|address|street)\b/i.test(lower)) { score += 10; chips.push(['ok','Location']) }
+    else chips.push(['miss','No location'])
+
+    if (/\b(tear|replace|install|remove|repipe|rewire|frame|pour|flash|demo|build|convert)\b/i.test(lower)) { score += 15; chips.push(['ok','Action']) }
+    else chips.push(['miss','No action verb'])
+
+    const tradeWords = ['roof','shingle','kitchen','cabinet','bath','shower','electric','panel','plumb','pipe','hvac','furnace','concrete','footer','fram','joist','siding','window','floor','paint','adu']
+    if (tradeWords.filter(w => lower.includes(w)).length >= 2) { score += 15; chips.push(['ok','Trade terms']) }
+    else chips.push(['miss','Vague trade'])
+
+    Object.values(answers||{}).forEach(v => { if (v && String(v).trim()) score += 4 })
+
+    return { score: Math.min(100, score), chips, ready: score >= 70 }
+  }
+
+  // ── Render local archive in Shield dashboard ──────────────────────────
+  function renderShieldArchive(containerEl) {
+    const archive = loadLocalArchive()
+    if (!archive.length) {
+      containerEl.innerHTML = '<p style="color:var(--steel);font-size:0.82rem;font-style:italic;">No closed records on this device yet.</p>'
+      return
+    }
+    containerEl.innerHTML = archive.map(r => `
+      <div style="border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px;margin-bottom:10px;">
+        <div style="font-family:Barlow Condensed,sans-serif;font-weight:700;font-size:0.95rem;color:var(--white);">${r.title}</div>
+        <div style="font-size:0.75rem;color:var(--steel);margin-top:3px;">${r.trade || ''} · Closed ${new Date(r.at).toLocaleDateString()}</div>
+        <div style="font-size:0.72rem;color:var(--steel);margin-top:3px;">
+          ✅ ${r.counts.approved} approved · 
+          ${r.counts.photos} photos · 
+          SHA-256: ${(r.hash||'').slice(0,12)}…
+        </div>
+      </div>`).join('')
+  }
+
+  global.buildShieldCompletionPacket = buildShieldCompletionPacket
+  global.submitShieldCompletion      = submitShieldCompletion
+  global.packetToHtml                = packetToHtml
+  global.saveToLocalArchive          = saveToLocalArchive
+  global.loadLocalArchive            = loadLocalArchive
+  global.renderShieldArchive         = renderShieldArchive
+  global.scoreBrief                  = scoreBrief
+
+})(window)
+
+<script>
 // ============================================================
 // AUTH SYSTEM
 // ============================================================
