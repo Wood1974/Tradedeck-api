@@ -214,6 +214,13 @@ footer p{font-size:0.8rem;color:var(--steel)}
   .ls-tags{margin-left:0}
 }
 </style>
+<style>
+html.td-locked body > *:not(#tdAuthModal){ display:none !important; }
+html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
+</style>
+<script>
+(function(){ try{ var t=localStorage.getItem('sb-jlaajejpqjldpbinktln-auth-token'); if(!(t && JSON.parse(t).access_token)) document.documentElement.classList.add('td-locked'); }catch(e){ document.documentElement.classList.add('td-locked'); } })();
+</script>
 </head>
 <body>
 
@@ -3241,7 +3248,7 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
 
 <div id="tdAuthModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#1b1b1b;padding:28px;border-radius:12px;width:min(360px,92vw);color:#eee;">
-    <h3 style="margin:0 0 14px">Sign in to TradeDeck</h3>
+    <div style="font-family:'Barlow Condensed',sans-serif;font-size:2rem;font-weight:700;margin-bottom:4px">Trade<span style="color:#f5a623">Deck</span></div><h3 style="margin:0 0 14px;font-weight:400;color:#bbb">Sign in or create an account to continue</h3>
     <input id="tdAuthEmail" type="email" placeholder="Email" style="width:100%;padding:12px;margin-bottom:10px;border-radius:8px;border:1px solid #444;background:#111;color:#eee;">
     <input id="tdAuthPass" type="password" placeholder="Password" style="width:100%;padding:12px;margin-bottom:14px;border-radius:8px;border:1px solid #444;background:#111;color:#eee;">
     <div style="display:flex;gap:8px">
@@ -3249,7 +3256,6 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
       <button class="page-tab" id="tdAuthSignUp" style="flex:1">Sign Up</button>
     </div>
     <div id="tdAuthMsg" style="margin-top:10px;font-size:.85rem;color:#f5a623;min-height:1.2em"></div>
-    <button id="tdAuthClose" style="margin-top:12px;background:none;border:none;color:#999;cursor:pointer">Cancel</button>
   </div>
 </div>
 <script>
@@ -3271,6 +3277,8 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
   window.tdOpenAuth = function(m){ modal.style.display='flex'; show(m||''); };
   function paint(s){
     window.__tdSignedIn = !!s;
+    document.documentElement.classList.toggle('td-locked', !s);
+    if(s) modal.style.display='none';
     btn.textContent = s ? 'Sign Out (' + (s.user.email||'').split('@')[0] + ')' : 'Sign In';
     btn.dataset.signedIn = s ? '1' : '';
   }
@@ -3303,7 +3311,6 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
     if(btn.dataset.signedIn){ try{ await withTimeout(sbc().auth.signOut(), 8000); }catch(e){} location.reload(); return; }
     modal.style.display='flex'; show('');
   });
-  document.getElementById('tdAuthClose').onclick = function(){ modal.style.display='none'; };
   document.getElementById('tdAuthSignIn').onclick = function(){ run('in'); };
   document.getElementById('tdAuthSignUp').onclick = function(){ run('up'); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', refresh); else refresh();
