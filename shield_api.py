@@ -842,22 +842,48 @@ def _check_contractor_verification(contractor_id):
 
 
 def _send_completion_email(packet, sha256):
+    resend_key = os.environ.get('RESEND_API_KEY', '')
+    from_email = os.environ.get('SHIELD_FROM_EMAIL', 'TradeDeck Shield <onboarding@resend.dev>')
+    if not resend_key:
+        log.warning('RESEND_API_KEY not set — skipping completion email')
+        return
     try:
         job_id_str = str(packet.get('job_id', ''))[-6:].upper()
-        requests.post(
-            SUPABASE_URL + '/functions/v1/send-email',
-            headers={'apikey': SUPABASE_SERVICE_KEY, 'Authorization': 'Bearer ' + SUPABASE_SERVICE_KEY, 'Content-Type': 'application/json'},
-            json={
-                'to': ADMIN_EMAIL, 'subject': 'TradeDeck Shield Complete -- Job ' + job_id_str,
-                'html': ('<h2>Shield Complete</h2>'
-                         '<p><strong>Job:</strong> ' + str(packet.get('job_id')) + '</p>'
-                         '<p><strong>SHA-256:</strong> <code>' + str(sha256) + '</code></p>'
-                         '<p><strong>Score:</strong> ' + str(_derive_score(packet.get('points',[]))) + '%</p>'),
-            },
-            timeout=10,
+        points     = packet.get('points', [])
+        score      = _derive_score(points)
+        pts_html   = ''.join(
+            f'<tr><td style="padding:6px 12px;border-bottom:1px solid #eee;">'
+            f'<strong>{p.get("label","")}</strong></td>'
+            f'<td style="padding:6px 12px;border-bottom:1px solid #eee;">'
+            f'{(p.get("photo") or {}).get("ai_verdict","pending").upper()}</td></tr>'
+            for p in points
         )
+        html = f"""<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+<h2 style="color:#0BBCD4;">&#x1F6E1;&#xFE0F; TradeDeck Shield &#x2014; Job Complete</h2>
+<table style="width:100%;border-collapse:collapse;">
+  <tr><td style="padding:8px;"><strong>Job ID</strong></td><td>{packet.get('job_id','')}</td></tr>
+  <tr><td style="padding:8px;"><strong>Shield Job</strong></td><td>{packet.get('shield_job_id','')}</td></tr>
+  <tr><td style="padding:8px;"><strong>Score</strong></td><td>{score}%</td></tr>
+  <tr><td style="padding:8px;"><strong>Closed by</strong></td><td>{(packet.get('closed_by') or {}).get('display_name','')}</td></tr>
+  <tr><td style="padding:8px;"><strong>Closed at</strong></td><td>{packet.get('closed_at','')}</td></tr>
+</table>
+<h3>Checkpoints</h3>
+<table style="width:100%;border-collapse:collapse;border:1px solid #eee;">
+  <tr style="background:#f5f5f5;"><th style="padding:8px 12px;text-align:left;">Point</th><th style="padding:8px 12px;text-align:left;">Verdict</th></tr>
+  {pts_html}
+</table>
+<p style="margin-top:16px;font-family:monospace;font-size:12px;color:#888;">SHA-256: {sha256}</p>
+<p style="color:#888;font-size:12px;">TradeDeck Shield &#x2014; tradedeckapp.com</p>
+</body></html>"""
+        requests.post(
+            'https://api.resend.com/emails',
+            headers={'Authorization': f'Bearer {resend_key}', 'Content-Type': 'application/json'},
+            json={'from': from_email, 'to': [ADMIN_EMAIL], 'subject': f'Shield Complete \u2014 Job #{job_id_str} ({score}%)', 'html': html},
+            timeout=15,
+        )
+        log.info('Completion email sent for job %s', packet.get('job_id'))
     except Exception:
-        log.warning("Completion email failed")
+        log.warning('Completion email failed', exc_info=True)
 
 
 # ===========================================================================
@@ -896,9 +922,24 @@ def shield_stripe_webhook():
     elif evt_type in ('customer.subscription.deleted', 'customer.subscription.paused'):
         _db().table('shield_subscriptions').update({'status': 'cancelled'}).eq('stripe_sub_id', obj['id']).execute()
     elif evt_type == 'payment_intent.succeeded':
-        job_id = obj.get('metadata', {}).get('job_id')
-        if job_id and obj.get('metadata', {}).get('product') == 'shield_per_job':
-            _db().table('shield_jobs').update({'stripe_payment_id': obj['id']}).eq('job_id', job_id).execute()
+        meta   = obj.get('metadata', {})
+        job_id = meta.get('job_id')
+        if job_id and meta.get('product') == 'shield_per_job':
+            # Activate the shield job — payment confirmed, webhook is source of truth
+            _db().table('shield_jobs').update({
+                'stripe_payment_id': obj['id'],
+                'status':            'active',
+                'activated_at':      utc_now_iso(),
+            }).eq('job_id', job_id).eq('status', 'pending').execute()
+            log.info('Shield job activated via webhook for job_id %s', job_id)
+    elif evt_type == 'invoice.paid':
+        # Subscription renewal — keep sub marked active
+        sub_id = obj.get('subscription')
+        if sub_id:
+            _db().table('shield_subscriptions').update({
+                'status':             'active',
+                'current_period_end': obj.get('lines', {}).get('data', [{}])[0].get('period', {}).get('end'),
+            }).eq('stripe_sub_id', sub_id).execute()
 
     try:
         _db().table('stripe_webhook_events').insert({'event_id': event_id, 'event_type': evt_type, 'processed_at': utc_now_iso()}).execute()
