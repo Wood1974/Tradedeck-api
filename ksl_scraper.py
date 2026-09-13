@@ -121,90 +121,88 @@ def process_job(title, description, location):
 
 
 # ── KSL FETCH ─────────────────────────────────────────────────────────────────
+KSL_SEARCH_URL = "https://classifieds.ksl.com/search/cat/Jobs/sub/Construction+%26+Skilled+Trades"
+KSL_PAGE_SIZE  = 24   # KSL shows ~24 listings per page
+
+
 def fetch_ksl_jobs(requests_lib):
     """
-    Attempt to pull jobs from KSL. Tries JSON API first, falls back to HTML.
-    Returns list of dicts with keys: title, description, location, url, company.
+    Scrape KSL classifieds Construction & Skilled Trades search results.
+    Paginates via ?start=N until results drop off.
+    Returns list of dicts with keys: title, description, location, url, company, pay.
     """
-    # Override URL via env var if KSL changes their API
-    api_url = os.getenv('KSL_API_URL', '')
-    headers = {'User-Agent': 'Mozilla/5.0 (TradeDeck/2.0; +https://tradedeckapp.com)'}
+    import os
+    from bs4 import BeautifulSoup
 
-    # ── Try 1: JSON API (configurable via env) ────────────────────────────────
-    candidates = []
-    if api_url:
-        candidates.append(api_url)
-
-    # Common KSL API patterns to try in order
-    candidates += [
-        'https://jobs.ksl.com/api/search?category=Construction+%26+Trades&state=UT&perPage=500',
-        'https://jobs.ksl.com/api/jobs?category=construction&state=UT&limit=500',
-        'https://api.ksl.com/classified/v1/search?type=jobs&category=construction&state=UT',
-    ]
-
-    for url in candidates:
-        try:
-            r = requests_lib.get(url, headers=headers, timeout=15)
-            if r.status_code == 200 and r.content:
-                data = r.json()
-                jobs = data.get('jobs') or data.get('results') or data.get('data') or []
-                if jobs:
-                    log.info("KSL JSON API success: %s (%d jobs)", url, len(jobs))
-                    return [_normalize_json_job(j) for j in jobs]
-        except Exception as e:
-            log.debug("KSL API %s failed: %s", url, e)
-
-    # ── Try 2: HTML scrape ────────────────────────────────────────────────────
-    try:
-        from bs4 import BeautifulSoup
-        html_url = 'https://jobs.ksl.com/search?category=Construction+%26+Trades&state=UT'
-        r = requests_lib.get(html_url, headers=headers, timeout=20)
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, 'html.parser')
-            jobs = _parse_html_jobs(soup, html_url)
-            if jobs:
-                log.info("KSL HTML scrape success: %d jobs", len(jobs))
-                return jobs
-    except Exception as e:
-        log.warning("KSL HTML scrape failed: %s", e)
-
-    raise RuntimeError(
-        "All KSL fetch methods failed. "
-        "Set KSL_API_URL env var on Render with the correct endpoint. "
-        "Check Render logs for attempted URLs."
-    )
-
-
-def _normalize_json_job(j):
-    """Normalize a raw KSL JSON job dict to standard keys."""
-    return {
-        'title':       j.get('title') or j.get('name') or '',
-        'description': j.get('description') or j.get('body') or '',
-        'location':    j.get('location') or j.get('city') or j.get('area') or '',
-        'company':     j.get('company') or j.get('employer') or j.get('business') or '',
-        'url':         j.get('url') or j.get('applyUrl') or j.get('link') or '',
+    # Allow env override of base URL
+    base_url = os.getenv('KSL_API_URL', KSL_SEARCH_URL)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
     }
 
+    all_jobs = []
+    seen_ids = set()
+    start = 0
 
-def _parse_html_jobs(soup, base_url):
-    """Parse job listings from KSL HTML. Adjust selectors if KSL changes markup."""
-    jobs = []
-    # KSL Jobs typically renders cards with class 'job-listing' or similar
-    for card in soup.select('[class*="job"], [class*="listing"], article'):
-        title_el = card.select_one('h2, h3, [class*="title"], [class*="name"]')
-        loc_el   = card.select_one('[class*="location"], [class*="city"], [class*="area"]')
-        comp_el  = card.select_one('[class*="company"], [class*="employer"], [class*="business"]')
-        link_el  = card.select_one('a[href]')
-        if not title_el:
-            continue
-        href = link_el['href'] if link_el else ''
-        if href and not href.startswith('http'):
-            href = 'https://jobs.ksl.com' + href
-        jobs.append({
-            'title':       title_el.get_text(strip=True),
-            'description': card.get_text(' ', strip=True)[:500],
-            'location':    loc_el.get_text(strip=True) if loc_el else '',
-            'company':     comp_el.get_text(strip=True) if comp_el else '',
-            'url':         href,
-        })
-    return jobs
+    while True:
+        url = f"{base_url}?start={start}" if start > 0 else base_url
+        try:
+            r = requests_lib.get(url, headers=headers, timeout=20)
+            r.raise_for_status()
+        except Exception as e:
+            if start == 0:
+                raise RuntimeError(f"KSL fetch failed: {e}")
+            break  # End of pages
+
+        soup = BeautifulSoup(r.text, 'html.parser')
+        cards = soup.find_all('a', attrs={'data-item-id': True})
+        if not cards:
+            break
+
+        new_this_page = 0
+        for card in cards:
+            item_id = card.get('data-item-id', '')
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            new_this_page += 1
+
+            title    = card.get('aria-label', '').strip()
+            href     = card.get('href', '').strip()
+
+            # Location: span with role=link
+            loc_el   = card.find('span', attrs={'role': 'link'})
+            location = loc_el.get_text(strip=True) if loc_el else ''
+
+            # Pay: div with aria-label containing "Price"
+            pay_els  = card.find_all(attrs={'aria-label': lambda x: x and 'Price' in str(x)})
+            pay      = pay_els[0].get_text(strip=True) if pay_els else ''
+
+            # Company: sometimes in a smaller text element
+            company_el = card.find('p', class_=lambda c: c and 'company' in c.lower()) or \
+                         card.find('div', class_=lambda c: c and 'employer' in c.lower())
+            company  = company_el.get_text(strip=True) if company_el else ''
+
+            if not title or not href:
+                continue
+
+            all_jobs.append({
+                'title':       title,
+                'description': f"{title} — {pay}".strip(' —'),
+                'location':    location,
+                'company':     company,
+                'pay':         pay,
+                'url':         href,
+            })
+
+        log.info("KSL page start=%d: %d new listings (total so far: %d)", start, new_this_page, len(all_jobs))
+
+        # Stop if we got significantly fewer than expected (last page)
+        if new_this_page < KSL_PAGE_SIZE // 2:
+            break
+
+        start += KSL_PAGE_SIZE
+
+    return all_jobs
