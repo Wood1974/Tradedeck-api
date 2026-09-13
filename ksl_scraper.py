@@ -194,7 +194,11 @@ def fetch_ksl_jobs(requests_lib):
         log.info("KSL page %d: %d new jobs (total: %d, cursor: %s)",
                  page, new_count, len(all_jobs), cursor)
 
-        if not has_next or not next_cursor or new_count == 0:
+        if not has_next or not next_cursor:
+            break
+        if new_count == 0:
+            # KSL SSR only exposes featured listings; cursor pagination recirculates them
+            log.info("KSL: no new jobs on page %d, stopping (KSL SSR limit reached)", page)
             break
 
         cursor = next_cursor
