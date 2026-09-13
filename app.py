@@ -349,14 +349,17 @@ def _ksl_upsert(job, cat):
     existing = supabase_admin.table("jobs").select("id").eq("external_url", ext_url).limit(1).execute()
     if existing.data:
         return False
+    # Build description with pay info if available
+    desc_parts = [job.get("title") or ""]
+    if job.get("pay"):
+        desc_parts.append(job["pay"])
     supabase_admin.table("jobs").insert({
         "title":        (job.get("title") or "")[:200],
         "trade":        cat["trade"],
         "county":       cat["county"],
-        "city":         (job.get("location") or job.get("city") or "")[:100],
         "state":        "UT",
-        "description":  (job.get("description") or "")[:1000],
-        "company":      (job.get("company") or "")[:200],
+        "location":     (job.get("location") or "")[:200],
+        "description":  " — ".join(p for p in desc_parts if p)[:1000],
         "source":       "ksl",
         "external_url": ext_url,
         "status":       "open",
