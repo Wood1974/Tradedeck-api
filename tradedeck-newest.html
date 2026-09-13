@@ -583,42 +583,28 @@ html.td-locked #tdAuthModal{ display:flex !important; background:#0e0e0e; }
 
 <!-- SITE PHOTOS (CompanyCam) -->
 <div class="page-view" id="page-sitephotos">
-  <div class="cc-header">
-    <div class="cc-header-inner">
-      <div class="cc-eyebrow">Powered by CompanyCam</div>
-      <h2>Job Site Photos</h2>
-      <p>Every job documented. Before, during, and after -- tied to the project, visible to the crew.</p>
-    </div>
+  <div class="fw-header">
+    <div class="hero-eyebrow">Native · Supabase</div>
+    <h1 style="margin:6px 0 8px">Job Site Photos</h1>
+    <p class="hero-sub" style="margin:0">Before, during, and after -- shot on your phone, hashed, and tied to the job.</p>
   </div>
-  <div class="cc-body">
-    <div class="cc-connect-banner" id="ccConnectBanner">
-      <h3>Connect CompanyCam</h3>
-      <p>Paste your CompanyCam API key to pull job site photos directly into TradeDeck.</p>
-      <input type="text" class="cc-api-input" id="ccApiKeyInput" placeholder="Paste CompanyCam API key here..." autocomplete="off">
-      <button class="btn-primary" id="ccConnectBtn">Connect</button>
-      <p style="margin-top:14px;font-size:0.78rem;color:var(--steel);">Find your key: app.companycam.com &rarr; Account &rarr; API</p>
+  <div class="fw-body" style="max-width:900px;margin:0 auto">
+    <div style="display:grid;gap:12px;margin-bottom:18px">
+      <label style="color:var(--steel);font-size:.8rem;letter-spacing:.08em;text-transform:uppercase">Job</label>
+      <select id="spJob" autocomplete="off" style="padding:12px;border-radius:8px;border:1px solid var(--line);background:#141826;color:#eee"><option value="">Loading jobs...</option></select>
+      <label style="color:var(--steel);font-size:.8rem;letter-spacing:.08em;text-transform:uppercase">Stage</label>
+      <select id="spStage" autocomplete="off" style="padding:12px;border-radius:8px;border:1px solid var(--line);background:#141826;color:#eee">
+        <option value="before">Before</option><option value="during">During</option><option value="after">After</option>
+      </select>
+      <input id="spCaption" autocomplete="off" placeholder="Caption (optional)" style="padding:12px;border-radius:8px;border:1px solid var(--line);background:#141826;color:#eee">
+      <input id="spFile" type="file" accept="image/*" capture="environment" multiple style="display:none">
+      <button class="btn-primary" id="spShoot" style="padding:14px">📷 Take / Upload Photo</button>
+      <div id="spStatus" style="color:var(--amber);font-size:.9rem;min-height:1.2em"></div>
     </div>
-    <div id="ccConnected" style="display:none;">
-      <div class="cc-stats">
-        <div class="cc-stat"><div class="num" id="ccTotalPhotos">--</div><div class="lbl">Total Photos</div></div>
-        <div class="cc-stat"><div class="num" id="ccTotalProjects">--</div><div class="lbl">Projects</div></div>
-        <div class="cc-stat"><div class="num" id="ccThisWeek">--</div><div class="lbl">This Week</div></div>
-      </div>
-      <div class="cc-toolbar">
-        <select class="cc-job-select" id="ccJobSelect" autocomplete="off"><option value="">All Projects</option></select>
-        <button class="btn-ghost" id="ccRefreshBtn" style="font-size:0.8rem;padding:9px 16px;">Refresh</button>
-        <button class="btn-ghost" id="ccDisconnectBtn" style="font-size:0.8rem;padding:9px 16px;border-color:rgba(255,100,100,0.4);color:rgba(255,100,100,0.8);">Disconnect</button>
-      </div>
-      <div class="cc-photos-grid" id="ccPhotosGrid"></div>
-      <div class="cc-empty" id="ccEmpty" style="display:none;">
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:1.4rem;text-transform:uppercase;color:var(--steel);">No Photos Yet</div>
-        <p style="font-size:0.875rem;margin-top:8px;">Photos added in CompanyCam appear here automatically.</p>
-      </div>
-    </div>
+    <div id="spGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px"></div>
   </div>
 </div>
 
-<!-- POST A JOB -->
 <div class="page-view" id="page-postjob">
   <div style="max-width:600px;margin:80px auto;padding:0 40px;text-align:center;">
     <div style="font-family:'Barlow Condensed',sans-serif;font-size:0.75rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--amber);margin-bottom:12px;">Post a Job</div>
@@ -1374,95 +1360,7 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('step3Submit').addEventListener('click', submitPost);
 
 
-  /* --- COMPANYCAM --- */
-  var CC_KEY='td_cc_api_key';
-  var ccApiKey='';
-  try { ccApiKey=localStorage.getItem(CC_KEY)||''; } catch(e){}
-
-  var mockProjects=[
-    {id:'proj_001',name:'Park City Framing -- Lot 14'},
-    {id:'proj_002',name:'Heber Concrete Flatwork'},
-    {id:'proj_003',name:'Kamas Metal Roof'}
-  ];
-
-  var mockPhotos=[
-    {id:1,caption:'Foundation forms set',date:'Jul 22',tag:'Before',project:'proj_001'},
-    {id:2,caption:'First floor framing complete',date:'Jul 23',tag:'Progress',project:'proj_001'},
-    {id:3,caption:'Roof trusses delivered',date:'Jul 24',tag:'Progress',project:'proj_001'},
-    {id:4,caption:'Concrete pour -- driveway',date:'Jul 21',tag:'During',project:'proj_002'},
-    {id:5,caption:'Flatwork finished -- Day 1',date:'Jul 22',tag:'Progress',project:'proj_002'},
-    {id:6,caption:'Metal panels -- north face',date:'Jul 20',tag:'Progress',project:'proj_003'}
-  ];
-
-  function ccInit() {
-    if (ccApiKey) {
-      document.getElementById('ccConnectBanner').style.display='none';
-      document.getElementById('ccConnected').style.display='block';
-      ccLoadProjects();
-    }
-  }
-
-  function ccLoadProjects() {
-    /* LIVE API: GET https://api.companycam.com/v2/projects
-       Headers: { Authorization: 'Bearer ' + ccApiKey }
-       Replace mockProjects array above with live response data */
-    var select=document.getElementById('ccJobSelect');
-    select.innerHTML='<option value="">All Projects</option>';
-    mockProjects.forEach(function(p){
-      var opt=document.createElement('option');
-      opt.value=p.id; opt.textContent=p.name; select.appendChild(opt);
-    });
-    document.getElementById('ccTotalProjects').textContent=mockProjects.length;
-    ccLoadPhotos('');
-  }
-
-  function ccLoadPhotos(projectId) {
-    /* LIVE API: GET https://api.companycam.com/v2/photos?project_id=projectId
-       Headers: { Authorization: 'Bearer ' + ccApiKey }
-       Replace mockPhotos array above with live response data */
-    var grid=document.getElementById('ccPhotosGrid');
-    var empty=document.getElementById('ccEmpty');
-    grid.innerHTML='';
-    var filtered=projectId ? mockPhotos.filter(function(p){ return p.project===projectId; }) : mockPhotos;
-    if (!filtered.length) { empty.style.display='block'; return; }
-    empty.style.display='none';
-    document.getElementById('ccTotalPhotos').textContent=filtered.length;
-    document.getElementById('ccThisWeek').textContent=filtered.filter(function(p){ return ['Jul 22','Jul 23','Jul 24'].indexOf(p.date)>-1; }).length;
-    filtered.forEach(function(photo) {
-      var card=document.createElement('div');
-      card.className='cc-photo-card';
-      card.innerHTML=
-        '<div class="cc-photo-img-placeholder">Photo ' + photo.id + '</div>' +
-        '<div class="cc-photo-meta">' +
-        '<div class="cc-photo-caption">'+photo.caption+'</div>' +
-        '<div class="cc-photo-date">'+photo.date+'</div>' +
-        '<span class="cc-photo-tag">'+photo.tag+'</span>' +
-        '</div>';
-      grid.appendChild(card);
-    });
-  }
-
-  document.getElementById('ccConnectBtn').addEventListener('click',function(){
-    var key=document.getElementById('ccApiKeyInput').value.trim();
-    if (!key) { alert('Paste your CompanyCam API key first.'); return; }
-    ccApiKey=key;
-    try { localStorage.setItem(CC_KEY,key); } catch(e){}
-    document.getElementById('ccConnectBanner').style.display='none';
-    document.getElementById('ccConnected').style.display='block';
-    ccLoadProjects();
-  });
-
-  document.getElementById('ccJobSelect').addEventListener('change',function(){ ccLoadPhotos(this.value); });
-  document.getElementById('ccRefreshBtn').addEventListener('click',ccLoadProjects);
-  document.getElementById('ccDisconnectBtn').addEventListener('click',function(){
-    ccApiKey='';
-    try { localStorage.removeItem(CC_KEY); } catch(e){}
-    document.getElementById('ccConnectBanner').style.display='block';
-    document.getElementById('ccConnected').style.display='none';
-    document.getElementById('ccApiKeyInput').value='';
-  });
-
-  ccInit();
+  /* CompanyCam removed */
 
 });
 </script>
@@ -3334,6 +3232,61 @@ window.renderShieldCloseOutModal      = renderShieldCloseOutModal
   document.getElementById('tdAuthSignIn').onclick = function(){ run('in'); };
   document.getElementById('tdAuthSignUp').onclick = function(){ run('up'); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', refresh); else refresh();
+})();
+</script>
+
+
+<script>
+(function(){
+  var SB_URL='https://jlaajejpqjldpbinktln.supabase.co', BUCKET='site-photos';
+  var jobSel=document.getElementById('spJob'), stageSel=document.getElementById('spStage'), cap=document.getElementById('spCaption'),
+      fileIn=document.getElementById('spFile'), shoot=document.getElementById('spShoot'), status=document.getElementById('spStatus'), grid=document.getElementById('spGrid');
+  if(!jobSel) return;
+  function sb(){ return window._supabaseClient; }
+  function say(m){ status.textContent=m||''; }
+  async function session(){ try{ var r=await sb().auth.getSession(); return r.data.session; }catch(e){ return null; } }
+  async function sha256(buf){ var h=await crypto.subtle.digest('SHA-256',buf); return Array.from(new Uint8Array(h)).map(function(b){return b.toString(16).padStart(2,'0')}).join(''); }
+  async function loadJobs(){
+    if(!sb()){ setTimeout(loadJobs,300); return; }
+    var s=await session(); if(!s){ jobSel.innerHTML='<option value="">Sign in first</option>'; return; }
+    var r=await sb().from('jobs').select('id,title,location,created_at').eq('owner_id',s.user.id).order('created_at',{ascending:false}).limit(100);
+    var jobs=(r.data||[]);
+    jobSel.innerHTML = jobs.length ? jobs.map(function(j){ return '<option value="'+j.id+'">'+(j.title||'Untitled')+' -- '+(j.location||'')+'</option>'; }).join('') : '<option value="">No jobs yet -- post one first</option>';
+    loadGrid();
+  }
+  async function loadGrid(){
+    var jid=jobSel.value; grid.innerHTML=''; if(!jid) return;
+    var r=await sb().from('site_photos').select('public_url,stage,caption,uploaded_at').eq('job_id',jid).order('uploaded_at',{ascending:false});
+    (r.data||[]).forEach(function(p){
+      var d=document.createElement('a'); d.href=p.public_url; d.target='_blank';
+      d.style.cssText='display:block;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#141826;text-decoration:none;color:#ccc';
+      d.innerHTML='<img src="'+p.public_url+'" style="width:100%;height:130px;object-fit:cover;display:block"><div style="padding:6px 8px;font-size:.75rem"><b style="color:var(--amber);text-transform:uppercase">'+p.stage+'</b> '+(p.caption?'· '+p.caption:'')+'</div>';
+      grid.appendChild(d);
+    });
+  }
+  shoot.addEventListener('click',function(){ if(!jobSel.value){ say('Pick a job first'); return; } fileIn.click(); });
+  jobSel.addEventListener('change',loadGrid);
+  fileIn.addEventListener('change',async function(){
+    var files=Array.from(fileIn.files||[]); if(!files.length) return;
+    var s=await session(); if(!s){ say('Sign in first'); return; }
+    var jid=jobSel.value, stage=stageSel.value, caption=cap.value.trim();
+    for(var i=0;i<files.length;i++){
+      var f=files[i]; say('Uploading '+(i+1)+'/'+files.length+'...');
+      try{
+        var buf=await f.arrayBuffer(); var hash=await sha256(buf);
+        var ext=(f.name.split('.').pop()||'jpg').toLowerCase(); if(ext.length>5) ext='jpg';
+        var path=s.user.id+'/'+jid+'/'+stage+'_'+hash.slice(0,16)+'.'+ext;
+        var up=await sb().storage.from(BUCKET).upload(path,f,{contentType:f.type||'image/jpeg',upsert:false});
+        if(up.error && !/already exists/i.test(up.error.message)) throw up.error;
+        var url=SB_URL+'/storage/v1/object/public/'+BUCKET+'/'+path;
+        var ins=await sb().from('site_photos').insert({job_id:jid,uploader_id:s.user.id,storage_path:path,public_url:url,stage:stage,caption:caption||null});
+        if(ins.error) throw ins.error;
+      }catch(e){ say('Upload failed: '+(e.message||e)); return; }
+    }
+    say('Uploaded '+files.length+' photo'+(files.length>1?'s':'')+' ✓'); fileIn.value=''; cap.value=''; loadGrid();
+  });
+  document.querySelectorAll('.page-tab[data-page="sitephotos"]').forEach(function(t){ t.addEventListener('click',loadJobs); });
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){ setTimeout(loadJobs,300); }); else setTimeout(loadJobs,300);
 })();
 </script>
 
