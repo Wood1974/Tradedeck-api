@@ -51,7 +51,7 @@ ANTHROPIC_MODEL           = get_env("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 DEPLOY_SECRET             = os.environ.get("DEPLOY_SECRET", "")
 RENDER_DEPLOY_HOOK        = os.environ.get("RENDER_DEPLOY_HOOK_URL", "")
 
-DEPLOY_ALLOWED_PATHS = {"shield_api.py", "app.py", "requirements.txt", "auth.py", "config.py", "escrow.py"}
+DEPLOY_ALLOWED_PATHS = {"shield_api.py", "app.py", "requirements.txt", "auth.py", "config.py", "escrow.py", "ksl_scraper.py"}
 
 supabase_admin    = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 anthropic_client  = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -334,6 +334,106 @@ def stripe_webhook():
         log.exception("Webhook processing failed for event %s", event_id)
         return _error("Webhook processing failed", 500)
     return jsonify({"received":True})
+
+# ── KSL JOBS SCRAPER ──────────────────────────────────────────────────────────
+# Scrapes KSL construction jobs, filters to Wasatch-surrounding counties,
+# categorizes by trade, writes to Supabase jobs table.
+# ---------------------------------------------------------------------------
+from ksl_scraper import process_job
+
+KSL_SEARCH_URL = "https://jobs.ksl.com/search/api"
+KSL_HEADERS    = {"User-Agent": "Mozilla/5.0 (TradeDeck/2.0; +https://tradedeckapp.com)"}
+
+def _ksl_fetch_jobs():
+    """Fetch raw job list from KSL's search API."""
+    params = {
+        "q":        "",
+        "category": "Construction & Trades",
+        "state":    "UT",
+        "perPage":  500,
+        "page":     1,
+    }
+    r = requests.get(KSL_SEARCH_URL, params=params, headers=KSL_HEADERS, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    # KSL returns {"jobs": [...]} or {"results": [...]} depending on version
+    return data.get("jobs") or data.get("results") or []
+
+def _ksl_upsert(job, cat):
+    """Insert job into Supabase; skip if external_url already exists."""
+    ext_url = job.get("url") or job.get("applyUrl") or ""
+    if not ext_url:
+        return False
+    existing = supabase_admin.table("jobs").select("id").eq("external_url", ext_url).limit(1).execute()
+    if existing.data:
+        return False
+    supabase_admin.table("jobs").insert({
+        "title":        (job.get("title") or "")[:200],
+        "trade":        cat["trade"],
+        "county":       cat["county"],
+        "city":         (job.get("city") or job.get("location") or "")[:100],
+        "state":        "UT",
+        "description":  (job.get("description") or "")[:1000],
+        "company":      (job.get("company") or job.get("employer") or "")[:200],
+        "source":       "ksl",
+        "external_url": ext_url,
+        "status":       "open",
+    }).execute()
+    return True
+
+@app.route("/api/ksl/scrape", methods=["POST"])
+def ksl_scrape():
+    """
+    Scrape KSL construction jobs → filter by county → categorize → upsert Supabase.
+    Called by admin or cron. No auth required (write-only, idempotent).
+    """
+    try:
+        raw_jobs = _ksl_fetch_jobs()
+    except Exception as e:
+        log.exception("KSL fetch failed")
+        return _error(f"KSL fetch failed: {e}", 502)
+
+    inserted = 0
+    skipped_category = 0
+    skipped_county   = 0
+    skipped_dup      = 0
+
+    for job in raw_jobs:
+        title  = job.get("title", "")
+        desc   = job.get("description", "")
+        loc    = job.get("location") or job.get("city") or ""
+        cat    = process_job(title, desc, loc)
+        if cat is None:
+            # Distinguish why it was skipped for logging
+            from ksl_scraper import is_construction, categorize_county
+            if not is_construction(title, desc):
+                skipped_category += 1
+            else:
+                skipped_county += 1
+            continue
+        try:
+            if _ksl_upsert(job, cat):
+                inserted += 1
+            else:
+                skipped_dup += 1
+        except Exception:
+            log.exception("KSL upsert failed for: %s", title)
+
+    log.info("KSL scrape: inserted=%d dup=%d non-construction=%d out-of-area=%d",
+             inserted, skipped_dup, skipped_category, skipped_county)
+    return jsonify({
+        "success":          True,
+        "inserted":         inserted,
+        "skipped_dup":      skipped_dup,
+        "skipped_category": skipped_category,
+        "skipped_county":   skipped_county,
+        "total_fetched":    len(raw_jobs),
+    })
+
+@app.route("/api/ksl/scrape", methods=["GET"])
+def ksl_scrape_get():
+    """Cron-friendly GET alias for the scrape endpoint."""
+    return ksl_scrape()
 
 # ── SELF-DEPLOY ROUTE ──────────────────────────────────────────────────────
 # Claude calls POST /internal/deploy to push file content and trigger redeploy.
