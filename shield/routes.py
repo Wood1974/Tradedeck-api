@@ -30,6 +30,7 @@ import integrity
 import ledger
 import notes as field_notes
 import pricing
+import protection
 import verdict as grading
 import vision
 from auth import require_auth, require_shield_job, utc_now_iso
@@ -821,6 +822,38 @@ def note_prompts(shield_job_id):
                       .eq("id", point_id).eq("shield_job_id", shield_job_id)
                       .limit(1).execute().data or [None])[0]
     return jsonify({"prompts": field_notes.prompts_for(checkpoint)})
+
+
+@bp.route("/jobs/<shield_job_id>/protection", methods=["GET"])
+@require_auth
+@require_shield_job()
+def protection_status(shield_job_id):
+    """How strong this record is, and the next thing that would strengthen it.
+
+    Guidance that lives in a README is guidance nobody follows. This is
+    computed against the job as it stands so it can be surfaced at the moment
+    it can still be acted on — "write the note now" is useful at minute two
+    and worthless at hour six.
+    """
+    points = (db().table("shield_pivotal_points").select("*")
+              .eq("shield_job_id", shield_job_id).order("point_number").execute().data or [])
+    photos = (db().table("shield_photos")
+              .select("id, point_id, exif_captured_at, server_received_at, superseded_by")
+              .eq("shield_job_id", shield_job_id).execute().data or [])
+    note_rows = (db().table("shield_notes")
+                 .select("id, photo_id, observed_at, written_at, strength, amends_note_id")
+                 .eq("shield_job_id", shield_job_id).execute().data or [])
+
+    assessment = protection.assess_record(job=g.shield_job, points=points,
+                                          photos=photos, notes=note_rows)
+    role = actor_role(g.shield_job, g.user_id)
+    return jsonify({
+        **assessment,
+        "next_step": protection.next_step(job=g.shield_job, points=points,
+                                          photos=photos, notes=note_rows),
+        "your_practices": protection.practices_for(role),
+        "all_practices": protection.practices_for(),
+    })
 
 
 @bp.route("/jobs/<shield_job_id>/evidence", methods=["GET"])

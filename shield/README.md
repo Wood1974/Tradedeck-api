@@ -62,6 +62,7 @@ shield/
 ├── corroborate.py   solar geometry — a signal the uploader cannot edit
 ├── ledger.py        hash-chained custody, and its verifier
 ├── verdict.py       completion grading (coverage, severity, badge eligibility)
+├── protection.py    live guidance: how strong this record is, what to do next
 ├── notes.py         contemporaneous field notes — contemporaneity grading, amendments
 ├── evidence.py      FRE 902(13)/(14) export: manifest, certification, how-to-verify
 ├── vision.py        Claude calls (structured outputs, prompt caching)
@@ -69,7 +70,7 @@ shield/
 ├── pricing.py       server-side price tiers
 ├── auth.py          Supabase JWT + shield-job authorization
 ├── config.py        env validation, fails fast
-└── tests/           128 tests
+└── tests/           146 tests
 ```
 
 **`codes.py` is the domain asset** — 45 checkpoints with real citations
@@ -168,7 +169,7 @@ Defects found by adversarial review and closed here:
 ```bash
 cp shield/.env.example shield/.env      # six values are mandatory
 pip install -r shield/requirements.txt
-python -m pytest shield/tests -q        # 128 tests
+python -m pytest shield/tests -q        # 146 tests
 gunicorn --chdir shield --bind 0.0.0.0:$PORT app:app
 ```
 
@@ -198,6 +199,7 @@ webhook, which authenticates by Stripe signature.
 | `POST /shield/jobs/<id>/photos` | The integrity anchor. multipart: `file`, `point_id`, `gps_lat`, `gps_lng` |
 | `POST /shield/photos/<id>/analyze` | Adjudicate. No body. |
 | `GET  /shield/jobs/<id>/custody` | Raw custody chain |
+| `GET  /shield/jobs/<id>/protection` | How strong this record is and the next thing that would strengthen it |
 | `GET  /shield/jobs/<id>/evidence` | **Manifest + certification + verification instructions** |
 | `POST /shield/jobs/<id>/notes` | Write a field note. `written_at` is server-set. |
 | `GET  /shield/jobs/<id>/notes` | Every note on the job, both parties', threaded with amendments |
@@ -213,6 +215,21 @@ non-participant gets `404`, not `403`, so ids cannot be probed.
 Shield never writes another product's tables. A contractor reaching
 `MIN_CLEAN_JOBS` fully-clean jobs fires `shield.contractor_verified` at
 `BADGE_WEBHOOK_URL`; consumers decide what a badge means in their own system.
+
+---
+
+## Getting the strongest protection
+
+See **[PROTECTION.md](PROTECTION.md)** — generated from `protection.py`, so the
+guide and the live endpoint cannot drift apart. `GET /jobs/<id>/protection`
+returns the same practices scored against the job as it actually stands, because
+guidance in a README is guidance nobody follows: *"write the note now"* is useful
+at minute two and worthless at hour six.
+
+The practice almost nobody thinks of is exporting the package and keeping the
+chain head hash somewhere outside this service. It is the only one that protects
+the buyer against **us** — the chain makes tampering detectable, but only if
+someone holds an earlier head to compare against.
 
 ---
 
