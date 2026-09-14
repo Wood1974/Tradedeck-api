@@ -42,8 +42,8 @@ probably not worth reporting.
 
 ```bash
 cd shield
-python -m pytest tests/ -q            # 175 tests — any failure is a finding
-python audit/invariants.py            # 32 tripwires — any BROKEN is critical
+python -m pytest tests/ -q            # 195 tests — any failure is a finding
+python audit/invariants.py            # 35 tripwires — any BROKEN is critical
 ```
 
 Environment for a static run (no live services needed):
@@ -142,7 +142,7 @@ to dedupe, specific enough not to mask a different bug in the same file.
 
 Say exactly this and stop:
 
-> Audit YYYY-MM-DD: 175 tests pass, 32 invariants hold, nothing new on
+> Audit YYYY-MM-DD: 195 tests pass, 35 invariants hold, nothing new on
 > *&lt;surface&gt;*. No issue opened.
 
 That is a good day. Do not dress it up.

@@ -569,6 +569,64 @@ def inv_earned_claims_cite_a_passing_test():
     return True, f"all {len(claims.earned())} earned claims cite a real test"
 
 
+def inv_verifier_shares_no_code_with_the_service():
+    """A recipient checking our package must not be running our code.
+
+    The verifier is a reimplementation from SPEC.md. The moment someone
+    imports ledger into it "to avoid duplication", the independence that makes
+    the export worth anything is gone — and nothing else would notice, because
+    every test would still pass.
+    """
+    src = (SHIELD / "verifier" / "shield_verify.py")
+    if not src.exists():
+        return False, "verifier/shield_verify.py is missing"
+    text = src.read_text()
+    for forbidden in ("import ledger", "import evidence", "import integrity",
+                      "import config", "from ledger", "from evidence"):
+        if forbidden in text:
+            return False, (f"the verifier contains '{forbidden}' — it is no "
+                           f"longer an independent implementation")
+    for stdlib_only in re.findall(r"^\s*import\s+(\w+)", text, re.M):
+        if stdlib_only not in ("argparse", "hashlib", "json", "os", "sys"):
+            return False, (f"the verifier imports '{stdlib_only}' — it must run "
+                           f"from a bare interpreter with nothing installed")
+    return True, "independent reimplementation, standard library only"
+
+
+def inv_export_carries_recomputable_custody():
+    """The package must contain what a recipient needs, not a summary of it."""
+    import evidence
+    src = _source(evidence.build_manifest)
+    if "custody_entries" not in src:
+        return False, ("the export no longer carries raw custody entries — a "
+                       "recipient cannot recompute the chain, so its integrity "
+                       "is our assertion rather than their check")
+    return True, "raw entries exported; the chain is recomputable by the holder"
+
+
+def inv_verifier_agrees_with_the_service():
+    """Two implementations of one spec must reach the same hash."""
+    import sys as _sys
+    _sys.path.insert(0, str(SHIELD / "verifier"))
+    import ledger
+    import shield_verify
+    job = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    if shield_verify.genesis_hash(job) != ledger.genesis_hash(job):
+        return False, "the spec and the service disagree on the genesis value"
+    entry = {"shield_job_id": job, "event_type": "uploaded",
+             "actor_type": "contractor", "gps_lat": 40.76056,
+             "event_data": {"b": 2, "a": [1, 2]},
+             "recorded_at": "2026-09-01T10:00:00+00:00"}
+    if shield_verify.canonical(entry) != ledger.canonical(entry):
+        return False, ("the spec and the service disagree on canonical bytes — "
+                       "every package we have issued verifies against only one "
+                       "of them")
+    prev = ledger.genesis_hash(job)
+    if shield_verify.link(entry, prev) != ledger.link(entry, prev):
+        return False, "the spec and the service compute different links"
+    return True, "spec and service agree on genesis, canonical bytes and links"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -602,6 +660,9 @@ INVARIANTS = (
     ("claims-ledger-current", "Let the claims ledger drift from what the checks actually enforce", inv_claims_ledger_is_current),
     ("unearned-claims-unpublished", "Ship a claim the product has not earned", inv_unearned_claims_are_not_published),
     ("earned-claims-cite-a-test", "Mark a claim earned by decision rather than by evidence", inv_earned_claims_cite_a_passing_test),
+    ("verifier-is-independent", "Have a recipient 'verify' a package by running our own code", inv_verifier_shares_no_code_with_the_service),
+    ("export-is-recomputable", "Hand over a package whose integrity is our assertion", inv_export_carries_recomputable_custody),
+    ("spec-matches-service", "Ship a spec that does not produce the hashes we issue", inv_verifier_agrees_with_the_service),
 )
 
 

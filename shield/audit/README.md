@@ -1,21 +1,22 @@
 # shield/audit
 
-Daily adversarial audit of Shield. Four parts:
+Daily adversarial audit of Shield. Five parts:
 
 | File | What it is |
 |---|---|
 | `PROTOCOL.md` | The brief the daily agent follows — run order, rotation, what counts as a finding, and when to stay silent |
-| `invariants.py` | 32 tripwires, one per exploit we have closed. Run it; any `BROKEN` means a closed hole reopened |
+| `invariants.py` | 35 tripwires, one per exploit we have closed. Run it; any `BROKEN` means a closed hole reopened |
 | `accepted-risks.md` | Known limits, deliberately unfixed. The audit must not re-report these |
 | `CLAIMS.md` | The mirror of accepted-risks: claims not yet earned. Generated from `../claims.py`; an invariant fails the build if an unearned claim appears in published text |
+| `ATTACKS.md` | Every attack attempted against Shield, what happened, and what changed — failures included |
 | `findings.jsonl` | Append-only ledger, so a finding is reported once and not every morning |
 
 ## Run it yourself
 
 ```bash
 cd shield
-python -m pytest tests/ -q      # 175 tests
-python audit/invariants.py      # 32 invariants
+python -m pytest tests/ -q      # 195 tests
+python audit/invariants.py      # 35 invariants
 python audit/invariants.py --json
 ```
 

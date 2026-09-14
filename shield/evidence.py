@@ -148,6 +148,14 @@ def build_manifest(*, job, points, photos, custody, report=None, notes=None):
             "chain_summary": chain["summary"],
             "chain_version": chain["chain_version"],
         },
+        # The raw signed fields of every entry, so a recipient can recompute
+        # the chain rather than believe the block above. Without these the
+        # package's integrity is our assertion — which is precisely the thing
+        # the export exists not to be. verifier/shield_verify.py reads this.
+        "custody_entries": [
+            {**{f: e.get(f) for f in ledger.SIGNED_FIELDS if e.get(f) is not None},
+             "prev_hash": e.get("prev_hash"), "entry_hash": e.get("entry_hash")}
+            for e in custody],
         "field_notes": {
             "total": len(note_records),
             "contemporaneous": sum(1 for n in note_records
