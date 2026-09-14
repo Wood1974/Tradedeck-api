@@ -70,6 +70,7 @@ shield/
 ├── pricing.py       server-side price tiers
 ├── auth.py          Supabase JWT + shield-job authorization
 ├── config.py        env validation, fails fast
+├── audit/           daily red-team: 22 invariants, protocol, accepted-risk ledger
 └── tests/           146 tests
 ```
 
@@ -230,6 +231,29 @@ The practice almost nobody thinks of is exporting the package and keeping the
 chain head hash somewhere outside this service. It is the only one that protects
 the buyer against **us** — the chain makes tampering detectable, but only if
 someone holds an earlier head to compare against.
+
+---
+
+## Daily adversarial audit
+
+`shield/audit/` holds 22 **invariants** — one per exploit closed in this branch,
+each named for the attack it prevents rather than the code it inspects. They run
+in CI on every push touching `shield/` or the migrations, so a guard cannot be
+removed by a refactor that leaves the behaviour tests passing.
+
+```bash
+python audit/invariants.py          # exit 1 if any closed exploit reopened
+```
+
+A scheduled agent runs `audit/PROTOCOL.md` daily against a rotating attack
+surface. Its first rule is about noise: **silence is a valid and expected
+outcome.** A report listing the same fifteen issues every morning is ignored by
+Friday and cancelled the following Tuesday — worse than no audit, because it
+manufactures the feeling of being watched without the fact of it. So the agent
+reports new findings and regressions only, checks `accepted-risks.md` before
+reporting anything, and opens nothing on a quiet day.
+
+The audit never touches production. Code and schema only.
 
 ---
 
