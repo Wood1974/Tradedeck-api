@@ -1,51 +1,54 @@
-# TradeDeck Shield — standalone API
+# TradeDeck Shield — standalone evidence API
 
-Verified construction photo documentation. A contractor photographs code-anchored
-checkpoints; the service seals each photo's bytes, corroborates where and when it
-was taken, adjudicates it against the cited building-code section, and keeps an
-append-only chain of custody the homeowner can export.
+A contractor photographs building-code-anchored checkpoints on a job. Shield
+seals each photo's bytes on arrival, corroborates the claim against facts the
+contractor does not control, adjudicates the work against the cited code
+section, and keeps a hash-chained custody record that can be verified by
+someone who does not trust us.
 
-This directory is **self-contained**. It imports nothing from the parent Flask app
-and can be lifted into its own repository with history intact:
-
-```bash
-git subtree split --prefix=shield -b shield-standalone
-```
+Self-contained: imports nothing from the parent app.
+`git subtree split --prefix=shield` lifts it into its own repo with history.
 
 ---
 
-## The one rule
+## Start here: what this does and does not prove
 
-> **Nothing the client sends is trusted as evidence.**
+A product like this lives or dies on the precision of its claim, so here it is
+without marketing.
 
-The SHA-256 is computed over the bytes as received, before anything touches them.
-The original is stored unmodified and never handed to the model — a stripped,
-downscaled copy is. Every input to a verdict is read back from the database, never
-from the request that asks for the verdict.
+**Proven, cryptographically, to a third party:**
+- These bytes are identical to the bytes the service received. (SHA-256 taken
+  before anything touches the file; original stored unmodified, never
+  re-encoded.)
+- This custody history has not been altered since any published chain head.
+  (Each entry hashes its predecessor.)
+- These requirements were fixed *before* this work was photographed. (The
+  checkpoint schedule locks, and its hash is sealed into the chain.)
 
-That rule is the product. The code is arranged around it, and the tests exist to
-notice when it stops being true.
+**Corroborated, not proven:**
+- That the photo was taken at the job site. The geofence measures against a
+  location the *buyer* set at purchase, before any photo existed — so it is not
+  a value the audited party can move to fit a picture. It is still a claim
+  about where a device said it was.
+- That it was taken when claimed. Solar geometry for the claimed place and time
+  determines shadow direction and length, and there is nothing in a file an
+  attacker can edit to change what the sky was doing.
 
----
+**Not proven, and we say so in the certification:**
+- That any photo came off a camera sensor rather than a file picker. Nothing
+  here establishes that, and neither does EXIF. Only capture-time attestation
+  does — App Attest / Play Integrity / Android Key Attestation binding a photo
+  hash to a key in secure hardware — and that needs a native app. Until then,
+  the honest phrase is *"corroborated by independent signals"*, never
+  *"GPS-verified"*.
 
-## What changed from the in-tree version
-
-`shield_api.py` in the repo root is the predecessor. It is not a straight port —
-six defects made the guarantee unenforceable, and each is closed here.
-
-| Defect in `shield_api.py` | Consequence | Closed by |
-|---|---|---|
-| `analyze-photo` read `comp_url`, `has_exif`, `gps_*`, `original_hash` from the request body (`:598–607`) | A contractor could upload a real photo, then submit a stock image's URL for grading; the `pass` landed on the real row. The client-supplied hash became the audit record. Also an unvalidated server-side fetch (SSRF). | `POST /shield/photos/<id>/analyze` takes the id and **nothing else**. Every value is read from `shield_photos`; the signed URL is minted here from the stored path. |
-| `amount_cents` came from the body, no price table, no ownership check (`:326`) | Shield purchasable on any job for one cent | `pricing.py` — server-side tiers, client figure ignored, `require_shield_job` checks participation |
-| `piexif` reads JPEG/TIFF only, but HEIC/PNG/WebP were accepted (`:79–92`) | Every iPhone HEIC upload stamped *"possible screenshot"* | Pillow fallback + a third state: `unsupported` ≠ `absent`. Only `absent` is treated as a signal. |
-| GPS compared in raw degrees against a fixed `0.005` (`:120`) | Tolerance drifted with latitude — 556 m at the equator, 278 m at 60°N | `integrity.haversine_m()` and an explicit metre threshold |
-| `IP_HASH_SALT` fell back to a literal in the repo (`:197`) | IPv4 is 2³² values; a known salt makes the hash *be* the address | Required config. The service refuses to boot without it. |
-| Custody check was `verdict in ('flagged','fake','fail')` but the model returns `'flag'` (`:729`) | Flagged photos never wrote their flag event | Corrected tuple, covered by a test |
-
-Two smaller ones: checkpoint indexing silently mis-cited when the model returned
-more points than a trade has (`codes.code_entry` now bounds it), and webhook
-idempotency checked-then-acted-then-recorded, so concurrent deliveries could both
-pass (the event is now claimed before any work).
+Why the precision matters: **EXIF is not evidence.** Shield reads EXIF with
+`piexif`; `piexif` also writes it. A stock photo stamped with the site's
+coordinates and a plausible timestamp takes about a dozen lines. That attack
+was run against an earlier version of this code and returned
+`gps_corroborated: True`, `gps_distance_m: 0.1`, `integrity_note: None`. Every
+mechanism worked exactly as designed and certified a downloaded image. Metadata
+the adversary controls only ever catches lazy fraud.
 
 ---
 
@@ -53,106 +56,141 @@ pass (the event is now claimed before any work).
 
 ```
 shield/
-├── app.py          Flask factory, CORS, security headers, health
-├── routes.py       HTTP surface — the trust boundary
-├── integrity.py    hashing, EXIF, haversine, compression
-├── vision.py       Claude calls (structured outputs, prompt caching)
-├── codes.py        IRC/IBC checkpoint map — 9 trades × 5 checkpoints
-├── pricing.py      server-side price tiers
-├── auth.py         Supabase JWT + shield-job authorization
-├── config.py       env validation, fails fast
-├── db.py           Supabase client
-└── tests/          33 tests, several regressions against the table above
+├── app.py           Flask factory, CORS, ProxyFix, size limits, health
+├── routes.py        HTTP surface — the trust boundary
+├── integrity.py     hashing, EXIF, haversine, compression
+├── corroborate.py   solar geometry — a signal the uploader cannot edit
+├── ledger.py        hash-chained custody, and its verifier
+├── verdict.py       completion grading (coverage, severity, badge eligibility)
+├── evidence.py      FRE 902(13)/(14) export: manifest, certification, how-to-verify
+├── vision.py        Claude calls (structured outputs, prompt caching)
+├── codes.py         IRC/IBC checkpoint map — 9 trades × 5 checkpoints
+├── pricing.py       server-side price tiers
+├── auth.py          Supabase JWT + shield-job authorization
+├── config.py        env validation, fails fast
+└── tests/           97 tests
 ```
 
-`codes.py` is the asset. Nine trades, 45 checkpoints, each carrying a real code
-citation (`IRC R403.1.6` anchor bolts, `NEC 250.52(A)(3)` Ufer grounds), what the
-photo must frame, and what the frame has to prove. It was extracted
-programmatically from the original so nothing drifted in the move. It is data, not
-logic, so a licensed contractor can review it without reading Python.
+**`codes.py` is the domain asset** — 45 checkpoints with real citations
+(`IRC R403.1.6` anchor bolts, `NEC 250.52(A)(3)` Ufer grounds), each with what
+the photo must frame and what the frame must prove. Extracted programmatically
+from the original so nothing drifted. *Citations track the 2021 IRC / 2020 NEC
+family; jurisdictions adopt on their own schedule and amend locally — have
+someone licensed in the target market confirm before selling there.*
 
-**Code currency:** citations track the 2021 IRC / 2020 NEC family. Jurisdictions
-adopt on their own schedule and amend locally — before selling into a new market,
-have someone licensed there confirm the adopted edition.
+**`evidence.py` is the deliverable.** FRE 902(14) makes a digital record
+self-authenticating when identified by "a process of digital identification" —
+a hash comparison — "as shown by a certification of a qualified person." That
+is a mechanical requirement, and it is why the upload path hashes before
+touching anything. The export produces the manifest, an independent
+verification of the custody chain, a pre-filled certification, and the commands
+a recipient runs to check all of it themselves.
+
+The certification is deliberately **left unsigned**. It is a sworn statement by
+a human who can be cross-examined on it; auto-signing would be exactly the
+hollow assurance this product exists to replace. It also states plainly what it
+does *not* certify — that the AI is right, or that the work complies with any
+code.
+
+---
+
+## The security posture
+
+> **Nothing the client sends is trusted as evidence.**
+
+`POST /shield/photos/<id>/analyze` takes an id and nothing else — no body at
+all. Every value handed to the model is read back from the database, and the
+signed URL is minted server-side from the stored path.
+
+Defects found by adversarial review and closed here:
+
+| Defect | Consequence | Fix |
+|---|---|---|
+| Grading dropped unphotographed checkpoints from the vote | 1 photo of 5 reported **"pass"**; repeated close-outs minted the verified badge | `verdict.py`: missing evidence outranks every verdict; badge counts distinct fully-clean jobs; one report per job |
+| `point_id` never scoped to the job | Upload against another job's checkpoint → `approved` written onto a stranger's record | Checkpoint must belong to this job |
+| Analyze was check-then-act | 20 concurrent calls = 20 billed samples, last writer wins | Conditional write; retakes supersede rather than overwrite |
+| Checkpoints re-generatable by either party, forever | Photograph the work, read the verdicts, rewrite the requirements to match | Homeowner-only, locks once, schedule hash sealed into the chain |
+| `actor_type` hardcoded `"homeowner"` | Contractor closing his own job was recorded as the buyer signing off | Derived from the job's parties |
+| `external_ref` column did not exist | Every `POST /shield/jobs` failed | Added in the hardening migration |
+| Activation checked no amount | Nothing bound a PaymentIntent to a job but its own metadata | Match the stored intent id; assert `amount_received` and currency; handle refunds and disputes |
+| Storage RLS policy was permissive | It could not deny, and *granted* read on every other bucket | `as restrictive` |
+| Custody rows had no links | `DROP TRIGGER` or `TRUNCATE` erased history silently | Hash chain + statement-level truncate trigger |
+| X-Forwarded-For read leftmost | Stored IP was whatever the client sent | Rightmost hop + `ProxyFix` |
+| Size checked after `read()` | Multi-GB POSTs spooled to disk, then OOM | `MAX_CONTENT_LENGTH` |
 
 ---
 
 ## Running it
 
 ```bash
-cp shield/.env.example shield/.env     # fill in; six values are mandatory
+cp shield/.env.example shield/.env      # six values are mandatory
 pip install -r shield/requirements.txt
-python -m pytest shield/tests -q
+python -m pytest shield/tests -q        # 97 tests
 gunicorn --chdir shield --bind 0.0.0.0:$PORT app:app
 ```
 
-The database is `supabase/migrations/20260914000000_shield_schema_and_rls.sql`
-in the repo root. Run its verification queries against the target project first —
-the schema was reconstructed from code, and query 1 surfaces anything it missed.
+Migrations, in order, in the repo root `supabase/migrations/`:
+`20260914000000_shield_schema_and_rls.sql` then
+`20260914010000_shield_hardening.sql`. Run the verification queries at the
+bottom of each against the target project first — the schema was reconstructed
+from code.
 
-`IP_HASH_SALT` has no default. Generate once:
-`python -c "import secrets; print(secrets.token_urlsafe(32))"`. Changing it later
-makes every previously stored uploader-IP hash uncorrelatable.
+`IP_HASH_SALT` has no default and the service refuses to boot without it.
+Generate once: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 ---
 
 ## API
 
-All `/shield/*` routes need `Authorization: Bearer <supabase-jwt>` except the
+All `/shield/*` routes require `Authorization: Bearer <supabase-jwt>` except the
 webhook, which authenticates by Stripe signature.
 
 | Route | Purpose |
 |---|---|
-| `POST /shield/quote` | Price for a job budget. Advisory — recomputed at purchase. |
-| `POST /shield/jobs` | Create a pending job + PaymentIntent at the server price |
-| `POST /shield/jobs/<id>/checkpoints` | Generate 5 checkpoints, attach code citations |
+| `POST /shield/quote` | Price for a job budget (advisory; recomputed at purchase) |
+| `POST /shield/jobs` | Create a job + PaymentIntent. **Sets the site location.** |
+| `POST /shield/jobs/<id>/checkpoints` | Define the schedule. Homeowner only, once. |
 | `GET  /shield/jobs/<id>/checkpoints` | List them |
-| `POST /shield/jobs/<id>/photos` | **The integrity anchor.** multipart: `file`, `point_id`, `gps_lat`, `gps_lng` |
+| `POST /shield/jobs/<id>/photos` | The integrity anchor. multipart: `file`, `point_id`, `gps_lat`, `gps_lng` |
 | `POST /shield/photos/<id>/analyze` | Adjudicate. No body. |
-| `GET  /shield/jobs/<id>/custody` | The audit trail — the deliverable |
-| `POST /shield/jobs/<id>/complete` | Close-out packet, hashed server-side |
+| `GET  /shield/jobs/<id>/custody` | Raw custody chain |
+| `GET  /shield/jobs/<id>/evidence` | **Manifest + certification + verification instructions** |
+| `POST /shield/jobs/<id>/complete` | Close out. Requires every checkpoint documented. |
 | `POST /shield/subscribe` | Contractor subscription checkout |
 | `POST /shield/webhook` | Stripe events |
 
-Roles: only the assigned contractor uploads; either participant reads; a
-non-participant gets `404`, not `403`, so ids can't be probed.
+Only the assigned contractor uploads; either participant reads; a
+non-participant gets `404`, not `403`, so ids cannot be probed.
 
-### Integration
-
-Shield never writes another product's tables. The parent set
-`profiles.tradedeck_verified` directly, which is why it could not be separated.
-Here, a contractor reaching `MIN_CLEAN_JOBS` clean completions fires
-`shield.contractor_verified` at `BADGE_WEBHOOK_URL`, and consumers decide what a
-badge means in their own system. `external_ref` on a Shield job carries the
-caller's own job id, so TradeDeck is one API consumer among many.
-
----
-
-## Testing
-
-33 tests, all passing. They cover hashing stability, GPS corroboration and spoof
-detection against real EXIF-bearing JPEGs, the `unsupported`/`absent` distinction,
-that compression strips metadata and never mutates the original, price-tier
-boundaries including hostile input, code-map completeness, and verdict derivation.
-
-**Not yet covered:** no integration test runs against a live Supabase or Stripe —
-the storage, database, and model calls are unexercised here. Stand the migration up
-against a staging project and walk one job end to end before trusting this with a
-paying customer.
+Shield never writes another product's tables. A contractor reaching
+`MIN_CLEAN_JOBS` fully-clean jobs fires `shield.contractor_verified` at
+`BADGE_WEBHOOK_URL`; consumers decide what a badge means in their own system.
 
 ---
 
 ## Known gaps
 
-- **GPS is still device-reported.** EXIF corroboration raises the cost of faking a
-  location but does not eliminate it — a determined uploader controls both the file
-  and the reported position. The honest claim is *"corroborated by two independent
-  sources"*, never *"GPS-verified"*. `gps_corroborated` is true only when EXIF
-  independently agrees, and the model is told which case it is looking at.
-- **No frontend.** Deliberate — this is API-only. The previous browser client is
-  not portable: it never called the upload route, asserted its own hashes, wrote to
-  the wrong bucket, and threw a `ReferenceError` on its main path.
-- **No rate limiting.** Add it at the edge before public exposure; the upload and
-  analyze routes both cost real money per call.
-- **Custody export is JSON.** A signed PDF is what an adjuster or a court actually
-  wants, and it is the obvious next increment.
+Ranked by how much they would raise evidentiary strength.
+
+1. **No capture attestation.** The single biggest gap. App Attest
+   `generateAssertion(clientDataHash:)` binds a photo's SHA-256 to a
+   Secure-Enclave key; Android Key Attestation's `attestationApplicationId` and
+   `verifiedBootState` do the equivalent. Needs a native app with no
+   library-import code path. Worth reading Guardian Project's `simple-c2pa`
+   first — it is open source and already C2PA-conformant on both platforms.
+2. **No RFC 3161 timestamp on the chain head.** Cheap and standard; makes the
+   time of record something other than our own assertion. Free TSAs exist;
+   check their terms for commercial use.
+3. **No rate limiting.** Upload and analyze both cost real money per call. Add
+   it at the edge before public exposure.
+4. **No integration tests** against live Supabase, Stripe or Anthropic. Storage,
+   database and model calls are unexercised here — walk one job end to end on
+   staging before a paying customer.
+5. **No WORM storage or retention policy.** Object-lock the originals; document
+   retention and legal hold.
+6. **Certification is text, not PDF.** A signed PDF is what actually gets
+   emailed to an adjuster.
+
+Deliberately *not* on this list: blockchain anchoring. In a construction
+dispute nobody contests whether a hash was published before a date — they
+contest what the photo depicts. It solves a problem this product does not have.

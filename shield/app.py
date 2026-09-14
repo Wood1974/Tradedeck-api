@@ -4,10 +4,12 @@ Run:  gunicorn --chdir shield app:app
 Dev:  FLASK_DEBUG=1 python shield/app.py
 """
 import logging
+import os
 
 import stripe
 from flask import Flask, g, jsonify
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import config
 from db import client
@@ -23,7 +25,17 @@ def create_app():
     app = Flask(__name__)
     stripe.api_key = config.get("STRIPE_SECRET_KEY")
 
-    CORS(app, origins=config.allowed_origins(), supports_credentials=True,
+    # Werkzeug only raises 413 when this is set. Without it the 413 handler
+    # below was unreachable and the size check in upload_photo ran AFTER the
+    # whole body was already in memory — a few multi-GB POSTs from any
+    # authenticated contractor would spool to disk and then OOM the worker.
+    app.config["MAX_CONTENT_LENGTH"] = config.get_int("MAX_UPLOAD_BYTES")
+
+    # Trust exactly one proxy hop (Render's). Without this, request.remote_addr
+    # is the proxy and X-Forwarded-For parsing is left to each call site.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+    CORS(app, origins=config.allowed_origins(), supports_credentials=False,
          allow_headers=["Authorization", "Content-Type"],
          methods=["GET", "POST", "OPTIONS"])
 
@@ -64,4 +76,4 @@ def create_app():
 app = create_app() if __name__ != "__main__" else None
 
 if __name__ == "__main__":
-    create_app().run(port=5001, debug=True)
+    create_app().run(port=5001, debug=os.environ.get("FLASK_DEBUG") == "1")

@@ -199,18 +199,3 @@ def test_checkpoint_overflow_returns_empty_not_wrong_codes():
     assert codes.code_entry("roofing", 1)["irc"].startswith("IRC R803.2")
 
 
-# ------------------------------------------------------- verdict derivation --
-def test_verdict_and_score_derivation():
-    os.environ.setdefault("SUPABASE_URL", "x"); os.environ.setdefault("SUPABASE_SERVICE_KEY", "x")
-    os.environ.setdefault("STRIPE_SECRET_KEY", "x"); os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "x")
-    os.environ.setdefault("ANTHROPIC_API_KEY", "x"); os.environ.setdefault("IP_HASH_SALT", "x")
-    import routes
-    P = lambda v: {"ai_verdict": v}
-    assert routes.derive_verdict([P("pass"), P("pass")]) == "pass"
-    assert routes.derive_verdict([P("pass"), P("flag")]) == "flag"
-    assert routes.derive_verdict([P("pass"), P("fail")]) == "fail"
-    assert routes.derive_verdict([P("pass"), P("fake")]) == "fail"
-    assert routes.derive_verdict([]) == "flag"
-    assert routes.derive_score([P("pass"), P("pass")]) == 100.0
-    assert routes.derive_score([P("pass"), P("fail")]) == 50.0
-    assert routes.derive_score([P("fake")]) == 0.0
