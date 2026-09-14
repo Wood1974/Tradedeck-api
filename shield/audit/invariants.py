@@ -44,6 +44,30 @@ def _all_migrations():
     return "\n".join(p.read_text() for p in sorted(MIGRATIONS.glob("*.sql")))
 
 
+def _calls(fn):
+    """Dotted names actually called inside a function, read from its AST.
+
+    Text matching is not good enough here. Commenting a guard out leaves its
+    name in the source, so `"integrity.probe(" in src` keeps passing while the
+    guard no longer runs — which is precisely the refactor these tripwires
+    exist to catch. Verified by deliberately breaking each guard that way.
+    """
+    import ast
+    import textwrap
+    out = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(_source(fn)))):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+            out.add(f"{f.value.id}.{f.attr}")
+        elif isinstance(f, ast.Attribute):
+            out.add(f.attr)
+        elif isinstance(f, ast.Name):
+            out.add(f.id)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Each invariant: (id, the attack it stops, a callable returning (ok, detail))
 # ---------------------------------------------------------------------------
@@ -300,6 +324,115 @@ def inv_certification_does_not_overclaim():
     return True, "limits stated; signature left to a human"
 
 
+def inv_upload_types_by_content_not_header():
+    import integrity
+    import routes
+    if "integrity.sniff_mime" not in _calls(routes.upload_photo):
+        return False, ("upload_photo no longer sniffs the container — the "
+                       "uploader's Content-Type decides what counts as a photo")
+    if re.search(r"mime\s*=\s*integrity\.normalize_mime\(upload\.content_type\)",
+                 _source(routes.upload_photo)):
+        return False, "the declared Content-Type is authoritative again"
+    for blob, label in ((b"%PDF-1.4" + b"\x00" * 64, "a PDF"),
+                        (b"MZ\x90\x00" + b"\x00" * 64, "a PE binary"),
+                        (b"\xff\xd8", "a truncated JPEG magic")):
+        if integrity.sniff_mime(blob) is not None:
+            return False, f"{label} is recognised as a photo"
+    return True, "the container's own magic decides the type"
+
+
+def inv_no_analysable_copy_falls_back_to_the_original():
+    import integrity
+    # Read the AST, not the text: the docstring names the old behaviour, and a
+    # grep for it flags the explanation as the defect.
+    import ast
+    import textwrap
+    tree = ast.parse(textwrap.dedent(_source(integrity.compress_for_model)))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        returned = (node.value.elts if isinstance(node.value, ast.Tuple)
+                    else [node.value])
+        if any(isinstance(v, ast.Name) and v.id == "raw" for v in returned):
+            return False, ("compress_for_model returns the original bytes on "
+                           "failure — the model is handed the unstripped "
+                           "original under a .jpg path")
+    out, reason = integrity.compress_for_model(b"%PDF-1.4" + b"\x00" * 64)
+    if out is not None:
+        return False, "an unencodable file still produced an analysable copy"
+    return True, f"unencodable input yields no copy ({reason}), never the original"
+
+
+def inv_pixel_count_is_bounded_before_decoding():
+    import io
+    import integrity
+    try:
+        from PIL import Image
+    except ImportError:
+        return True, "Pillow absent; nothing decodes here"
+    import routes
+    if "integrity.probe" not in _calls(routes.upload_photo):
+        return False, "upload_photo no longer probes dimensions before storing"
+    buf = io.BytesIO()
+    Image.new("L", (9000, 9000)).save(buf, "PNG", compress_level=9)
+    bomb = buf.getvalue()
+    probed = integrity.probe(bomb)
+    if probed["ok"]:
+        return False, (f"an {probed['pixels'] / 1e6:,.0f} Mpx image in "
+                       f"{len(bomb) // 1024} KB passes the bound")
+    out, _ = integrity.compress_for_model(bomb)
+    if out is not None:
+        return False, "the decoder still expands a decompression bomb"
+    return True, (f"{len(bomb) // 1024} KB / {probed['pixels'] / 1e6:,.0f} Mpx "
+                  f"refused from the header; limit {integrity.MAX_PIXELS // 1_000_000} Mpx")
+
+
+def inv_one_selector_decides_the_evidence():
+    import evidence
+    import routes
+    import verdict
+    for fn in (routes.complete_job, evidence.build_manifest):
+        if not {"live_photo_for", "grading.live_photo_for",
+                "verdict.live_photo_for"} & _calls(fn):
+            return False, (f"{fn.__name__} selects the live photo on its own "
+                           f"again — close-out and the export can name "
+                           f"different photos for one checkpoint")
+    first = {"id": "old", "point_id": "p1", "uploaded_at": "2026-09-02T15:00:00+00:00",
+             "superseded_by": "new", "superseded_at": "2026-09-03T09:00:00+00:00"}
+    second = {"id": "new", "point_id": "p1", "uploaded_at": "2026-09-03T09:05:00+00:00"}
+    for order in ([first, second], [second, first]):
+        if verdict.live_photo_for("p1", order)["id"] != "new":
+            return False, "selection depends on the order rows arrive in"
+    if [p["id"] for p in verdict.superseded_for("p1", [first, second])] != ["old"]:
+        return False, "the superseded attempt is not disclosed"
+    return True, "close-out and the export share one deterministic selector"
+
+
+def inv_retakes_supersede_rather_than_collide():
+    import routes
+    src = _source(routes.upload_photo)
+    if "superseded_at" not in src:
+        return False, ("upload_photo never marks the prior photo superseded — "
+                       "the one-live-photo index rejects every retake")
+    if src.index('"superseded_at": superseded_at') > src.index("insert(row)"):
+        return False, ("the prior photo is superseded after the insert, which "
+                       "is the order that collides with the index")
+    # Migrations are cumulative, so it is the LAST definition of this index
+    # that is in force — an earlier, correct one proves nothing.
+    mig = _all_migrations()
+    defs = re.findall(r"on public\.shield_photos\s*\(point_id\)\s*where\s+(\w+)\s+is null",
+                      mig)
+    if not defs:
+        return False, "the one-live-photo index is gone"
+    if defs[-1] != "superseded_at":
+        return False, (f"the one-live-photo index is keyed on {defs[-1]}, which "
+                       f"cannot be set before the replacement row exists — "
+                       f"every retake collides with it")
+    if "check (superseded_by is null or superseded_at is not null)" not in mig:
+        return False, "a supersede pointer without a timestamp would stay live"
+    return True, "prior photo leaves the live set before its replacement lands"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -323,6 +456,11 @@ INVARIANTS = (
     ("bucket-policy-restrictive", "Read the evidence bucket, or any other, as a signed-in user", inv_evidence_bucket_policy_is_restrictive),
     ("evidence-delete-restricted", "Destroy evidence and its audit trail in one statement", inv_evidence_tables_resist_deletion),
     ("certification-honest", "Ship a certification that overclaims", inv_certification_does_not_overclaim),
+    ("upload-types-by-content", "Pass arbitrary bytes off as a photograph with a Content-Type header", inv_upload_types_by_content_not_header),
+    ("no-original-to-the-model", "Get the unstripped original handed to the model by malforming the file", inv_no_analysable_copy_falls_back_to_the_original),
+    ("pixel-count-bounded", "Kill the worker with a 77 KB decompression bomb", inv_pixel_count_is_bounded_before_decoding),
+    ("one-evidence-selector", "Have the sealed packet and the export cite different photos", inv_one_selector_decides_the_evidence),
+    ("retakes-supersede", "Bury a failed checkpoint photo, or block retakes entirely", inv_retakes_supersede_rather_than_collide),
 )
 
 

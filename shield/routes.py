@@ -136,6 +136,23 @@ def try_log_custody(**kwargs):
         return None
 
 
+def _discard_storage(*paths):
+    """Best-effort cleanup after a write that did not complete."""
+    for path in paths:
+        if not path:
+            continue
+        try:
+            db().storage.from_(_bucket()).remove([path])
+        except Exception:
+            log.warning("Orphaned storage object %s", path)
+
+
+def _is_unique_violation(exc) -> bool:
+    """Postgres 23505, as it reaches us through PostgREST."""
+    t = str(exc).lower()
+    return "23505" in t or "duplicate key" in t or "already exists" in t
+
+
 def _signed_url(path, ttl=None):
     res = db().storage.from_(_bucket()).create_signed_url(
         path=path, expires_in=ttl or config.get_int("SIGNED_URL_TTL"))
@@ -375,16 +392,33 @@ def upload_photo(shield_job_id):
         gps_accuracy = None
 
     upload = request.files["file"]
-    mime = integrity.normalize_mime(upload.content_type)
-    if mime not in integrity.ALLOWED_MIME:
-        return _err(f'File type "{mime}" not accepted. '
-                    f'Allowed: {", ".join(sorted(integrity.ALLOWED_MIME))}', 415)
-
     raw = upload.read()
     if not raw:
         return _err("Empty file", 400)
     if len(raw) > config.get_int("MAX_UPLOAD_BYTES"):
         return _err(f"File exceeds {config.get_int('MAX_UPLOAD_BYTES') // (1024*1024)} MB", 413)
+
+    # The type is whatever the container says it is. Content-Type is written by
+    # the uploader; believing it meant arbitrary bytes could be hashed, stored
+    # and passed downstream as a photograph.
+    declared = integrity.normalize_mime(upload.content_type)
+    mime = integrity.sniff_mime(raw)
+    if mime is None or mime not in integrity.ALLOWED_MIME:
+        return _err("This file is not a recognised photo. Shield accepts "
+                    f'{", ".join(sorted(integrity.ALLOWED_MIME))}, identified by '
+                    "the file's own contents rather than its declared type.", 415)
+
+    # Dimensions come from the header; nothing is decoded yet. A 77 KB PNG
+    # declaring a 9000x9000 canvas cost 309 MB of RSS before this check, and
+    # MAX_CONTENT_LENGTH — a byte limit — never saw it coming.
+    probed = integrity.probe(raw)
+    if not probed["ok"]:
+        if probed["reason"] == "oversize":
+            return _err(f"Image is {probed['pixels'] / 1e6:,.0f} megapixels; the "
+                        f"limit is {integrity.MAX_PIXELS // 1_000_000}. Send the "
+                        "camera's own photo rather than an upscaled copy.", 413)
+        return _err("This file declares an image type but cannot be read as one.",
+                    415)
 
     # (3) the anchor — before anything touches the bytes
     original_hash = integrity.sha256(raw)
@@ -394,6 +428,11 @@ def upload_photo(shield_job_id):
     assessment = integrity.assess(raw, mime, gps_lat, gps_lng,
                                   config.get_int("GPS_TOLERANCE_M"))
     exif = assessment["exif"]
+
+    if declared != mime and declared not in ("application/octet-stream", ""):
+        assessment["integrity_note"] = " ".join(filter(None, [
+            assessment.get("integrity_note"),
+            f'Declared as "{declared}" but the file is {mime}.']))
 
     # (4b) Geofence against the JOB SITE — the one reference point the
     # contractor does not supply. Comparing EXIF GPS against the coordinates
@@ -427,16 +466,49 @@ def upload_photo(shield_job_id):
         log.exception("Original storage write failed for %s", photo_id)
         return _err("Could not store photo. Nothing was saved — please retry.", 500)
 
-    # (6) stripped, downscaled copy — the only thing the model ever sees
-    compressed = integrity.compress_for_model(raw)
-    try:
-        db().storage.from_(_bucket()).upload(
-            path=comp_path, file=compressed,
-            file_options={"content-type": "image/jpeg", "cache-control": "no-cache",
-                          "x-upsert": "false"})
-    except Exception:
-        log.exception("Compressed copy failed for %s", photo_id)
+    # (6) stripped, downscaled copy — the only thing the model ever sees.
+    # There is no fallback to the original: a file we cannot re-encode gets no
+    # analysable copy at all, and the checkpoint stays ungraded. Returning the
+    # raw bytes here used to hand the model the untouched original, EXIF and
+    # all, under a path labelled .jpg.
+    compressed, compress_failure = integrity.compress_for_model(raw)
+    if compressed is None:
+        log.warning("No analysable copy for %s (%s)", photo_id, compress_failure)
         comp_path = None
+        assessment["integrity_note"] = " ".join(filter(None, [
+            assessment.get("integrity_note"),
+            "This file could not be re-encoded for analysis, so it cannot be "
+            "graded. It remains sealed and hashed in the record."]))
+    else:
+        try:
+            db().storage.from_(_bucket()).upload(
+                path=comp_path, file=compressed,
+                file_options={"content-type": "image/jpeg", "cache-control": "no-cache",
+                              "x-upsert": "false"})
+        except Exception:
+            log.exception("Compressed copy failed for %s", photo_id)
+            comp_path = None
+
+    # (6b) Retakes. One live photo per checkpoint is a unique index, so the
+    # prior one must leave it before this row can be inserted — and it leaves
+    # by being marked superseded, never by being deleted. superseded_at goes
+    # first because superseded_by is a foreign key to a row that does not exist
+    # yet; it is backfilled below.
+    prior = grading.live_photo_for(point_id, (
+        db().table("shield_photos")
+        .select("id, point_id, uploaded_at, superseded_by, superseded_at")
+        .eq("shield_job_id", shield_job_id).eq("point_id", point_id)
+        .execute().data or []))
+    superseded_at = utc_now_iso()
+    if prior:
+        try:
+            db().table("shield_photos").update({"superseded_at": superseded_at}) \
+                .eq("id", prior["id"]).is_("superseded_at", "null").execute()
+        except Exception:
+            log.exception("Could not supersede %s", prior["id"])
+            _discard_storage(orig_path, comp_path)
+            return _err("Could not record this retake. Nothing was saved — "
+                        "please retry.", 500)
 
     row = {
         "id": photo_id, "point_id": point_id, "shield_job_id": shield_job_id,
@@ -462,16 +534,36 @@ def upload_photo(shield_job_id):
     }
     try:
         db().table("shield_photos").insert(row).execute()
-    except Exception:
-        log.exception("Row insert failed for %s — rolling back storage", photo_id)
-        for p in (orig_path, comp_path):
-            if p:
-                try:
-                    db().storage.from_(_bucket()).remove([p])
-                except Exception:
-                    log.warning("Orphaned storage object %s", p)
+    except Exception as exc:
+        log.exception("Row insert failed for %s — rolling back", photo_id)
+        _discard_storage(orig_path, comp_path)
+        if prior:
+            # Put the checkpoint back the way we found it rather than leaving
+            # it with no live photo.
+            try:
+                db().table("shield_photos").update({"superseded_at": None}) \
+                    .eq("id", prior["id"]).eq("superseded_at", superseded_at).execute()
+            except Exception:
+                log.exception("Could not restore %s after a failed retake", prior["id"])
+        if _is_unique_violation(exc):
+            # Same bytes twice on one job, or a concurrent upload to the same
+            # checkpoint. Both are conflicts the caller can act on, not the
+            # 500 + "please retry" they used to get, which never succeeded.
+            return _err("This photo is already in the record for this job, or "
+                        "another upload to the same checkpoint is in flight. "
+                        "Reload the checkpoint before retrying.", 409)
         return _err("Could not record photo. Nothing was saved — please retry.", 500)
 
+    if prior:
+        try:
+            db().table("shield_photos").update(
+                {"superseded_by": photo_id}
+            ).eq("id", prior["id"]).execute()
+        except Exception:
+            # The timestamp already took it out of the live set, so selection
+            # is correct either way; only the pointer is missing.
+            log.exception("Could not link %s to its replacement %s",
+                          prior["id"], photo_id)
     log_custody(photo_id=photo_id, shield_job_id=shield_job_id, event_type="uploaded",
                 actor_id=g.user_id, actor_type="contractor", file_hash=original_hash,
                 integrity_note=assessment["integrity_note"],
@@ -484,6 +576,16 @@ def upload_photo(shield_job_id):
                             "gps_distance_m": assessment["gps_distance_m"],
                             "gps_corroborated": assessment["gps_corroborated"],
                             "content_type": mime})
+    if prior:
+        log_custody(photo_id=prior["id"], shield_job_id=shield_job_id,
+                    event_type="superseded", actor_id=g.user_id,
+                    actor_type="contractor",
+                    integrity_note="Replaced by a later photo of the same "
+                                   "checkpoint. Retained and disclosed in the "
+                                   "evidence export.",
+                    event_data={"superseded_by": photo_id,
+                                "point_id": point_id})
+
     if assessment["gps_mismatch"] or assessment["exif_status"] == "absent":
         log_custody(photo_id=photo_id, shield_job_id=shield_job_id,
                     event_type="integrity_flag", actor_type="system",
@@ -493,6 +595,9 @@ def upload_photo(shield_job_id):
 
     return jsonify({
         "photo_id": photo_id, "original_hash": original_hash,
+        "content_type": mime,
+        "analysable": comp_path is not None,
+        "supersedes": prior["id"] if prior else None,
         "exif_status": assessment["exif_status"],
         "gps_corroborated": assessment["gps_corroborated"],
         "gps_distance_m": assessment["gps_distance_m"],
@@ -920,17 +1025,14 @@ def complete_job(shield_job_id):
     photos = (db().table("shield_photos")
               .select("id,point_id,original_hash,ai_verdict,ai_confidence,ai_notes,"
                       "exif_captured_at,gps_lat,gps_lng,has_exif,site_distance_m,"
-                      "superseded_by,uploaded_at")
+                      "superseded_by,superseded_at,uploaded_at")
               .eq("shield_job_id", shield_job_id)
-              .is_("superseded_by", "null")
               .order("uploaded_at").execute().data or [])
-    # Keyed on point, live photos only. The previous dict comprehension ran over
-    # an unordered result, so with several photos on one checkpoint whichever
-    # row Postgres returned last became the sealed evidence — an honest 'fail'
-    # could silently vanish from the deliverable behind a later retake.
-    by_point = {p["point_id"]: p for p in photos}
-
-    enriched = [{**pt, "photo": by_point.get(pt["id"], {})} for pt in points]
+    # Selection goes through the same helper the evidence export uses, so the
+    # sealed packet and the 902(14) manifest cannot name different photos for
+    # the same checkpoint. Filtering here instead let the two drift apart.
+    enriched = [{**pt, "photo": grading.live_photo_for(pt["id"], photos) or {}}
+                for pt in points]
     graded = grading.grade(enriched)
 
     # A job with an unphotographed checkpoint cannot be closed. Without this,

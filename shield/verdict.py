@@ -42,10 +42,53 @@ SCORE_WEIGHTS = {
 }
 
 
+def is_live(photo) -> bool:
+    """Whether a photo still stands as the evidence for its checkpoint.
+
+    Either marker means superseded. They are written in that order — the
+    timestamp first, so the row leaves the one-live-photo index before its
+    replacement is inserted, then the pointer once the replacement has an id —
+    so a row carrying only `superseded_at` is a retake mid-flight, not a live
+    photo.
+    """
+    if not photo:
+        return False
+    return not (photo.get("superseded_by") or photo.get("superseded_at"))
+
+
+def live_photo_for(point_id, photos):
+    """The one photo that stands as evidence for a checkpoint, or None.
+
+    Every caller must select through this. Close-out and the evidence export
+    each had their own inline selection, and they disagreed: close-out kept the
+    last row of an `uploaded_at` ordering, the export kept the first. With two
+    photos on one checkpoint the sealed packet and the 902(14) manifest could
+    cite different images for the same requirement — an inconsistency an
+    opposing party gets to read aloud.
+
+    The tie-break is explicit rather than inherited from result order, so the
+    answer does not depend on how the rows arrived.
+    """
+    live = [ph for ph in photos
+            if ph.get("point_id") == point_id and is_live(ph)]
+    if not live:
+        return None
+    live.sort(key=lambda ph: (ph.get("uploaded_at") or "", ph.get("id") or ""))
+    return live[-1]
+
+
+def superseded_for(point_id, photos):
+    """Earlier attempts at a checkpoint, oldest first. Disclosed, never hidden."""
+    out = [ph for ph in photos
+           if ph.get("point_id") == point_id and not is_live(ph)]
+    out.sort(key=lambda ph: (ph.get("uploaded_at") or "", ph.get("id") or ""))
+    return out
+
+
 def _verdict_of(point):
     """A checkpoint's verdict, or None when no live analysed photo backs it."""
     photo = point.get("photo") or {}
-    if photo.get("superseded_by"):
+    if not is_live(photo):
         return None
     return photo.get("ai_verdict")
 

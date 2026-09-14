@@ -117,7 +117,8 @@ def test_readable_container_with_no_exif_is_a_real_signal():
 # ------------------------------------------------------------- compression --
 def test_compression_strips_metadata_and_downscales():
     src = make_jpeg()
-    out = integrity.compress_for_model(src)
+    out, reason = integrity.compress_for_model(src)
+    assert reason is None
     assert Image.open(io.BytesIO(out)).size == (1200, 800)
     assert not Image.open(io.BytesIO(out)).getexif(), "model copy must carry no EXIF"
     assert len(out) < len(src)
@@ -132,7 +133,8 @@ def test_compression_never_mutates_the_original():
 
 def test_small_image_is_not_upscaled():
     buf = io.BytesIO(); Image.new("RGB", (400, 300)).save(buf, "JPEG")
-    assert Image.open(io.BytesIO(integrity.compress_for_model(buf.getvalue()))).size == (400, 300)
+    out, _ = integrity.compress_for_model(buf.getvalue())
+    assert Image.open(io.BytesIO(out)).size == (400, 300)
 
 
 # ------------------------------------------------------------------- mime ---
@@ -144,6 +146,54 @@ def test_small_image_is_not_upscaled():
 ])
 def test_mime_normalisation(raw, expected):
     assert integrity.normalize_mime(raw) == expected
+
+
+# --------------------------------------------------------- sniffing & size --
+def test_declared_content_type_cannot_make_a_file_a_photo():
+    """The upload path types a file by its magic, not by its Content-Type."""
+    assert integrity.sniff_mime(b"%PDF-1.4" + b"\x00" * 64) is None
+    assert integrity.sniff_mime(b"MZ\x90\x00" + b"\x00" * 64) is None
+    assert integrity.sniff_mime(b"") is None
+    assert integrity.sniff_mime(b"\xff\xd8") is None, "a truncated magic is not a JPEG"
+
+
+@pytest.mark.parametrize("fmt,expected", [
+    ("JPEG", "image/jpeg"), ("PNG", "image/png"), ("WEBP", "image/webp"),
+])
+def test_real_containers_are_recognised(fmt, expected):
+    buf = io.BytesIO(); Image.new("RGB", (32, 32)).save(buf, fmt)
+    assert integrity.sniff_mime(buf.getvalue()) == expected
+
+
+def test_unencodable_file_gets_no_analysable_copy_rather_than_the_original():
+    """The fallback used to be `return raw` — the untouched original, EXIF and
+    all, stored under a .jpg path and fetched for the model."""
+    src = make_jpeg()
+    out, reason = integrity.compress_for_model(src[:len(src) // 2])
+    assert out is None, "a file we cannot re-encode must not be passed through"
+    assert reason == "unreadable"
+
+
+def test_decompression_bomb_is_rejected_from_the_header():
+    """77 KB on the wire, 81 megapixels once decoded, 309 MB of RSS before this
+    check existed. MAX_CONTENT_LENGTH is a byte limit and never sees it."""
+    buf = io.BytesIO()
+    Image.new("L", (9000, 9000)).save(buf, "PNG", compress_level=9)
+    bomb = buf.getvalue()
+    assert len(bomb) < 1024 * 1024, "the point is that it is small on the wire"
+
+    probed = integrity.probe(bomb)
+    assert probed["ok"] is False
+    assert probed["reason"] == "oversize"
+    assert probed["pixels"] > integrity.MAX_PIXELS
+
+    out, reason = integrity.compress_for_model(bomb)
+    assert out is None and reason == "oversize", "and the decoder refuses it too"
+
+
+def test_a_real_camera_photo_is_not_caught_by_the_pixel_bound():
+    """48 Mpx is a current phone sensor. The bound must not reject one."""
+    assert 8000 * 6000 < integrity.MAX_PIXELS
 
 
 # ---------------------------------------------------------------- pricing ---

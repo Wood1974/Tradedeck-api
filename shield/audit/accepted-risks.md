@@ -45,7 +45,7 @@ one exists. "Add rate limiting" is not a finding.*
 ### AR-3 · No integration tests against live services
 **Reviewed 2026-09-14 · next review 2026-11-01**
 
-Storage, database and model calls are unexercised. All 146 tests and 22
+Storage, database and model calls are unexercised. All 159 tests and 27
 invariants are static or in-process. A behaviour that only appears against real
 Supabase, Stripe or Anthropic would not be caught here.
 

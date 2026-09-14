@@ -19,6 +19,18 @@ Two fixes relative to the parent's implementation:
      threshold and called it "~500m". A degree of longitude is 111km at the
      equator and 85km at 40N, so the real tolerance moved with latitude. This
      uses haversine and an explicit metre threshold.
+
+Two later fixes, each found by attacking this file rather than reading it:
+
+  3. The declared Content-Type was believed. Any bytes labelled "image/jpeg"
+     were hashed, stored and passed on. `sniff_mime` reads the container's own
+     magic instead, so the type is a property of the file, not of a header the
+     uploader wrote.
+
+  4. Pixel count was never bounded. A 77 KB PNG declaring a 9000x9000 canvas
+     decoded to 309 MB of RSS with no error raised — MAX_CONTENT_LENGTH is a
+     byte limit and never sees it. `probe` reads dimensions from the header
+     without decoding, so an image is rejected before it costs anything.
 """
 import hashlib
 import io
@@ -48,6 +60,60 @@ EXIF_NATIVE  = {"image/jpeg"}                      # piexif territory
 COMPRESS_PX  = 1200
 COMPRESS_Q   = 80
 EARTH_M      = 6_371_000
+
+# Above this, decoding costs more memory than any real site photo justifies.
+# A 48 Mpx phone sensor (8000x6000) fits with room to spare; the bombs do not.
+# Enforced twice: once from the header via probe(), and once by Pillow itself.
+MAX_PIXELS = 50_000_000
+if PILLOW:
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+
+# ISO base-media brands that carry HEIC/HEIF payloads.
+_HEIF_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx",
+                b"hevm", b"hevs", b"mif1", b"msf1", b"heif"}
+
+
+def sniff_mime(raw: bytes):
+    """The container type according to the bytes. None when unrecognised.
+
+    The uploader supplies Content-Type and can set it to anything; this reads
+    the file's own magic. Where the two disagree, this one is the fact.
+    """
+    if not raw or len(raw) < 12:
+        return None
+    if raw[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw[4:8] == b"ftyp" and raw[8:12] in _HEIF_BRANDS:
+        # heic and heif are the same container; report what the brand says.
+        return "image/heif" if raw[8:12] in (b"mif1", b"msf1", b"heif") else "image/heic"
+    return None
+
+
+def probe(raw: bytes) -> dict:
+    """Dimensions from the header, without decoding a single pixel.
+
+    Pillow's open() is lazy — it parses the header and stops. That is what
+    makes it safe to ask an untrusted file how big it claims to be before
+    committing the memory to find out.
+    """
+    if not PILLOW:
+        return {"ok": True, "width": None, "height": None, "pixels": None,
+                "reason": None}
+    try:
+        img = Image.open(io.BytesIO(raw))
+        w, h = img.size
+    except Exception:
+        return {"ok": False, "width": None, "height": None, "pixels": None,
+                "reason": "unreadable"}
+    px = w * h
+    if px > MAX_PIXELS:
+        return {"ok": False, "width": w, "height": h, "pixels": px,
+                "reason": "oversize"}
+    return {"ok": True, "width": w, "height": h, "pixels": px, "reason": None}
 
 
 def sha256(raw: bytes) -> str:
@@ -145,6 +211,9 @@ def _exif_pillow(raw: bytes) -> dict:
     out = {}
     try:
         img = Image.open(io.BytesIO(raw))
+        if img.size[0] * img.size[1] > MAX_PIXELS:
+            log.warning("Refusing EXIF read on a %dx%d image", *img.size)
+            return out
         ex = img.getexif()
         if not ex:
             return out
@@ -196,6 +265,9 @@ def extract_exif(raw: bytes, mime: str) -> tuple:
             return data, "present"
         # Pillow opened it but found nothing -> genuinely absent.
         try:
+            probed = probe(raw)
+            if not probed["ok"]:
+                return {}, "unsupported"
             Image.open(io.BytesIO(raw)).verify()
             return {}, "absent"
         except Exception:
@@ -203,17 +275,30 @@ def extract_exif(raw: bytes, mime: str) -> tuple:
     return {}, "unsupported"
 
 
-def compress_for_model(raw: bytes) -> bytes:
-    """Downscale, re-encode as JPEG, strip all metadata.
+def compress_for_model(raw: bytes):
+    """Downscale, re-encode as JPEG, strip all metadata. (bytes, None) or (None, reason).
 
     This copy is what the model sees. The original is never handed to it — so
     the model cannot be steered by embedded metadata, and the evidentiary bytes
     are never transmitted anywhere.
+
+    It used to `return raw` on any failure. That inverted the guarantee in this
+    docstring at exactly the moment it mattered: a file Pillow choked on — a
+    deliberately malformed one, say — was handed onward verbatim, EXIF intact,
+    stored under a .jpg path and fetched for the model. There is no fallback
+    now. A photo we cannot safely re-encode has no analysable copy, which is
+    the honest outcome: it stays in the record, sealed and hashed, and it
+    cannot be graded.
     """
     if not PILLOW:
-        return raw
+        return None, "pillow-missing"
     try:
         img = Image.open(io.BytesIO(raw))
+        if img.size[0] * img.size[1] > MAX_PIXELS:
+            return None, "oversize"
+        # For JPEG this decodes at a reduced DCT scale, so the full-size
+        # bitmap is never materialised. A no-op for other formats.
+        img.draft("RGB", (COMPRESS_PX, COMPRESS_PX))
         if img.mode != "RGB":
             img = img.convert("RGB")
         w, h = img.size
@@ -222,10 +307,10 @@ def compress_for_model(raw: bytes) -> bytes:
             img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=COMPRESS_Q, exif=b"", optimize=True)
-        return buf.getvalue()
+        return buf.getvalue(), None
     except Exception:
-        log.exception("Compression failed — falling back to original bytes")
-        return raw
+        log.exception("Compression failed — no analysable copy will be stored")
+        return None, "unreadable"
 
 
 def assess(raw: bytes, mime: str, app_lat, app_lng, tolerance_m: int) -> dict:

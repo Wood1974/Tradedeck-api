@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 
 import ledger
 import notes as field_notes
+import verdict
 
 MANIFEST_SCHEMA = "tradedeck.shield.evidence-manifest.v1"
 
@@ -88,10 +89,11 @@ def build_manifest(*, job, points, photos, custody, report=None, notes=None):
 
     items = []
     for pt in sorted(points, key=lambda p: p.get("point_number") or 0):
-        live = next((ph for ph in photos
-                     if ph.get("point_id") == pt["id"] and not ph.get("superseded_by")), None)
-        retakes = [ph for ph in photos
-                   if ph.get("point_id") == pt["id"] and ph.get("superseded_by")]
+        # Selected through the same helper close-out uses. These two used to
+        # choose independently and could name different photos for one
+        # checkpoint; see verdict.live_photo_for.
+        live = verdict.live_photo_for(pt["id"], photos)
+        retakes = verdict.superseded_for(pt["id"], photos)
         items.append({
             "checkpoint_number": pt.get("point_number"),
             "checkpoint":        pt.get("label"),
