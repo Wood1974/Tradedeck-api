@@ -433,6 +433,49 @@ def inv_retakes_supersede_rather_than_collide():
     return True, "prior photo leaves the live set before its replacement lands"
 
 
+def inv_missing_exif_is_detectable_in_every_format():
+    import io
+    import integrity
+    try:
+        from PIL import Image
+    except ImportError:
+        return True, "Pillow absent"
+    for fmt, mime in (("JPEG", "image/jpeg"), ("PNG", "image/png")):
+        buf = io.BytesIO()
+        Image.new("RGB", (256, 256)).save(buf, fmt)
+        status = integrity.extract_exif(buf.getvalue(), mime)[1]
+        if status != "absent":
+            return False, (f"a {fmt} carrying no EXIF reports '{status}' — the "
+                           f"screenshot / downloaded-image signal is unreachable "
+                           f"for {mime}, and so is the integrity flag it raises")
+    return True, "a stripped photo reads as 'absent' in both formats"
+
+
+def inv_every_integrity_note_raises_a_flag():
+    # Read the keys of the `flags` dict itself. Matching on the source text
+    # passes as long as the condition's *variable* is mentioned anywhere in the
+    # function, which it always is.
+    import ast
+    import textwrap
+    import routes
+    keys = None
+    for node in ast.walk(ast.parse(textwrap.dedent(_source(routes.upload_photo)))):
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+                and any(getattr(t, "id", None) == "flags" for t in node.targets)):
+            keys = {k.value for k in node.value.keys
+                    if isinstance(k, ast.Constant)}
+    if keys is None:
+        return False, "upload_photo no longer builds a flags dict"
+    required = {"gps_mismatch", "exif_absent", "off_site", "not_analysable"}
+    missing = required - keys
+    if missing:
+        return False, (f"the integrity_flag event no longer covers "
+                       f"{', '.join(sorted(missing))} — a note is written to the "
+                       f"upload event and nothing scanning the chain for a flag "
+                       f"will see it")
+    return True, f"flag raised for all {len(keys)} note conditions"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -461,6 +504,8 @@ INVARIANTS = (
     ("pixel-count-bounded", "Kill the worker with a 77 KB decompression bomb", inv_pixel_count_is_bounded_before_decoding),
     ("one-evidence-selector", "Have the sealed packet and the export cite different photos", inv_one_selector_decides_the_evidence),
     ("retakes-supersede", "Bury a failed checkpoint photo, or block retakes entirely", inv_retakes_supersede_rather_than_collide),
+    ("exif-absent-reachable", "Submit a stripped or downloaded JPEG without tripping the screenshot signal", inv_missing_exif_is_detectable_in_every_format),
+    ("note-implies-flag", "Land outside the buyer's geofence with no flag in the custody chain", inv_every_integrity_note_raises_a_flag),
 )
 
 

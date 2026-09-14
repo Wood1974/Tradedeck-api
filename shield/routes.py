@@ -586,12 +586,27 @@ def upload_photo(shield_job_id):
                     event_data={"superseded_by": photo_id,
                                 "point_id": point_id})
 
-    if assessment["gps_mismatch"] or assessment["exif_status"] == "absent":
+    # Every condition that writes an integrity note also raises the flag event.
+    # These had drifted apart: a photo reported 3,400 km outside the buyer's own
+    # geofence — the strongest signal here, and the only one the contractor does
+    # not control — wrote a note on the upload event and no flag at all, so
+    # nothing scanning the chain for integrity_flag would ever see it.
+    flags = {
+        "gps_mismatch": assessment["gps_mismatch"],
+        "exif_absent": assessment["exif_status"] == "absent",
+        "off_site": bool(off_site),
+        "not_analysable": comp_path is None,
+        "declared_type_mismatch": declared != mime and declared not in
+                                  ("application/octet-stream", ""),
+    }
+    if any(flags.values()):
         log_custody(photo_id=photo_id, shield_job_id=shield_job_id,
                     event_type="integrity_flag", actor_type="system",
                     file_hash=original_hash, integrity_note=assessment["integrity_note"],
                     event_data={"exif_status": assessment["exif_status"],
-                                "gps_mismatch": assessment["gps_mismatch"]})
+                                "site_distance_m": (round(site_distance, 1)
+                                                    if site_distance is not None else None),
+                                **{k: v for k, v in flags.items() if v}})
 
     return jsonify({
         "photo_id": photo_id, "original_hash": original_hash,

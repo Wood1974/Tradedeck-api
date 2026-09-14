@@ -5,7 +5,7 @@ Daily adversarial audit of Shield. Three parts:
 | File | What it is |
 |---|---|
 | `PROTOCOL.md` | The brief the daily agent follows — run order, rotation, what counts as a finding, and when to stay silent |
-| `invariants.py` | 27 tripwires, one per exploit we have closed. Run it; any `BROKEN` means a closed hole reopened |
+| `invariants.py` | 29 tripwires, one per exploit we have closed. Run it; any `BROKEN` means a closed hole reopened |
 | `accepted-risks.md` | Known limits, deliberately unfixed. The audit must not re-report these |
 | `findings.jsonl` | Append-only ledger, so a finding is reported once and not every morning |
 
@@ -13,8 +13,8 @@ Daily adversarial audit of Shield. Three parts:
 
 ```bash
 cd shield
-python -m pytest tests/ -q      # 159 tests
-python audit/invariants.py      # 27 invariants
+python -m pytest tests/ -q      # 161 tests
+python audit/invariants.py      # 29 invariants
 python audit/invariants.py --json
 ```
 

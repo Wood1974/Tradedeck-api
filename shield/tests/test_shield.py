@@ -107,11 +107,29 @@ def test_unreadable_container_is_not_evidence_of_tampering():
     assert "screenshot" not in r["integrity_note"]
 
 
-def test_readable_container_with_no_exif_is_a_real_signal():
-    buf = io.BytesIO(); Image.new("RGB", (800, 600)).save(buf, "PNG")
-    r = integrity.assess(buf.getvalue(), "image/png", *SLC, 500)
+@pytest.mark.parametrize("fmt,mime", [("PNG", "image/png"), ("JPEG", "image/jpeg")])
+def test_readable_container_with_no_exif_is_a_real_signal(fmt, mime):
+    """Both formats, because for a long time only one of them worked.
+
+    This test existed for PNG only. For JPEG the signal was unreachable:
+    _exif_piexif set `exif_raw` unconditionally, so its result was truthy for
+    every JPEG piexif could parse, and extract_exif returns "present" for any
+    non-empty result. A downloaded or screenshotted JPEG — the single most
+    likely way to submit someone else's work — reported EXIF "present" and
+    raised no flag, in the dominant format.
+    """
+    buf = io.BytesIO(); Image.new("RGB", (800, 600)).save(buf, fmt)
+    r = integrity.assess(buf.getvalue(), mime, *SLC, 500)
     assert r["exif_status"] == "absent"
+    assert r["has_exif"] is False
     assert "screenshot" in r["integrity_note"]
+
+
+def test_a_camera_jpeg_still_reads_as_present():
+    """The fix must not cost us the real signal it protects."""
+    r = integrity.assess(make_jpeg(), "image/jpeg", *SLC, 500)
+    assert r["exif_status"] == "present"
+    assert r["exif"].get("device_make")
 
 
 # ------------------------------------------------------------- compression --

@@ -199,10 +199,19 @@ def _exif_piexif(raw: bytes) -> dict:
             out["gps_altitude_m"] = round(alt[0] / alt[1], 2)
         except Exception:
             pass
-    out["exif_raw"] = {
-        name: {str(k): _decode(v) for k, v in block.items()}
-        for name, block in d.items() if isinstance(block, dict)
-    }
+    # Only record the raw block when the file actually carried tags. This used
+    # to be unconditional, which made `out` truthy for every JPEG piexif could
+    # parse — including one with no EXIF at all. extract_exif returns "present"
+    # for any non-empty result, so `exif_status` was *never* "absent" for a
+    # JPEG, and "absent" is the branch that says "possible screenshot or
+    # re-saved image" and raises the integrity flag. The screenshot signal was
+    # dead for the dominant format. The suite missed it because the test for
+    # it uses a PNG, where the Pillow path behaves correctly.
+    if any(block for name, block in d.items() if isinstance(block, dict) and block):
+        out["exif_raw"] = {
+            name: {str(k): _decode(v) for k, v in block.items()}
+            for name, block in d.items() if isinstance(block, dict)
+        }
     return out
 
 
