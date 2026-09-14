@@ -1,0 +1,42 @@
+name: Shield security invariants
+
+# Every closed exploit is a tripwire here. This gates the PR, so a guard
+# cannot be removed by a refactor that leaves the behaviour tests passing.
+# The daily adversarial audit runs separately and hunts for NEW holes; this
+# job only checks that old ones stay closed.
+
+on:
+  push:
+    paths: ['shield/**', 'supabase/migrations/**']
+  pull_request:
+    paths: ['shield/**', 'supabase/migrations/**']
+  workflow_dispatch:
+
+jobs:
+  invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install
+        run: pip install -r shield/requirements.txt pytest
+
+      - name: Tests
+        working-directory: shield
+        run: python -m pytest tests/ -q
+
+      - name: Security invariants
+        working-directory: shield
+        # Static values only — this job never touches live services.
+        env:
+          SUPABASE_URL: https://ci.invalid
+          SUPABASE_SERVICE_KEY: ci
+          STRIPE_SECRET_KEY: ci
+          STRIPE_WEBHOOK_SECRET: ci
+          ANTHROPIC_API_KEY: ci
+          IP_HASH_SALT: ci-salt-not-a-secret
+        run: python audit/invariants.py
