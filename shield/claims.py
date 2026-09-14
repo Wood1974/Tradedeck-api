@@ -39,21 +39,26 @@ CLAIMS = (
         "claim": "The cheapest way to pass is to do the work.",
         "phrase": "cheapest way to pass",
         "needs": (
-            "Flash-pair analysis — luminance response correlated with depth, "
-            "which a screen cannot fake because it emits rather than reflects.",
-            "Two-pose parallax — a flat surface maps between views by a "
-            "homography; a real scene does not.",
+            "DONE (synthetic only) — flash-pair analysis, rebroadcast.py.",
+            "DONE (synthetic only) — two-pose parallax, rebroadcast.py.",
+            "Field calibration of both against real phones, real displays and "
+            "real jobsites. The thresholds have never seen a real photograph "
+            "of a real screen.",
             "Server-issued capture nonce with a short TTL, bound into the "
             "attestation, so archived and pre-prepared images are excluded.",
             "Platform attestation (Apple App Attest / Android Key Attestation "
             "with verifiedBootState GREEN), which requires the native app.",
+            "A capture flow that forces real translation between the two "
+            "poses — pure rotation makes every scene look planar.",
         ),
-        "test": "test_rebroadcast.py — discrimination proven against a "
-                "photographed screen and a rendered 3D scene",
+        "test": "test_rebroadcast.py — discrimination proven on synthetic "
+                "scenes; field calibration not yet designed",
         "earned": None,
-        "note": "Today a forgery costs about twelve lines of Python and still "
-                "works; see AR-1. Until every mechanism above ships and the "
-                "test discriminates, this sentence is false.",
+        "note": "Two of the mechanisms now exist and separate the cases "
+                "cleanly on synthetic data. That is the maths working, not the "
+                "product working: no threshold here has met a real screen. "
+                "Today a forgery still costs about twelve lines of Python; see "
+                "AR-1.",
     },
     {
         "id": "tamper-evident-custody",
@@ -138,6 +143,28 @@ CLAIMS = (
         "earned": "2026-09-14",
         "note": "The write time is ours. The *observation* time is the "
                 "writer's assertion, and the export says so.",
+    },
+    {
+        "id": "rebroadcast-detection",
+        "claim": "A capture can be positively corroborated as a real "
+                 "three-dimensional scene.",
+        "phrase": "positively corroborated as a real",
+        "needs": (
+            "Flash-pair and parallax analysis — built.",
+            "Thresholds calibrated against real devices and real displays, "
+            "with a measured false-positive rate on ordinary flat subjects.",
+            "The capture flow that produces the two frames and the two poses.",
+        ),
+        "test": "test_rebroadcast.py — 18 cases including the flat wall, the "
+                "blown-out frame, and pure rotation",
+        "earned": None,
+        "note": "Deliberately framed as an UPGRADE, never a detector. Both "
+                "signals are strong positives and weak negatives: non-planar "
+                "proves depth, but planar means screen OR flat wall OR a "
+                "rotated capture. Construction is full of flat subjects, so a "
+                "system that read planar as fraud would accuse honest "
+                "contractors far more often than it caught anyone. assess() "
+                "enforces that asymmetry and a test asserts it.",
     },
     {
         "id": "photo-came-from-a-camera",

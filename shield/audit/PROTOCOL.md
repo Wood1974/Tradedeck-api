@@ -65,8 +65,8 @@ is the attack nobody has written a generator for yet.
 
 ```bash
 cd shield
-python -m pytest tests/ -q            # 201 tests — any failure is a finding
-python audit/invariants.py            # 35 tripwires — any BROKEN is critical
+python -m pytest tests/ -q            # 219 tests — any failure is a finding
+python audit/invariants.py            # 36 tripwires — any BROKEN is critical
 python audit/fuzz.py --seconds 120    # a short pass; the long one runs nightly
 ls audit/corpus/                      # anything here is a case waiting to be triaged
 ```
@@ -169,7 +169,7 @@ to dedupe, specific enough not to mask a different bug in the same file.
 
 Say exactly this and stop:
 
-> Audit YYYY-MM-DD: 201 tests pass, 35 invariants hold, nothing new on
+> Audit YYYY-MM-DD: 219 tests pass, 36 invariants hold, nothing new on
 > *&lt;surface&gt;*. No issue opened.
 
 That is a good day. Do not dress it up.

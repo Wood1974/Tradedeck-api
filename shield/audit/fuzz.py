@@ -397,9 +397,62 @@ def t_geometry(rnd, report):
     return None
 
 
+def t_rebroadcast(rnd, report, _cache=[]):
+    """Two arbitrary frames in. Never raise, never accuse."""
+    if not PARSERS:
+        return None
+    try:
+        import rebroadcast
+    except Exception:
+        return None
+    if not _cache:
+        _cache.extend(_seed_images())
+
+    def frame():
+        if rnd.random() < 0.25:
+            return os.urandom(rnd.randint(0, 512))
+        raw = bytearray(rnd.choice(_cache))
+        for _ in range(rnd.randint(0, 8)):
+            if raw:
+                raw[rnd.randrange(len(raw))] = rnd.randint(0, 255)
+        return bytes(raw)
+
+    try:
+        r = rebroadcast.analyze_flash_pair(frame(), frame())
+    except Exception:
+        return report("rebroadcast", "analyze_flash_pair raised",
+                      {"traceback": traceback.format_exc()[-600:]})
+    if r["verdict"] not in ("consistent_with_scene", "consistent_with_display",
+                            "inconclusive"):
+        return report("rebroadcast", f"unknown verdict {r['verdict']!r}", {"r": r})
+
+    pts = [((rnd.uniform(0, 640), rnd.uniform(0, 480)),
+            (rnd.uniform(0, 640), rnd.uniform(0, 480)))
+           for _ in range(rnd.randint(0, 40))]
+    try:
+        p = rebroadcast.analyze_parallax(pts, (640, 480))
+    except Exception:
+        return report("rebroadcast", "analyze_parallax raised",
+                      {"n": len(pts), "traceback": traceback.format_exc()[-600:]})
+    if p["verdict"] not in ("planar", "non_planar", "inconclusive"):
+        return report("rebroadcast", f"unknown verdict {p['verdict']!r}", {"p": p})
+
+    out = rebroadcast.assess(flash=r, parallax=p)
+    positive = r["verdict"] == "consistent_with_scene" or p["verdict"] == "non_planar"
+    if out["upgrade"] is not positive:
+        return report("rebroadcast", "assess() disagrees with its own signals",
+                      {"flash": r["verdict"], "parallax": p["verdict"],
+                       "upgrade": out["upgrade"]})
+    for word in ("fraud", "fake", "forged", "faked"):
+        if word in out["reason"].lower():
+            return report("rebroadcast", f"assess() accused: {word!r} in reason",
+                          {"reason": out["reason"]})
+    return None
+
+
 TARGETS = {"differential": t_differential, "chain": t_chain,
            "canonical": t_canonical, "parsers": t_parsers,
-           "geometry": t_geometry}
+           "geometry": t_geometry, "rebroadcast": t_rebroadcast}
 
 
 # ------------------------------------------------------------------ main ---

@@ -627,6 +627,40 @@ def inv_verifier_agrees_with_the_service():
     return True, "spec and service agree on genesis, canonical bytes and links"
 
 
+def inv_rebroadcast_never_accuses():
+    """A flat subject must never be turned into a finding against a contractor.
+
+    Drywall, a slab, a foundation wall — construction is full of planar
+    subjects, and both rebroadcast signals read planar as ambiguous. A build
+    that let `assess()` upgrade a negative into an accusation would flag honest
+    work far more often than fraud, which is worse than having no check.
+    """
+    import rebroadcast
+    display_like = {"test": "flash_pair", "verdict": "consistent_with_display",
+                    "reason": "flat gain"}
+    planar = {"test": "parallax", "verdict": "planar", "reason": "one homography"}
+
+    out = rebroadcast.assess(flash=display_like, parallax=planar)
+    if out.get("upgrade") is not False:
+        return False, "a negative result now upgrades the record"
+    if out.get("verdict") != "not_corroborated":
+        return False, (f"a negative result returns verdict "
+                       f"{out.get('verdict')!r} rather than 'not_corroborated'")
+    text = (out.get("reason") or "").lower()
+    for word in ("fraud", "fake", "forged", "faked", "staged"):
+        if word in text:
+            return False, (f"the negative-result wording accuses: contains "
+                           f"{word!r}")
+
+    # and a positive must still be able to upgrade, or the check is inert
+    good = rebroadcast.assess(
+        flash={"test": "flash_pair", "verdict": "consistent_with_scene",
+               "reason": "depth-varying gain"})
+    if good.get("upgrade") is not True:
+        return False, "a positive result no longer upgrades — the check is inert"
+    return True, "positives upgrade; negatives never accuse"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -663,6 +697,7 @@ INVARIANTS = (
     ("verifier-is-independent", "Have a recipient 'verify' a package by running our own code", inv_verifier_shares_no_code_with_the_service),
     ("export-is-recomputable", "Hand over a package whose integrity is our assertion", inv_export_carries_recomputable_custody),
     ("spec-matches-service", "Ship a spec that does not produce the hashes we issue", inv_verifier_agrees_with_the_service),
+    ("rebroadcast-never-accuses", "Turn a photograph of a flat wall into a fraud finding", inv_rebroadcast_never_accuses),
 )
 
 

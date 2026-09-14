@@ -5,7 +5,7 @@ Daily adversarial audit of Shield. Six parts:
 | File | What it is |
 |---|---|
 | `PROTOCOL.md` | The brief the daily agent follows — run order, rotation, what counts as a finding, and when to stay silent |
-| `invariants.py` | 35 tripwires, one per exploit we have closed. Run it; any `BROKEN` means a closed hole reopened |
+| `invariants.py` | 36 tripwires, one per exploit we have closed. Run it; any `BROKEN` means a closed hole reopened |
 | `accepted-risks.md` | Known limits, deliberately unfixed. The audit must not re-report these |
 | `CLAIMS.md` | The mirror of accepted-risks: claims not yet earned. Generated from `../claims.py`; an invariant fails the build if an unearned claim appears in published text |
 | `fuzz.py` | Continuous adversarial fuzzing — stdlib only, no tokens. Runs nightly in CI and finds the repetitive half of attacking so the model does not have to |
@@ -16,8 +16,8 @@ Daily adversarial audit of Shield. Six parts:
 
 ```bash
 cd shield
-python -m pytest tests/ -q      # 201 tests
-python audit/invariants.py      # 35 invariants
+python -m pytest tests/ -q      # 219 tests
+python audit/invariants.py      # 36 invariants
 python audit/invariants.py --json
 ```
 
