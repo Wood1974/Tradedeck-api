@@ -38,12 +38,37 @@ probably not worth reporting.
 
 ---
 
+## Where you sit in the stack
+
+You are the expensive tier. Three cheaper ones run before you, and they do the
+grinding so your budget goes on what a machine cannot do.
+
+| Tier | What | Cost | Cadence |
+|---|---|---|---|
+| 0 | `tests/` + `audit/invariants.py` | CPU | every push |
+| 1 | `audit/fuzz.py` — millions of cases against the chain, the parsers, and the two implementations of the spec | CPU | nightly, 20 min |
+| 2 | **you** — triage what tiers 0–1 surfaced, and hunt for new attack *classes* | tokens | this run |
+
+**Check tier 1 first.** If `audit/corpus/` has entries or the nightly workflow
+failed, those are real reproducible cases and they outrank anything you would
+go looking for. Triage them: is the finding a product defect, or is the
+fuzzer's assertion wrong? Both happen — the truncation finding (AR-8) was a
+genuine undocumented property, and the geometry findings alongside it were the
+fuzzer asserting the wrong key name.
+
+**Do not re-do tier 1's job.** Random mutation of chains, malformed bytes into
+parsers, and differential checks between `ledger.py` and the verifier are
+covered, continuously, for free. Spending a model on them is waste. Your value
+is the attack nobody has written a generator for yet.
+
 ## Run order
 
 ```bash
 cd shield
-python -m pytest tests/ -q            # 195 tests — any failure is a finding
+python -m pytest tests/ -q            # 201 tests — any failure is a finding
 python audit/invariants.py            # 35 tripwires — any BROKEN is critical
+python audit/fuzz.py --seconds 120    # a short pass; the long one runs nightly
+ls audit/corpus/                      # anything here is a case waiting to be triaged
 ```
 
 Environment for a static run (no live services needed):
@@ -75,7 +100,9 @@ re-tilled. Use the day of the month, mod 7.
 | 5 | Notes &amp; contemporaneity | Can a note claim a time, an author, or a wording it did not have? |
 | 6 | Export &amp; RLS | Can a recipient be misled, or a stranger read what they should not? |
 
-Also, every day, spend ten minutes on whatever changed in the last 24 hours:
+Also, every day, spend ten minutes on whatever changed in the last 24 hours —
+new code is where new holes are, and it is the one place tier 1 has no
+generator for yet:
 
 ```bash
 git log --since="24 hours ago" --stat
@@ -142,7 +169,7 @@ to dedupe, specific enough not to mask a different bug in the same file.
 
 Say exactly this and stop:
 
-> Audit YYYY-MM-DD: 195 tests pass, 35 invariants hold, nothing new on
+> Audit YYYY-MM-DD: 201 tests pass, 35 invariants hold, nothing new on
 > *&lt;surface&gt;*. No issue opened.
 
 That is a good day. Do not dress it up.

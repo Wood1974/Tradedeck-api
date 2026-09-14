@@ -106,6 +106,18 @@ bytes match what was received.
   proves nothing was changed afterwards, not that everything was recorded.
 - That any assessment is correct, or that work complies with any code.
 
+**Truncation.** Dropping entries from the *end* of the chain leaves a shorter
+chain in which every remaining link still verifies. Nothing inside the package
+detects it — including the package's own `head_hash`, which a truncating
+operator simply updates. This is a property of hash chains, not a defect, and
+it is a cheaper attack than a full rewrite: no recomputation is needed, just
+deletion. It is how an operator would remove the last few entries showing a
+retake or an integrity flag.
+
+The only defence is a head hash the recipient obtained **earlier, from their
+own records**. Pass it to a verifier (`--expect-head`). A verification run
+without one should say so rather than pass silently.
+
 **The honest limit.** An attacker who recomputes the entire chain produces
 something that verifies perfectly. What they cannot do is make it match a head
 hash somebody already holds. That is why a head hash that has left the

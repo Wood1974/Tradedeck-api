@@ -29,6 +29,7 @@ are not going to be, and that file says why.
 | 15 | Bury a failed checkpoint photo behind a retake | **Blocked by accident, broken in both directions.** Retakes were impossible (the index rejected them, the API said "please retry"), and close-out and the export disagreed about which photo was evidence. Closed: one selector, retakes recorded and disclosed. |
 | 16 | Ship a claim the product has not earned | **Possible until now.** Closed: `CLAIMS.md` plus an invariant that fails the build if an unearned claim appears in published text, unless it is being denied. |
 | 17 | Hand a recipient a package whose integrity they cannot check | **Worked.** The export carried only a summary of the chain — count, head hash, and our own `chain_intact: true`. A recipient had to believe us. Found while writing `SPEC.md`. Closed: raw entries are exported and `verifier/shield_verify.py` recomputes them. |
+| 18 | Truncate the custody chain to drop the last few entries | **Works, and always will.** A chain shortened at the end verifies perfectly; the package's own head claim is updated by whoever truncated it. Found by `audit/fuzz.py` in under a minute. **Not closed** — see AR-8. Mitigated by `--expect-head`: a head the recipient obtained earlier detects it. |
 
 ## On the tripwires themselves
 

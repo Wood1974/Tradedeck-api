@@ -45,7 +45,7 @@ one exists. "Add rate limiting" is not a finding.*
 ### AR-3 · No integration tests against live services
 **Reviewed 2026-09-14 · next review 2026-11-01**
 
-Storage, database and model calls are unexercised. All 195 tests and 27
+Storage, database and model calls are unexercised. All 201 tests and 27
 invariants are static or in-process. A behaviour that only appears against real
 Supabase, Stripe or Anthropic would not be caught here.
 
@@ -107,3 +107,28 @@ vulnerability.
 
 *A new finding here would be a citation that is wrong or dangerously outdated —
 which is a correctness issue worth reporting.*
+
+---
+
+### AR-8 · Tail truncation is undetectable without an externally held head
+**Reviewed 2026-09-14 · next review 2027-03-01**
+
+Deleting entries from the end of a custody chain leaves a shorter chain in
+which every remaining link verifies. The package's own `head_hash` does not
+help — an operator who truncates updates it too. Found by `audit/fuzz.py` in
+under a minute of random chain mutation, which is the kind of thing a machine
+finds and a reader does not.
+
+This is a property of hash chains, not a fixable bug. The mitigation shipped
+with it: `verifier/shield_verify.py --expect-head <hash>` compares against a
+head the recipient obtained earlier from their own records, which detects
+truncation and full rewrite alike. A verification run with no expected head
+now says what it could not check rather than passing silently.
+
+Operationally this makes one habit load-bearing: **the head hash must leave
+the building** — in the close-out packet, in an email to the adjuster, in an
+RFC 3161 timestamp, in the customer's own system. A head that only ever lived
+on our servers protects nobody.
+
+*A new finding here would be: a way to defeat an externally held head, or a
+path where Shield fails to give the head to the party who needs it.*

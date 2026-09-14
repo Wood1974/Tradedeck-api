@@ -39,6 +39,9 @@ What it cannot establish
   * That no entry was *deleted before the chain was ever written* — the chain
     proves nothing was altered after the fact, not that everything that
     happened was recorded.
+  * That the chain has not been TRUNCATED. Dropping entries from the end
+    leaves a shorter chain in which every remaining link still verifies.
+    Only a head hash you were given earlier detects it — pass --expect-head.
 
 A package can verify perfectly and still describe work that was never done.
 This tool checks integrity, not truth.
@@ -158,8 +161,15 @@ def verify_files(manifest, file_bytes):
     return results
 
 
-def verify_package(manifest, file_bytes=None):
-    """Everything checkable from a manifest, plus any files supplied."""
+def verify_package(manifest, file_bytes=None, expect_head=None):
+    """Everything checkable from a manifest, plus any files supplied.
+
+    `expect_head` is a head hash you were given EARLIER, from your own records
+    — not the one inside this package. That distinction is the whole point: an
+    operator who truncates the chain also updates the package's own claim, so
+    comparing the package against itself catches nothing. Comparing it against
+    a head you already held catches truncation and rewrite both.
+    """
     problems = []
     job_id = (manifest.get("job") or {}).get("shield_job_id")
     if not job_id:
@@ -194,14 +204,29 @@ def verify_package(manifest, file_bytes=None):
                 "entry count disagreement — package states %s, carries %d"
                 % (claimed["entries"], chain["entries"]))
 
+    if expect_head and chain:
+        if chain["head_hash"] != expect_head:
+            problems.append(
+                "head does not match the one you were given — you hold %s… and "
+                "this package computes %s…. Entries have been removed from the "
+                "end, or the history was rewritten. Both verify perfectly on "
+                "their own; only your copy of the head detects this."
+                % (str(expect_head)[:16], chain["head_hash"][:16]))
+    notes = []
+    if chain and not expect_head:
+        notes.append(
+            "No expected head supplied. A chain truncated at the end verifies "
+            "perfectly — pass --expect-head with the head hash you were given "
+            "when the record was closed out.")
+
     files = verify_files(manifest, file_bytes or {})
     for f in files:
         if f["status"] == "MISMATCH":
             problems.append("photo %s does not match its recorded hash"
                             % f["photo_id"])
 
-    return {"ok": not problems, "problems": problems, "chain": chain,
-            "files": files}
+    return {"ok": not problems, "problems": problems, "notes": notes,
+            "chain": chain, "files": files}
 
 
 # ------------------------------------------------------------------ cli ----
@@ -222,13 +247,17 @@ def main(argv=None):
                     "Standard library only; nothing is sent anywhere.")
     ap.add_argument("manifest", help="path to the manifest JSON")
     ap.add_argument("--files", help="directory of photos named <photo_id>.<ext>")
+    ap.add_argument("--expect-head", dest="expect_head",
+                    help="the head hash you were given earlier, from your own "
+                         "records — this is what detects truncation")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
 
     with open(args.manifest) as fh:
         manifest = json.load(fh)
     report = verify_package(manifest,
-                            _load_files(args.files) if args.files else None)
+                            _load_files(args.files) if args.files else None,
+                            expect_head=args.expect_head)
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -243,6 +272,12 @@ def main(argv=None):
         print("  custody chain      %s (%d/%d entries)"
               % ("INTACT" if c["intact"] else "BROKEN", c["verified"], c["entries"]))
         print("  head hash          %s" % c["head_hash"])
+        if args.expect_head:
+            print("  vs the head you hold %s"
+                  % ("MATCHES" if c["head_hash"] == args.expect_head else "DIFFERS"))
+        else:
+            print("  (no --expect-head given: a chain truncated at the end")
+            print("   verifies perfectly. Your own copy of the head detects that.)")
     else:
         print("  custody chain      NOT VERIFIABLE — no entries in package")
     supplied = [f for f in report["files"] if f["status"] in ("match", "MISMATCH")]

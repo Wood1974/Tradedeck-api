@@ -242,3 +242,69 @@ def test_the_package_round_trips_through_json():
     pkg = json.loads(json.dumps(make_package(), default=str))
     report = shield_verify.verify_package(pkg, PHOTO_BYTES)
     assert report["ok"], report["problems"]
+
+
+# ------------------------------------------------- truncation, and its cure --
+# Found by audit/fuzz.py in under a minute: deleting entries from the END of a
+# chain leaves a shorter chain in which every remaining link verifies. It is a
+# property of hash chains, not a defect — but it is a cheaper attack than the
+# documented "full rewrite", and it was not written down anywhere.
+
+def _truncate(chain, n=1):
+    return chain[:-n]
+
+
+def test_tail_truncation_is_not_detectable_from_the_chain_alone():
+    """The uncomfortable half. Stated by a test so it cannot be forgotten."""
+    chain = build_chain(6)
+    report = shield_verify.verify_package(make_package(_truncate(chain, 2)))
+    assert report["ok"], \
+        "truncation leaves a valid chain — if this fails the docs are now wrong"
+    assert report["chain"]["intact"]
+    assert report["chain"]["entries"] == 4
+
+
+def test_the_package_cannot_be_used_to_detect_its_own_truncation():
+    """An operator who truncates also updates the package's own head claim."""
+    chain = build_chain(6)
+    pkg = make_package(_truncate(chain, 2))
+    assert pkg["custody"]["head_hash"] == shield_verify.verify_package(pkg)["chain"]["head_hash"]
+
+
+def test_a_head_you_already_hold_detects_truncation():
+    """The cure. This is why SPEC.md says keep the head you were given."""
+    chain = build_chain(6)
+    held = ledger.head_of(chain, JOB_ID)
+    report = shield_verify.verify_package(make_package(_truncate(chain, 2)),
+                                          expect_head=held)
+    assert not report["ok"]
+    assert any("head does not match the one you were given" in p
+               for p in report["problems"])
+
+
+def test_a_head_you_hold_also_detects_a_full_rewrite():
+    forged, prev = [], ledger.genesis_hash(JOB_ID)
+    for i in range(5):
+        sealed = ledger.seal({"shield_job_id": JOB_ID, "event_type": "uploaded",
+                              "actor_type": "contractor",
+                              "recorded_at": f"2026-09-0{i + 1}T10:00:00+00:00"}, prev)
+        forged.append(sealed)
+        prev = sealed["entry_hash"]
+    held = ledger.head_of(build_chain(5), JOB_ID)
+    report = shield_verify.verify_package(make_package(forged), expect_head=held)
+    assert not report["ok"]
+
+
+def test_a_matching_held_head_still_passes():
+    chain = build_chain(5)
+    report = shield_verify.verify_package(
+        make_package(chain), expect_head=ledger.head_of(chain, JOB_ID))
+    assert report["ok"], report["problems"]
+
+
+def test_verification_without_a_held_head_says_what_it_could_not_check():
+    """Silence about a limit is how a recipient is misled."""
+    report = shield_verify.verify_package(make_package())
+    assert report["ok"]
+    assert any("truncated at the end" in n for n in report["notes"]), \
+        "a passing verification must disclose what it did not establish"
