@@ -476,6 +476,99 @@ def inv_every_integrity_note_raises_a_flag():
     return True, f"flag raised for all {len(keys)} note conditions"
 
 
+# Anything a customer, a recipient, or an opposing party reads. The ledger
+# itself and its source are excluded for the obvious reason.
+PUBLISHED_DOCS = ("README.md", "PROTECTION.md", "audit/PROTOCOL.md",
+                  "audit/README.md", "audit/accepted-risks.md")
+
+# A claim named in order to deny it is the opposite of an overclaim — it is
+# the behaviour this product depends on. "Nothing here proves a photo came off
+# a camera sensor" must pass; "a photo came off a camera sensor" must not.
+NEGATORS = ("not", "cannot", "can't", "never", "nothing", "no ", "without",
+            "unearned", "yet", "fails to", "unable", "does nothing")
+
+
+def _negation_window(text, index):
+    """The text negation is judged in: the sentence, plus a list item's lead-in.
+
+    A bullet inherits its negation from the line that introduces the list —
+    "Not proven:" followed by "- That any photo came off a camera sensor" is an
+    honest disclaimer, and a window that stops at the newline reads it as an
+    assertion. Found by this check firing on our own README, which was right.
+    """
+    start = max(text.rfind(".", 0, index), text.rfind("\n", 0, index),
+                text.rfind("!", 0, index), text.rfind("?", 0, index)) + 1
+    ends = [e for e in (text.find(".", index), text.find("\n", index)) if e != -1]
+    window = text[start:(min(ends) if ends else len(text))]
+
+    line_start = text.rfind("\n", 0, index) + 1
+    if re.match(r"\s*(?:[-*+]|\d+\.)\s", text[line_start:index + 1]):
+        # walk back to the nearest non-blank line that is not itself an item
+        for line in reversed(text[:line_start].split("\n")):
+            if not line.strip():
+                continue
+            if re.match(r"\s*(?:[-*+]|\d+\.)\s", line):
+                continue
+            window = line + " " + window
+            break
+    return window.strip()
+
+
+def inv_claims_ledger_is_current():
+    import claims
+    path = SHIELD / "audit" / "CLAIMS.md"
+    if not path.exists():
+        return False, "audit/CLAIMS.md is missing — run `python claims.py`"
+    if path.read_text() != claims.render_markdown():
+        return False, ("audit/CLAIMS.md no longer matches claims.py — the "
+                       "ledger and the checks have drifted; regenerate it")
+    return True, (f"{len(claims.unearned())} unearned, {len(claims.earned())} "
+                  f"earned; ledger matches source")
+
+
+def inv_unearned_claims_are_not_published():
+    """The gate. An unearned claim may be denied, never asserted."""
+    import claims
+    offences = []
+    for c in claims.unearned():
+        phrase = c["phrase"].lower()
+        for rel in PUBLISHED_DOCS:
+            path = SHIELD / rel
+            if not path.exists():
+                continue
+            text = path.read_text()
+            low = text.lower()
+            i = low.find(phrase)
+            while i != -1:
+                sentence = _negation_window(text, i)
+                if not any(n in sentence.lower() for n in NEGATORS):
+                    offences.append(f"{rel}: \"{sentence[:90]}\" asserts "
+                                    f"unearned claim '{c['id']}'")
+                i = low.find(phrase, i + 1)
+    if offences:
+        return False, ("an unearned claim is being asserted in published text "
+                       "— " + "; ".join(offences[:3]))
+    return True, (f"{len(claims.unearned())} unearned claims appear only where "
+                  f"they are denied")
+
+
+def inv_earned_claims_cite_a_passing_test():
+    """A claim is earned by a test that exists, not by a decision to ship."""
+    import claims
+    for c in claims.earned():
+        named = re.findall(r"(test_\w+\.py)", c["test"])
+        if not named:
+            return False, (f"earned claim '{c['id']}' names no test file — "
+                           f"it was marked earned by assertion")
+        for t in named:
+            if not (SHIELD / "tests" / t).exists():
+                return False, (f"earned claim '{c['id']}' cites {t}, which "
+                               f"does not exist")
+        if not c.get("earned"):
+            return False, f"claim '{c['id']}' has no earned date"
+    return True, f"all {len(claims.earned())} earned claims cite a real test"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -506,6 +599,9 @@ INVARIANTS = (
     ("retakes-supersede", "Bury a failed checkpoint photo, or block retakes entirely", inv_retakes_supersede_rather_than_collide),
     ("exif-absent-reachable", "Submit a stripped or downloaded JPEG without tripping the screenshot signal", inv_missing_exif_is_detectable_in_every_format),
     ("note-implies-flag", "Land outside the buyer's geofence with no flag in the custody chain", inv_every_integrity_note_raises_a_flag),
+    ("claims-ledger-current", "Let the claims ledger drift from what the checks actually enforce", inv_claims_ledger_is_current),
+    ("unearned-claims-unpublished", "Ship a claim the product has not earned", inv_unearned_claims_are_not_published),
+    ("earned-claims-cite-a-test", "Mark a claim earned by decision rather than by evidence", inv_earned_claims_cite_a_passing_test),
 )
 
 

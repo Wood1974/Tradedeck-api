@@ -70,8 +70,8 @@ shield/
 ├── pricing.py       server-side price tiers
 ├── auth.py          Supabase JWT + shield-job authorization
 ├── config.py        env validation, fails fast
-├── audit/           daily red-team: 29 invariants, protocol, accepted-risk ledger
-└── tests/           161 tests
+├── audit/           daily red-team: 32 invariants, protocol, accepted-risk ledger
+└── tests/           175 tests
 ```
 
 **`codes.py` is the domain asset** — 45 checkpoints with real citations
@@ -170,7 +170,7 @@ Defects found by adversarial review and closed here:
 ```bash
 cp shield/.env.example shield/.env      # six values are mandatory
 pip install -r shield/requirements.txt
-python -m pytest shield/tests -q        # 161 tests
+python -m pytest shield/tests -q        # 175 tests
 gunicorn --chdir shield --bind 0.0.0.0:$PORT app:app
 ```
 
