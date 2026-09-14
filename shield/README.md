@@ -62,13 +62,14 @@ shield/
 ├── corroborate.py   solar geometry — a signal the uploader cannot edit
 ├── ledger.py        hash-chained custody, and its verifier
 ├── verdict.py       completion grading (coverage, severity, badge eligibility)
+├── notes.py         contemporaneous field notes — contemporaneity grading, amendments
 ├── evidence.py      FRE 902(13)/(14) export: manifest, certification, how-to-verify
 ├── vision.py        Claude calls (structured outputs, prompt caching)
 ├── codes.py         IRC/IBC checkpoint map — 9 trades × 5 checkpoints
 ├── pricing.py       server-side price tiers
 ├── auth.py          Supabase JWT + shield-job authorization
 ├── config.py        env validation, fails fast
-└── tests/           97 tests
+└── tests/           128 tests
 ```
 
 **`codes.py` is the domain asset** — 45 checkpoints with real citations
@@ -77,6 +78,48 @@ the photo must frame and what the frame must prove. Extracted programmatically
 from the original so nothing drifted. *Citations track the 2021 IRC / 2020 NEC
 family; jurisdictions adopt on their own schedule and amend locally — have
 someone licensed in the target market confirm before selling there.*
+
+**`notes.py` is what makes a photograph mean something.** A photo shows a
+state. It does not show the weather, what the inspector said, which sub did the
+work, or why the detail departs from the plan — and those are the facts
+disputes turn on.
+
+Notes are hearsay and need an exception to be admitted at all. Which one
+applies turns almost entirely on **when the note was written**:
+
+| Delay from the observation | Strongest exception available |
+|---|---|
+| Seconds to ~30 min | **FRE 803(1)** present sense impression — does not require the writer to testify |
+| Up to ~2 hours | FRE 803(5) recorded recollection / 803(6) |
+| Same day | FRE 803(6) business records |
+| More than a day | None. It is recollection, and the export says so. |
+
+So `written_at` is set by the server, never accepted from the client, and the
+delay travels with every note into the export. Three consequences shaped the
+module, and each is a refusal:
+
+- **The model never writes or rewrites a note.** Not to tidy it, not to expand
+  it. A note is the writer's own words or it is contaminated — and a note the
+  author cannot swear to on the stand is worth less than no note. Guidance is
+  deterministic text analysis; the author decides.
+- **Notes are append-only.** The first question on cross is whether the note
+  says what it said at the time. Corrections are amendments: both versions
+  kept, both timestamped, both in the chain. A visible correction is credible;
+  a silent one takes the record down with it.
+- **Guidance never blocks a save.** A contractor on a roof in the wind must be
+  able to write and move on. Guidance that refuses produces no note at all.
+
+Because 803(1) reaches *descriptions and explanations* but not opinions, the
+quality check steers away from conclusions: "looks good, all to code" is flagged
+as an inference a reader cannot check, while `5'2" between anchor bolts, 14
+bolts, tape in frame` scores as strong. Supported media are typed, dictated, and
+**a photograph of a handwritten page** — handwritten field notes are a real
+construction artefact and carry the same contemporaneity argument.
+
+And the 803(6) phrase with product consequences is *regular practice*: a note
+written on some jobs and not others is not one. Prompting at every checkpoint,
+every time, and recording whether a note was written, is what establishes it.
+The discipline is the evidence.
 
 **`evidence.py` is the deliverable.** FRE 902(14) makes a digital record
 self-authenticating when identified by "a process of digital identification" —
@@ -125,13 +168,14 @@ Defects found by adversarial review and closed here:
 ```bash
 cp shield/.env.example shield/.env      # six values are mandatory
 pip install -r shield/requirements.txt
-python -m pytest shield/tests -q        # 97 tests
+python -m pytest shield/tests -q        # 128 tests
 gunicorn --chdir shield --bind 0.0.0.0:$PORT app:app
 ```
 
 Migrations, in order, in the repo root `supabase/migrations/`:
 `20260914000000_shield_schema_and_rls.sql` then
-`20260914010000_shield_hardening.sql`. Run the verification queries at the
+`20260914010000_shield_hardening.sql`, then
+`20260914020000_shield_field_notes.sql`. Run the verification queries at the
 bottom of each against the target project first — the schema was reconstructed
 from code.
 
@@ -155,6 +199,10 @@ webhook, which authenticates by Stripe signature.
 | `POST /shield/photos/<id>/analyze` | Adjudicate. No body. |
 | `GET  /shield/jobs/<id>/custody` | Raw custody chain |
 | `GET  /shield/jobs/<id>/evidence` | **Manifest + certification + verification instructions** |
+| `POST /shield/jobs/<id>/notes` | Write a field note. `written_at` is server-set. |
+| `GET  /shield/jobs/<id>/notes` | Every note on the job, both parties', threaded with amendments |
+| `POST /shield/jobs/<id>/notes/<nid>/amend` | Correct a note. Original preserved; reason required. |
+| `GET  /shield/jobs/<id>/notes/prompts` | What to ask the author — a blank box gets "done" typed into it |
 | `POST /shield/jobs/<id>/complete` | Close out. Requires every checkpoint documented. |
 | `POST /shield/subscribe` | Contractor subscription checkout |
 | `POST /shield/webhook` | Stripe events |

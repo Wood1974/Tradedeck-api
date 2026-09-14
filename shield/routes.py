@@ -28,6 +28,7 @@ import corroborate
 import evidence as evidence_pkg
 import integrity
 import ledger
+import notes as field_notes
 import pricing
 import verdict as grading
 import vision
@@ -641,6 +642,187 @@ def custody(shield_job_id):
     return jsonify({"shield_job_id": shield_job_id, "events": res.data or []})
 
 
+# ------------------------------------------------------------------ notes ---
+def _note_chain_head(shield_job_id):
+    res = (db().table("shield_notes").select("entry_hash")
+           .eq("shield_job_id", shield_job_id)
+           .order("written_at", desc=True).limit(1).execute())
+    if res.data and res.data[0].get("entry_hash"):
+        return res.data[0]["entry_hash"]
+    return ledger.genesis_hash(f"notes:{shield_job_id}")
+
+
+@bp.route("/jobs/<shield_job_id>/notes", methods=["POST"])
+@require_auth
+@require_shield_job()
+def write_note(shield_job_id):
+    """Record a contemporaneous field note.
+
+    `written_at` is set here, never accepted from the client. The gap between
+    the observation and the note is what decides which hearsay exception the
+    note can travel under — FRE 803(1) reaches seconds to minutes — so a
+    client-supplied timestamp would defeat the only thing that makes the note
+    worth keeping.
+    """
+    data = request.get_json(silent=True) or {}
+    body = (data.get("body") or "").strip()
+    if not body:
+        return _err("body required", 400)
+    if len(body) > 20000:
+        return _err("Note exceeds 20,000 characters", 413)
+
+    medium = data.get("medium", "typed")
+    if medium not in field_notes.MEDIA:
+        return _err(f"medium must be one of {', '.join(field_notes.MEDIA)}", 400)
+
+    photo_id, point_id = data.get("photo_id"), data.get("point_id")
+
+    # Anchors must belong to this job — same scoping the upload path needs, and
+    # for the same reason: an unscoped id writes onto a stranger's record.
+    observed_at = None
+    if photo_id:
+        photo = (db().table("shield_photos")
+                 .select("id, exif_captured_at, server_received_at")
+                 .eq("id", photo_id).eq("shield_job_id", shield_job_id)
+                 .limit(1).execute().data or [])
+        if not photo:
+            return _err("photo_id is not a photo of this Shield job", 400)
+        observed_at = photo[0].get("exif_captured_at") or photo[0].get("server_received_at")
+    if point_id:
+        pt = (db().table("shield_pivotal_points").select("id")
+              .eq("id", point_id).eq("shield_job_id", shield_job_id)
+              .limit(1).execute().data or [])
+        if not pt:
+            return _err("point_id is not a checkpoint of this Shield job", 400)
+
+    written_at = utc_now_iso()
+    timing = field_notes.classify_contemporaneity(observed_at, written_at)
+    quality = field_notes.assess_quality(body)
+
+    row = {
+        "shield_job_id": shield_job_id,
+        "photo_id": photo_id, "point_id": point_id,
+        "author_id": g.user_id,
+        "author_role": actor_role(g.shield_job, g.user_id),
+        "body": body, "medium": medium,
+        "handwriting_photo_id": data.get("handwriting_photo_id"),
+        "observed_at": observed_at, "written_at": written_at,
+        "contemporaneity": timing["band"], "delay_seconds": timing["delay_seconds"],
+        "strength": quality["strength"],
+    }
+    sealed = ledger.seal(row, _note_chain_head(shield_job_id))
+    try:
+        saved = db().table("shield_notes").insert(sealed).execute().data[0]
+    except Exception:
+        log.exception("Could not record note on %s", shield_job_id)
+        return _err("Could not record note", 500)
+
+    try_log_custody(shield_job_id=shield_job_id, photo_id=photo_id,
+                    event_type="note_written", actor_id=g.user_id,
+                    actor_type=row["author_role"],
+                    file_hash=sealed["entry_hash"],
+                    event_data={"note_id": saved["id"], "medium": medium,
+                                "contemporaneity": timing["band"],
+                                "delay_seconds": timing["delay_seconds"],
+                                "words": quality["word_count"]})
+
+    return jsonify({"note_id": saved["id"], "written_at": written_at,
+                    "timing": timing, "quality": quality}), 201
+
+
+@bp.route("/jobs/<shield_job_id>/notes/<note_id>/amend", methods=["POST"])
+@require_auth
+@require_shield_job()
+def amend_note(shield_job_id, note_id):
+    """Correct a note by adding to it. The original is never changed.
+
+    An editable note is worthless — the first question on cross is whether it
+    says what it said at the time. A visible correction is credible; a silent
+    one takes the rest of the record with it.
+    """
+    data = request.get_json(silent=True) or {}
+    new_body = (data.get("body") or "").strip()
+    reason = (data.get("reason") or "").strip()
+    if not new_body:
+        return _err("body required", 400)
+    if not reason:
+        return _err("reason required — an unexplained correction reads worse "
+                    "than the error it fixes", 400)
+
+    original = (db().table("shield_notes").select("*")
+                .eq("id", note_id).eq("shield_job_id", shield_job_id)
+                .limit(1).execute().data or [])
+    if not original:
+        return _err("Note not found on this Shield job", 404)
+    original = original[0]
+
+    if original.get("author_id") != g.user_id:
+        return _err("Only the author may amend their own note. Add your own "
+                    "note instead — a correction written by someone else is "
+                    "not a correction.", 403)
+
+    written_at = utc_now_iso()
+    amendment = field_notes.build_amendment(original, new_body, reason=reason,
+                                            author_id=g.user_id, written_at=written_at)
+    timing = field_notes.classify_contemporaneity(original.get("observed_at"), written_at)
+    quality = field_notes.assess_quality(new_body)
+    amendment.update({
+        "author_role": actor_role(g.shield_job, g.user_id),
+        "contemporaneity": timing["band"], "delay_seconds": timing["delay_seconds"],
+        "strength": quality["strength"],
+    })
+
+    sealed = ledger.seal(amendment, _note_chain_head(shield_job_id))
+    try:
+        saved = db().table("shield_notes").insert(sealed).execute().data[0]
+    except Exception as exc:
+        if "unique" in str(exc).lower() or "duplicate key" in str(exc).lower():
+            return _err("This note has already been amended. Amend the "
+                        "correction, or add a new note.", 409)
+        log.exception("Could not amend note %s", note_id)
+        return _err("Could not record amendment", 500)
+
+    try_log_custody(shield_job_id=shield_job_id, photo_id=original.get("photo_id"),
+                    event_type="note_amended", actor_id=g.user_id,
+                    actor_type=amendment["author_role"],
+                    file_hash=sealed["entry_hash"],
+                    event_data={"note_id": saved["id"], "amends": note_id,
+                                "reason": reason})
+
+    return jsonify({"note_id": saved["id"], "amends": note_id,
+                    "written_at": written_at, "timing": timing,
+                    "quality": quality}), 201
+
+
+@bp.route("/jobs/<shield_job_id>/notes", methods=["GET"])
+@require_auth
+@require_shield_job()
+def list_notes(shield_job_id):
+    """Every note on the job, both parties', oldest first."""
+    rows = (db().table("shield_notes").select("*")
+            .eq("shield_job_id", shield_job_id).order("written_at").execute().data or [])
+    originals = [n for n in rows if not n.get("amends_note_id")]
+    amendments = [n for n in rows if n.get("amends_note_id")]
+    threads = [field_notes.thread_of(
+        n, [a for a in amendments if a["amends_note_id"] == n["id"]])
+        for n in originals]
+    return jsonify({"notes": threads, "total": len(rows)})
+
+
+@bp.route("/jobs/<shield_job_id>/notes/prompts", methods=["GET"])
+@require_auth
+@require_shield_job()
+def note_prompts(shield_job_id):
+    """What to ask the author. A blank box gets "done" typed into it."""
+    point_id = request.args.get("point_id")
+    checkpoint = None
+    if point_id:
+        checkpoint = (db().table("shield_pivotal_points").select("label, must_show")
+                      .eq("id", point_id).eq("shield_job_id", shield_job_id)
+                      .limit(1).execute().data or [None])[0]
+    return jsonify({"prompts": field_notes.prompts_for(checkpoint)})
+
+
 @bp.route("/jobs/<shield_job_id>/evidence", methods=["GET"])
 @require_auth
 @require_shield_job()
@@ -659,10 +841,12 @@ def evidence_package(shield_job_id):
                .eq("shield_job_id", shield_job_id).order("recorded_at").execute().data or [])
     report = (db().table("shield_completion_reports").select("*")
               .eq("shield_job_id", shield_job_id).limit(1).execute().data or [None])[0]
+    note_rows = (db().table("shield_notes").select("*")
+                 .eq("shield_job_id", shield_job_id).order("written_at").execute().data or [])
 
     manifest = evidence_pkg.build_manifest(
         job=g.shield_job, points=points, photos=photos,
-        custody=custody, report=report)
+        custody=custody, report=report, notes=note_rows)
 
     # Retrieving evidence is itself a custody event. Being able to read the
     # record without leaving a trace is the other half of what chain of
@@ -672,6 +856,7 @@ def evidence_package(shield_job_id):
                     actor_type=actor_role(g.shield_job, g.user_id),
                     event_data={"export": "evidence_package",
                                 "checkpoints": len(points),
+                                "notes": len(note_rows),
                                 "chain_intact": manifest["custody"]["chain_intact"]})
 
     return jsonify({

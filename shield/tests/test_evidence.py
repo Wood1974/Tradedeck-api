@@ -183,3 +183,101 @@ def test_published_genesis_actually_matches_the_chain():
                                 custody=chain, report=REPORT)
     assert chain[0]["prev_hash"] == ledger.genesis_hash(JOB_ID)
     assert m["custody"]["head_hash"] == chain[-1]["entry_hash"]
+
+
+# ----------------------------------------------------- field notes in the ---
+# ----------------------------------------------------- evidence package   ---
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+SHOT = datetime(2026, 9, 2, 15, 0, tzinfo=timezone.utc)
+
+NOTES = [
+    {"id": "n1", "shield_job_id": JOB_ID, "photo_id": "ph1", "point_id": None,
+     "author_id": "c1", "author_role": "contractor", "medium": "typed",
+     "body": 'Bolt spacing 5\'2" measured, 14 bolts, tape in frame.',
+     "observed_at": SHOT.isoformat(),
+     "written_at": (SHOT + timedelta(minutes=2)).isoformat(), "amends_note_id": None},
+    {"id": "n2", "shield_job_id": JOB_ID, "photo_id": "ph1", "point_id": None,
+     "author_id": "c1", "author_role": "contractor", "medium": "typed",
+     "body": 'Correction: 5\'8" on the NE bolt.',
+     "observed_at": SHOT.isoformat(),
+     "written_at": (SHOT + timedelta(hours=1)).isoformat(),
+     "amends_note_id": "n1", "amendment_reason": "Misread the tape"},
+    {"id": "n3", "shield_job_id": JOB_ID, "photo_id": None, "point_id": None,
+     "author_id": "h1", "author_role": "homeowner", "medium": "dictated",
+     "body": "Walked the site at 4pm, rain started around 3.",
+     "observed_at": SHOT.isoformat(),
+     "written_at": (SHOT + timedelta(days=2)).isoformat(), "amends_note_id": None},
+]
+
+
+def test_notes_attach_to_their_checkpoint():
+    m = evidence.build_manifest(job=JOB, points=POINTS, photos=PHOTOS,
+                                custody=build_chain(), report=REPORT, notes=NOTES)
+    attached = m["checkpoints"][0]["field_notes"]
+    assert len(attached) == 1
+    assert attached[0]["note_id"] == "n1"
+
+
+def test_each_note_carries_the_exception_its_delay_supports():
+    m = evidence.build_manifest(job=JOB, points=POINTS, photos=PHOTOS,
+                                custody=build_chain(), report=REPORT, notes=NOTES)
+    prompt_note = m["checkpoints"][0]["field_notes"][0]
+    assert prompt_note["strongest_exception"] == "FRE 803(1)"
+    assert "minutes after" in prompt_note["delay"]
+
+    late = m["field_notes"]["unattached"][0]
+    assert late["contemporaneity"] == "reconstructed"
+    assert late["strongest_exception"] is None, \
+        "a two-day-old note must not be presented as contemporaneous"
+
+
+def test_an_amended_note_shows_both_versions():
+    m = evidence.build_manifest(job=JOB, points=POINTS, photos=PHOTOS,
+                                custody=build_chain(), report=REPORT, notes=NOTES)
+    n = m["checkpoints"][0]["field_notes"][0]
+    assert n["was_amended"] is True
+    assert '5\'2"' in n["original"]["body"]
+    assert '5\'8"' in n["current_body"]
+    assert n["amendments"][0]["reason"] == "Misread the tape"
+
+
+def test_unattached_notes_still_appear_in_the_package():
+    """A daily-log note with no photo is still part of the record."""
+    m = evidence.build_manifest(job=JOB, points=POINTS, photos=PHOTOS,
+                                custody=build_chain(), report=REPORT, notes=NOTES)
+    assert len(m["field_notes"]["unattached"]) == 1
+    assert m["field_notes"]["unattached"][0]["author_role"] == "homeowner"
+
+
+def test_note_totals_count_threads_not_rows():
+    m = evidence.build_manifest(job=JOB, points=POINTS, photos=PHOTOS,
+                                custody=build_chain(), report=REPORT, notes=NOTES)
+    fn = m["field_notes"]
+    assert fn["total"] == 2, "an amendment is part of its note, not a second note"
+    assert fn["contemporaneous"] == 1
+    assert fn["amended"] == 1
+
+
+def test_certification_states_the_note_position_honestly():
+    m = evidence.build_manifest(job=JOB, points=POINTS, photos=PHOTOS,
+                                custody=build_chain(), report=REPORT, notes=NOTES)
+    text = evidence.certification_text(m)
+    assert "CONTEMPORANEOUS FIELD NOTES" in text
+    assert "set by the system" in text
+    assert "not supplied by its author" in text
+    assert "Notes cannot be edited" in text
+    assert "I offer no view on whether any note is accurate" in text
+
+
+def test_a_package_with_no_notes_does_not_claim_any():
+    m = evidence.build_manifest(job=JOB, points=POINTS, photos=PHOTOS,
+                                custody=build_chain(), report=REPORT, notes=[])
+    assert m["field_notes"]["total"] == 0
+    assert "includes 0 field note(s)" in evidence.certification_text(m)
+
+
+def test_notes_are_optional_for_backwards_compatibility():
+    m = evidence.build_manifest(job=JOB, points=POINTS, photos=PHOTOS,
+                                custody=build_chain(), report=REPORT)
+    assert m["field_notes"]["total"] == 0
