@@ -132,3 +132,27 @@ on our servers protects nobody.
 
 *A new finding here would be: a way to defeat an externally held head, or a
 path where Shield fails to give the head to the party who needs it.*
+
+---
+
+### AR-9 · The capture-challenge store is per process
+**Reviewed 2026-09-15 · next review 2026-12-01**
+
+`attestation.ChallengeStore` keeps live capture nonces in process memory. Under
+more than one gunicorn worker, a challenge issued by worker A is invisible to
+worker B, so a legitimate capture can be rejected and the single-use guarantee
+depends on which worker answers the second request.
+
+Accepted for now because nothing issues challenges yet: App Attest and Play
+Integrity require a native app, both Shield frontends are web pages, and every
+real upload today is tier `unattested`. The store has no traffic to get wrong.
+
+It stops being acceptable the moment the native app ships. The fix is a shared
+store — the database or Redis — behind the same `issue`/`consume` interface;
+only `_live` changes. This is written down here rather than left as a code
+comment because the failure mode is silent under load and looks like a flaky
+client.
+
+*A new finding here would be: challenges being issued in production while this
+is still in-memory, or a shared implementation that loses single-use under
+concurrency.*

@@ -661,6 +661,88 @@ def inv_rebroadcast_never_accuses():
     return True, "positives upgrade; negatives never accuse"
 
 
+def inv_attestation_fails_closed():
+    """Unverified device claims must never reach a trusted tier.
+
+    The realistic bug in this position is not an absent check but a truthy one.
+    `{"verified": "false"}` passes `if payload.get("verified")`, and the payload
+    is attacker-supplied JSON, so a fail-open here hands full hardware trust to
+    anyone willing to type the word. The comparison must be identity against
+    True.
+    """
+    import attestation
+    strong = {"deviceIntegrity": {"deviceRecognitionVerdict":
+                                  [attestation.STRONG_INTEGRITY]}}
+    for impostor in ("false", "unverified", 1, [1], {"ok": 1}, None):
+        out = attestation.interpret_play_integrity(strong, verified=impostor)
+        if out["tier"] in attestation.TRUSTED_TIERS:
+            return False, (f"a verdict flagged verified={impostor!r} reached "
+                           f"trusted tier {out['tier']!r}")
+        if attestation.interpret_app_attest(verified=impostor)["trusted"]:
+            return False, f"App Attest trusted a verified={impostor!r} result"
+
+    # and an attestation not bound to a single-use challenge proves a device,
+    # not this photograph
+    real = attestation.interpret_play_integrity(strong, verified=True)
+    for challenge in (None, False):
+        if attestation.assess("android", real, challenge_ok=challenge)["trusted"]:
+            return False, ("an attestation with no bound capture challenge was "
+                           "trusted — a replayed token would carry hardware "
+                           "trust onto a file the device never saw")
+
+    # the check must still be able to pass, or it is inert
+    if not attestation.assess("android", real, challenge_ok=True)["trusted"]:
+        return False, "a properly verified, challenge-bound attestation no longer passes"
+    return True, "unverified and unbound attestations cannot be trusted"
+
+
+def inv_attestation_labels_rather_than_blocks():
+    """Failing attestation must downgrade the record, never refuse the capture.
+
+    A blocked capture produces no photograph, no hash and no custody entry —
+    strictly less evidence than a recorded one carrying an honest note. Whether
+    an unattested photo may close a milestone is the buyer's policy decision
+    against their own money, not a refusal this library makes for them.
+
+    Also guards the Play Integrity label the intuitive design gets backwards:
+    an EMPTY deviceRecognitionVerdict is the attack signal, while
+    MEETS_VIRTUAL_INTEGRITY is a recognised Play Games emulator. Blocking on
+    VIRTUAL stops the honest PC gamer and admits the attacker.
+    """
+    import attestation
+
+    def verdict(*labels):
+        return attestation.interpret_play_integrity(
+            {"deviceIntegrity": {"deviceRecognitionVerdict": list(labels)}},
+            verified=True)
+
+    for case in (attestation.assess(),
+                 attestation.assess("android", verdict(), challenge_ok=True),
+                 attestation.assess("android", verdict(attestation.VIRTUAL_INTEGRITY)),
+                 attestation.assess("ios", attestation.interpret_app_attest(
+                     verified=True, receipt_ok=False), challenge_ok=True)):
+        if case.get("capture_allowed") is not True:
+            return False, (f"tier {case.get('tier')!r} now refuses the capture "
+                           f"instead of labelling it")
+
+    if verdict()["tier"] != attestation.TIER_FAILED:
+        return False, ("an empty deviceRecognitionVerdict no longer reads as a "
+                       "failure — Google documents it as root, hooking or an "
+                       "unrecognised emulator, and it is the real attack signal")
+    if verdict(attestation.VIRTUAL_INTEGRITY)["tier"] == attestation.TIER_FAILED:
+        return False, ("a recognised Play Games emulator is being recorded as "
+                       "an integrity failure, which it is not")
+
+    unattested = attestation.assess()
+    if unattested["tier"] != attestation.TIER_UNATTESTED:
+        return False, "a capture with no attestation no longer reads as unattested"
+    for word in ("fraud", "fake", "forged", "tamper", "compromise"):
+        if word in unattested["reason"].lower():
+            return False, (f"the wording for an ordinary web upload accuses: "
+                           f"contains {word!r}")
+    return True, "attestation labels the record and never blocks a capture"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -698,6 +780,8 @@ INVARIANTS = (
     ("export-is-recomputable", "Hand over a package whose integrity is our assertion", inv_export_carries_recomputable_custody),
     ("spec-matches-service", "Ship a spec that does not produce the hashes we issue", inv_verifier_agrees_with_the_service),
     ("rebroadcast-never-accuses", "Turn a photograph of a flat wall into a fraud finding", inv_rebroadcast_never_accuses),
+    ("attestation-fails-closed", "Claim hardware trust with an unverified or replayed attestation", inv_attestation_fails_closed),
+    ("attestation-labels-not-blocks", "Turn a rooted phone into a subcontractor who cannot document his work", inv_attestation_labels_rather_than_blocks),
 )
 
 
