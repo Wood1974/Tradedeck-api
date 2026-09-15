@@ -662,38 +662,84 @@ def inv_rebroadcast_never_accuses():
 
 
 def inv_attestation_fails_closed():
-    """Unverified device claims must never reach a trusted tier.
+    """Unverified or unbound device claims must never reach a trusted tier.
 
-    The realistic bug in this position is not an absent check but a truthy one.
-    `{"verified": "false"}` passes `if payload.get("verified")`, and the payload
-    is attacker-supplied JSON, so a fail-open here hands full hardware trust to
-    anyone willing to type the word. The comparison must be identity against
-    True.
+    Two failure shapes, both of which this file previously missed:
+
+    1. A truthy check instead of an identity one. `{"verified": "false"}`
+       passes `if payload.get("verified")`, and the payload is attacker-
+       supplied JSON, so a fail-open here hands hardware trust to anyone
+       willing to type the word.
+    2. A binding the CALLER asserts rather than the token carries. The first
+       version took `challenge_ok` as a boolean, so spending a fresh nonce
+       while presenting a token minted against an older one returned full
+       hardware trust. This invariant passed anyway, because it built its own
+       payload the same incomplete way the unit tests did.
     """
     import attestation
-    strong = {"deviceIntegrity": {"deviceRecognitionVerdict":
-                                  [attestation.STRONG_INTEGRITY]}}
+
+    def payload(*labels, app=None, nonce="inv-nonce"):
+        out = {"deviceIntegrity": {"deviceRecognitionVerdict": list(labels)},
+               "appIntegrity": {
+                   "appRecognitionVerdict": app or attestation.PLAY_RECOGNIZED,
+                   "packageName": "com.tradedeck.shield"}}
+        if nonce is not None:
+            out["requestDetails"] = {
+                "requestHash": attestation.challenge_hash(nonce)}
+        return out
+
+    strong = payload(attestation.STRONG_INTEGRITY)
     for impostor in ("false", "unverified", 1, [1], {"ok": 1}, None):
-        out = attestation.interpret_play_integrity(strong, verified=impostor)
+        out = attestation.interpret_play_integrity(strong, verified=impostor,
+                                                   expect_nonce="inv-nonce")
         if out["tier"] in attestation.TRUSTED_TIERS:
             return False, (f"a verdict flagged verified={impostor!r} reached "
                            f"trusted tier {out['tier']!r}")
         if attestation.interpret_app_attest(verified=impostor)["trusted"]:
             return False, f"App Attest trusted a verified={impostor!r} result"
 
-    # and an attestation not bound to a single-use challenge proves a device,
-    # not this photograph
-    real = attestation.interpret_play_integrity(strong, verified=True)
-    for challenge in (None, False):
-        if attestation.assess("android", real, challenge_ok=challenge)["trusted"]:
-            return False, ("an attestation with no bound capture challenge was "
-                           "trusted — a replayed token would carry hardware "
-                           "trust onto a file the device never saw")
+    # a token about some OTHER capture
+    replayed = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY, nonce="a-different-capture"),
+        verified=True, expect_nonce="inv-nonce")
+    if replayed["trusted"] or attestation.assess("android", replayed,
+                                                 challenge_ok=True)["trusted"]:
+        return False, ("a token bound to a different nonce was trusted — a "
+                       "replay carries hardware trust onto a file the device "
+                       "never saw")
 
-    # the check must still be able to pass, or it is inert
-    if not attestation.assess("android", real, challenge_ok=True)["trusted"]:
-        return False, "a properly verified, challenge-bound attestation no longer passes"
-    return True, "unverified and unbound attestations cannot be trusted"
+    # a token carrying no binding at all, with the caller asserting otherwise
+    unbound = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY, nonce=None), verified=True,
+        expect_nonce="inv-nonce")
+    if attestation.assess("android", unbound, challenge_ok=True)["trusted"]:
+        return False, ("assess() can still be TOLD the binding happened; it "
+                       "must read it off the token")
+
+    # a repackaged app on genuine hardware
+    repacked = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY,
+                app=attestation.UNRECOGNIZED_VERSION),
+        verified=True, expect_nonce="inv-nonce")
+    if repacked["tier"] != attestation.TIER_FAILED:
+        return False, ("a modified or repackaged app on a genuine handset is "
+                       "not being caught — appIntegrity is unchecked")
+
+    # malformed shapes must not raise; a crash in a route is a block
+    for broken in ({"deviceIntegrity": "x"}, {"deviceIntegrity": [1]},
+                   {"appIntegrity": 3, "deviceIntegrity": {}}):
+        r = attestation.interpret_play_integrity(broken, verified=True,
+                                                 expect_nonce="inv-nonce")
+        if r["tier"] != attestation.TIER_UNVERIFIABLE:
+            return False, f"malformed payload {broken!r} did not fail closed"
+
+    # and the check must still be able to pass, or it is inert
+    good = attestation.interpret_play_integrity(strong, verified=True,
+                                                expect_nonce="inv-nonce")
+    if not attestation.assess("android", good, challenge_ok=True)["trusted"]:
+        return False, "a verified, challenge-bound attestation no longer passes"
+    return True, ("unverified, unbound, replayed, repackaged and malformed all "
+                  "fail closed; a correctly bound token still passes")
 
 
 def inv_attestation_labels_rather_than_blocks():
@@ -713,8 +759,13 @@ def inv_attestation_labels_rather_than_blocks():
 
     def verdict(*labels):
         return attestation.interpret_play_integrity(
-            {"deviceIntegrity": {"deviceRecognitionVerdict": list(labels)}},
-            verified=True)
+            {"deviceIntegrity": {"deviceRecognitionVerdict": list(labels)},
+             "appIntegrity": {
+                 "appRecognitionVerdict": attestation.PLAY_RECOGNIZED,
+                 "packageName": "com.tradedeck.shield"},
+             "requestDetails": {
+                 "requestHash": attestation.challenge_hash("inv-nonce")}},
+            verified=True, expect_nonce="inv-nonce")
 
     for case in (attestation.assess(),
                  attestation.assess("android", verdict(), challenge_ok=True),

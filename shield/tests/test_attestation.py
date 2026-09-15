@@ -19,6 +19,31 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import attestation  # noqa: E402
 
 
+def payload(*labels, app=None, nonce="capture-nonce", package=None):
+    """A Play Integrity payload shaped like a real one.
+
+    The first version of these tests built only the deviceIntegrity half and
+    never carried a nonce. That is precisely why the appIntegrity hole and the
+    unenforced challenge binding survived a full green suite: every test
+    reached the code through the same incomplete happy path.
+    """
+    out = {"deviceIntegrity": {"deviceRecognitionVerdict": list(labels)},
+           "appIntegrity": {
+               "appRecognitionVerdict": app or attestation.PLAY_RECOGNIZED,
+               "packageName": package or "com.tradedeck.shield"}}
+    if nonce is not None:
+        out["requestDetails"] = {"requestHash": attestation.challenge_hash(nonce)}
+    return out
+
+
+def read(*labels, **kw):
+    nonce = kw.pop("nonce", "capture-nonce")
+    return attestation.interpret_play_integrity(
+        payload(*labels, nonce=nonce, **kw), verified=True,
+        expect_nonce="capture-nonce")
+
+
+
 # ------------------------------------------------------------- challenges ---
 def test_a_challenge_is_single_use():
     """A replay inside the TTL must fail exactly like one after it."""
@@ -110,14 +135,18 @@ def test_a_malformed_payload_is_unverifiable_not_failed():
 def test_an_empty_verdict_is_the_attack_signal():
     """Google documents empty as rooted / hooked / unrecognised emulator.
 
-    This is the case the intuitive design misses entirely.
+    This is the case the intuitive design misses entirely. Note it must be an
+    otherwise READABLE payload: a token with no deviceIntegrity block at all is
+    unverifiable, not a device that failed, and the module keeps those apart.
     """
-    for empty in ({"deviceIntegrity": {"deviceRecognitionVerdict": []}},
-                  {"deviceIntegrity": {}},
-                  {}):
-        out = attestation.interpret_play_integrity(empty, verified=True)
-        assert out["tier"] == attestation.TIER_FAILED, empty
-        assert out["trusted"] is False
+    out = read()                                   # readable, zero labels
+    assert out["tier"] == attestation.TIER_FAILED
+    assert out["trusted"] is False
+
+    for unreadable in ({"deviceIntegrity": {}}, {}):
+        r = attestation.interpret_play_integrity(unreadable, verified=True,
+                                                 expect_nonce="capture-nonce")
+        assert r["tier"] == attestation.TIER_UNVERIFIABLE, unreadable
 
 
 def test_a_recognised_emulator_is_not_an_attacker():
@@ -126,9 +155,7 @@ def test_a_recognised_emulator_is_not_an_attacker():
     It still cannot be a capture device, so it is untrusted — but it must not
     be recorded as an integrity failure, because it is not one.
     """
-    out = attestation.interpret_play_integrity(
-        {"deviceIntegrity": {"deviceRecognitionVerdict":
-                             [attestation.VIRTUAL_INTEGRITY]}}, verified=True)
+    out = read(attestation.VIRTUAL_INTEGRITY)
     assert out["tier"] == attestation.TIER_EMULATOR
     assert out["tier"] != attestation.TIER_FAILED
     assert out["trusted"] is False
@@ -136,9 +163,7 @@ def test_a_recognised_emulator_is_not_an_attacker():
 
 def test_the_strength_ladder():
     def tier(*labels):
-        return attestation.interpret_play_integrity(
-            {"deviceIntegrity": {"deviceRecognitionVerdict": list(labels)}},
-            verified=True)["tier"]
+        return read(*labels)["tier"]
 
     assert tier(attestation.STRONG_INTEGRITY,
                 attestation.DEVICE_INTEGRITY) == attestation.TIER_HARDWARE
@@ -171,9 +196,7 @@ def test_app_attest_rejection_is_a_failure_not_an_unknown():
 
 # ---------------------------------------------------------------- assess ----
 def _hardware():
-    return attestation.interpret_play_integrity(
-        {"deviceIntegrity": {"deviceRecognitionVerdict":
-                             [attestation.STRONG_INTEGRITY]}}, verified=True)
+    return read(attestation.STRONG_INTEGRITY)
 
 
 def test_assess_never_blocks_a_capture():
@@ -218,8 +241,7 @@ def test_no_attestation_is_the_honest_default_not_a_finding():
 
 def test_a_failing_challenge_does_not_upgrade_an_untrusted_tier():
     """The challenge gate withholds trust; it never manufactures it."""
-    failed = attestation.interpret_play_integrity(
-        {"deviceIntegrity": {"deviceRecognitionVerdict": []}}, verified=True)
+    failed = read()
     out = attestation.assess("android", failed, challenge_ok=True)
     assert out["tier"] == attestation.TIER_FAILED
     assert out["trusted"] is False
@@ -245,3 +267,115 @@ def test_every_tier_is_described():
     tiers = [v for k, v in vars(attestation).items() if k.startswith("TIER_")]
     for tier in tiers:
         assert tier in attestation.DESCRIPTIONS, tier
+
+
+# ===========================================================================
+# Regression: the three defects an adversarial re-read found after the module
+# had 24 passing tests and two passing invariants. Every one of them survived
+# that suite because every test reached the code through the same happy path —
+# they pinned the tier ladder and never touched the boundary.
+# ===========================================================================
+def test_a_malformed_device_integrity_does_not_raise():
+    """DEFECT 3. An uncaught AttributeError in a route is a 500 on an upload —
+    and by this module's own headline property, a crash IS a block."""
+    for broken in ({"deviceIntegrity": "MEETS_STRONG_INTEGRITY"},
+                   {"deviceIntegrity": ["MEETS_STRONG_INTEGRITY"]},
+                   {"deviceIntegrity": 7}):
+        out = attestation.interpret_play_integrity(broken, verified=True,
+                                                   expect_nonce="n")
+        assert out["tier"] == attestation.TIER_UNVERIFIABLE, broken
+        assert out["trusted"] is False
+
+
+def test_a_repackaged_app_on_a_genuine_phone_is_not_trusted():
+    """DEFECT 2. The realistic attacker does not root the phone. He modifies
+    the app that decides what the camera returns, and deviceIntegrity stays
+    perfect because the hardware genuinely is."""
+    out = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY,
+                app=attestation.UNRECOGNIZED_VERSION,
+                package="com.attacker.clone", nonce="n"),
+        verified=True, expect_nonce="n")
+    assert out["tier"] == attestation.TIER_FAILED
+    assert out["trusted"] is False
+
+
+def test_an_unreadable_app_integrity_is_unverifiable_not_failed():
+    """Absent is not the same as refused — the distinction this module keeps."""
+    stripped = payload(attestation.STRONG_INTEGRITY, nonce="n")
+    del stripped["appIntegrity"]
+    out = attestation.interpret_play_integrity(stripped, verified=True,
+                                               expect_nonce="n")
+    assert out["tier"] == attestation.TIER_UNVERIFIABLE
+
+
+def test_a_token_bound_to_a_different_nonce_is_not_trusted():
+    """DEFECT 1, the serious one.
+
+    Spend a fresh nonce, present a token minted against an older one. Before
+    the fix this returned hardware_attested / trusted / challenge_bound — the
+    replay defence was written in the docstring and implemented nowhere.
+    """
+    out = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY, nonce="some-old-nonce"),
+        verified=True, expect_nonce="the-nonce-for-this-capture")
+    assert out["trusted"] is False
+    assert out["tier"] == attestation.TIER_UNVERIFIABLE
+    assert attestation.assess("android", out, challenge_ok=True)["trusted"] is False
+
+
+def test_a_token_carrying_no_nonce_at_all_is_not_trusted():
+    out = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY),
+        verified=True, expect_nonce="the-nonce-for-this-capture")
+    assert out["tier"] == attestation.TIER_UNVERIFIABLE
+
+
+def test_binding_is_a_property_of_the_token_not_a_caller_assertion():
+    """assess() must not be able to be told the binding happened.
+
+    The original shape took `challenge_ok` as a boolean the caller asserted,
+    so a correct nonce consumption alongside a replayed token passed. The
+    verdict itself now has to carry the binding.
+    """
+    unbound = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY), verified=True)
+    assert attestation.assess("android", unbound, challenge_ok=True)["trusted"] is False
+
+
+def test_a_correctly_bound_token_is_still_trusted():
+    """Proves the three fixes did not simply turn the module off."""
+    out = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY, nonce="n"),
+        verified=True, expect_nonce="n")
+    assert out["tier"] == attestation.TIER_HARDWARE
+    assert attestation.assess("android", out, challenge_ok=True)["trusted"] is True
+
+
+def test_app_attest_also_requires_the_nonce_to_match():
+    ok = attestation.interpret_app_attest(verified=True, receipt_ok=True,
+                                          token_nonce="n", expect_nonce="n")
+    assert ok["tier"] == attestation.TIER_HARDWARE
+    bad = attestation.interpret_app_attest(verified=True, receipt_ok=True,
+                                           token_nonce="other", expect_nonce="n")
+    assert bad["tier"] == attestation.TIER_UNVERIFIABLE
+    assert bad["trusted"] is False
+
+
+def test_challenge_bound_never_claims_a_binding_the_token_lacks():
+    """Found by re-running the original probes against the fixed code.
+
+    `challenge_bound` was computed from the nonce consumption alone, so a
+    replayed token reported challenge_bound: True beside tier
+    attestation_unverifiable. The record would have carried a field asserting
+    a binding that demonstrably did not exist — the exact shape of defect this
+    whole module is supposed to avoid.
+    """
+    replayed = attestation.interpret_play_integrity(
+        payload(attestation.STRONG_INTEGRITY, nonce="some-other-capture"),
+        verified=True, expect_nonce="capture-nonce")
+    out = attestation.assess("android", replayed, challenge_ok=True)
+    assert out["trusted"] is False
+    assert out["challenge_bound"] is False, (
+        "the token was not bound to this capture, so the record must not say "
+        "it was")

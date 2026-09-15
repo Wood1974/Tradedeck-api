@@ -24,7 +24,7 @@ an acceptance test attached.
 - DONE (synthetic only) — flash-pair analysis, rebroadcast.py.
 - DONE (synthetic only) — two-pose parallax, rebroadcast.py.
 - Field calibration of both against real phones, real displays and real jobsites. The thresholds have never seen a real photograph of a real screen.
-- DONE (server side) — single-use capture nonce with a short TTL, attestation.py, so a replayed attestation cannot carry trust onto a file the device never saw. Needs a shared store before it works under more than one worker.
+- DONE (server side) — single-use capture nonce with a short TTL, ENFORCED against the token's own requestHash rather than asserted by the caller, so a replayed attestation cannot carry trust onto a file the device never saw. The first cut of this shipped the bookkeeping without the binding; see attack 21. Needs a shared store before it works under more than one worker (AR-9).
 - Platform attestation, which requires the native app that does not exist. attestation.py holds the policy; nothing produces a verdict for it to read.
 - A capture flow that forces real translation between the two poses — pure rotation makes every scene look planar.
 
@@ -54,9 +54,9 @@ Deliberately framed as an UPGRADE, never a detector. Both signals are strong pos
 - Rebroadcast detection (flash pair, parallax) to defeat the screen-replay path that attestation alone leaves open.
 - C2PA capture-side credentials where the device supports them.
 
-**Test:** test_attestation.py — 24 cases covering fail-closed verdicts, challenge replay, and the empty-verdict attack signal
+**Test:** test_attestation.py — 33 cases covering fail-closed verdicts, replayed and unbound tokens, repackaged apps, malformed payloads, and the empty-verdict attack signal
 
-This is AR-1. The policy layer is built and the honest state of it is that it has nothing to judge: with no native app, every capture is 'unattested', which the module treats as the expected case rather than a finding. Note also what a pass would NOT mean — Apple does not expose jailbreak state through App Attest, so 'attested' is a strong statement about the app and the silicon and a silent one about the OS. The claim may never be fully earnable; the honest endpoint is probably a stated cost of forgery, not a proof. If that is where it lands, change the claim rather than stretching the evidence to reach it.
+This is AR-1. The policy layer is built, hardened after an adversarial re-read found three holes in it (attacks 21-23), and the honest state of it is still that it has nothing to judge: with no native app, every capture is 'unattested', which the module treats as the expected case rather than a finding. Note also what a pass would NOT mean — Apple does not expose jailbreak state through App Attest, so 'attested' is a strong statement about the app and the silicon and a silent one about the OS. The claim may never be fully earnable; the honest endpoint is probably a stated cost of forgery, not a proof. If that is where it lands, change the claim rather than stretching the evidence to reach it.
 
 ### Shield is a C2PA Conforming Product.
 `listed-conforming-product` · **UNEARNED** · greps for *"Conforming Product"*

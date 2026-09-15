@@ -122,6 +122,14 @@ DEVICE_INTEGRITY  = "MEETS_DEVICE_INTEGRITY"
 BASIC_INTEGRITY   = "MEETS_BASIC_INTEGRITY"
 VIRTUAL_INTEGRITY = "MEETS_VIRTUAL_INTEGRITY"
 
+# appIntegrity is the half the first version of this module ignored entirely,
+# and it is the half that catches the realistic attacker. He does not root the
+# phone — rooting costs him his deviceIntegrity label. He repackages the app
+# that decides what "the camera" returns, and runs it on a genuine, certified,
+# locked-bootloader handset whose deviceIntegrity is flawless.
+PLAY_RECOGNIZED      = "PLAY_RECOGNIZED"
+UNRECOGNIZED_VERSION = "UNRECOGNIZED_VERSION"
+
 #: Default challenge lifetime. Long enough to frame a shot, short enough that a
 #: token lifted off the wire is stale before it can be replayed.
 CHALLENGE_TTL_S = 120
@@ -208,12 +216,18 @@ def _verified(verdict):
     return isinstance(verdict, dict) and verdict.get("verified") is True
 
 
-def interpret_play_integrity(payload, verified=False):
+def interpret_play_integrity(payload, verified=False, expect_nonce=None,
+                             expect_package=None):
     """Map a decoded Play Integrity payload onto a tier.
 
     `payload` is the decoded token body; `verified` states whether its signature
     and provenance were actually checked upstream. Unverified input can only
     ever produce TIER_UNVERIFIABLE, whatever it claims about itself.
+
+    `expect_nonce` is the single-use capture challenge this upload spent. The
+    token must carry its hash, or the token is about some other capture and the
+    result cannot be trusted however good the device looks. Omitting it does
+    NOT skip the check — it makes the result unbound, and unbound is untrusted.
     """
     if verified is not True:
         return _result(TIER_UNVERIFIABLE, "platform", "the integrity token was "
@@ -222,7 +236,36 @@ def interpret_play_integrity(payload, verified=False):
         return _result(TIER_UNVERIFIABLE, "platform",
                        "the integrity payload was not a readable object")
 
-    device = payload.get("deviceIntegrity") or {}
+    # Every one of these was `payload.get(x) or {}` followed by `.get(...)`,
+    # which raises AttributeError the moment the value is a str, a list or an
+    # int. An uncaught raise in a route is a 500 on an upload — and by this
+    # module's own headline property, a crash IS a block.
+    device = payload.get("deviceIntegrity")
+    if not isinstance(device, dict):
+        return _result(TIER_UNVERIFIABLE, "platform",
+                       "the payload carried no readable deviceIntegrity block")
+
+    app = payload.get("appIntegrity")
+    if not isinstance(app, dict):
+        return _result(TIER_UNVERIFIABLE, "platform",
+                       "the payload carried no readable appIntegrity block")
+    app_verdict = str(app.get("appRecognitionVerdict") or "")
+    if app_verdict != PLAY_RECOGNIZED:
+        return _result(TIER_FAILED, "platform",
+                       f"the running app is not the published one "
+                       f"({app_verdict or 'no verdict'}) — a modified or "
+                       f"repackaged build attests its hardware perfectly while "
+                       f"controlling what the camera returns")
+    if expect_package and str(app.get("packageName") or "") != expect_package:
+        return _result(TIER_FAILED, "platform",
+                       "the attestation is for a different application package")
+
+    bound = _nonce_matches(payload, expect_nonce)
+    if bound is False:
+        return _result(TIER_UNVERIFIABLE, "platform",
+                       "the token is not bound to this capture's single-use "
+                       "challenge, so it attests some other moment")
+
     labels = device.get("deviceRecognitionVerdict")
     if not isinstance(labels, (list, tuple)):
         labels = []
@@ -233,28 +276,29 @@ def interpret_play_integrity(payload, verified=False):
         return _result(TIER_FAILED, "platform",
                        "the device earned no integrity label at all, which "
                        "Google documents as signs of attack, system compromise, "
-                       "or an unrecognised emulator", labels=labels)
+                       "or an unrecognised emulator", labels=labels, bound=bound)
     if STRONG_INTEGRITY in labels:
         return _result(TIER_HARDWARE, "platform",
                        "certified device with a recent security update",
-                       labels=labels)
+                       labels=labels, bound=bound)
     if DEVICE_INTEGRITY in labels:
         return _result(TIER_DEVICE, "platform", "certified device",
-                       labels=labels)
+                       labels=labels, bound=bound)
     if VIRTUAL_INTEGRITY in labels:
         return _result(TIER_EMULATOR, "platform",
                        "a recognised emulator, which cannot be a capture device",
-                       labels=labels)
+                       labels=labels, bound=bound)
     if BASIC_INTEGRITY in labels:
         return _result(TIER_BASIC_ONLY, "platform",
                        "basic checks only; not a certified device build",
-                       labels=labels)
+                       labels=labels, bound=bound)
     return _result(TIER_BASIC_ONLY, "platform",
                    "no recognised integrity label among those returned",
-                   labels=labels)
+                   labels=labels, bound=bound)
 
 
-def interpret_app_attest(verified=False, receipt_ok=True):
+def interpret_app_attest(verified=False, receipt_ok=True, token_nonce=None,
+                         expect_nonce=None):
     """Map an App Attest verification outcome onto a tier.
 
     What this is allowed to mean, precisely: a genuine instance of this app,
@@ -274,15 +318,43 @@ def interpret_app_attest(verified=False, receipt_ok=True):
         return _result(TIER_FAILED, "platform",
                        "the attestation was verified but rejected — the key or "
                        "the app identity did not match")
+    if expect_nonce is not None and not hmac.compare_digest(
+            str(token_nonce or ""), str(expect_nonce)):
+        return _result(TIER_UNVERIFIABLE, "platform",
+                       "the attestation is not bound to this capture's "
+                       "single-use challenge, so it attests some other moment")
     return _result(TIER_HARDWARE, "platform",
                    "genuine app instance on genuine Apple hardware, key held "
                    "in the Secure Enclave (this says nothing about jailbreak "
-                   "state, which Apple does not expose)")
+                   "state, which Apple does not expose)",
+                   bound=expect_nonce is not None)
 
 
-def _result(tier, source, reason, labels=None):
+def _nonce_matches(payload, expect_nonce):
+    """Did this token commit to the challenge this capture spent?
+
+    Returns True (bound), False (a nonce was required and did not match), or
+    None (no binding was requested). None is NOT a pass — `assess` treats
+    anything other than True as unbound, and unbound is never trusted.
+
+    This is the check the first version of the module advertised in three
+    docstrings, a commit message and a PR body, and implemented nowhere:
+    `challenge_hash` was defined and called zero times, and the binding was a
+    boolean the caller asserted. Consuming a fresh nonce while presenting a
+    token minted against an older one returned full hardware trust.
+    """
+    if expect_nonce is None:
+        return None
+    details = payload.get("requestDetails")
+    if not isinstance(details, dict):
+        return False
+    return hmac.compare_digest(str(details.get("requestHash") or ""),
+                               challenge_hash(expect_nonce))
+
+
+def _result(tier, source, reason, labels=None, bound=None):
     out = {"tier": tier, "source": source, "reason": reason,
-           "trusted": tier in TRUSTED_TIERS}
+           "trusted": tier in TRUSTED_TIERS, "bound": bound is True}
     if labels is not None:
         out["labels"] = list(labels)
     return out
@@ -314,8 +386,11 @@ def assess(platform=None, verdict=None, challenge_ok=None):
     # photograph. A replayed token would otherwise carry full hardware trust
     # onto a file the device never saw, so trust is withheld rather than
     # downgraded quietly.
-    if tier in TRUSTED_TIERS and challenge_ok is not True:
-        missing = "failed" if challenge_ok is False else "was not presented"
+    if tier in TRUSTED_TIERS and (verdict.get("bound") is not True
+                                  or challenge_ok is not True):
+        missing = ("did not match the token"
+                   if verdict.get("bound") is not True else
+                   "failed" if challenge_ok is False else "was not presented")
         return {
             "tier": TIER_UNVERIFIABLE,
             "trusted": False,
@@ -332,7 +407,11 @@ def assess(platform=None, verdict=None, challenge_ok=None):
         "tier": tier,
         "trusted": tier in TRUSTED_TIERS,
         "capture_allowed": True,          # invariant: this module labels, never blocks
-        "challenge_bound": challenge_ok is True,
+        # Both halves, or it is not bound: the server must have spent a live
+        # single-use nonce AND the token must commit to that same nonce.
+        # Reporting only the first put `challenge_bound: True` on a record
+        # whose token was bound to a different capture entirely.
+        "challenge_bound": verdict.get("bound") is True and challenge_ok is True,
         "platform": platform,
         "reason": verdict.get("reason", ""),
         "note": DESCRIPTIONS.get(tier, ""),

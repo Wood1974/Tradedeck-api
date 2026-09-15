@@ -32,6 +32,9 @@ are not going to be, and that file says why.
 | 18 | Truncate the custody chain to drop the last few entries | **Works, and always will.** A chain shortened at the end verifies perfectly; the package's own head claim is updated by whoever truncated it. Found by `audit/fuzz.py` in under a minute. **Not closed** — see AR-8. Mitigated by `--expect-head`: a head the recipient obtained earlier detects it. |
 | 19 | Replay one device attestation across every upload | **Would have worked** in any design without a capture nonce: an attestation proves a device was genuine at some moment, not that it took this photograph, so the same token carries hardware trust onto files the device never saw. Closed before shipping: single-use, TTL-bounded, actor-bound challenges, and `assess()` withholds trust from an unbound attestation rather than downgrading it quietly. |
 | 20 | Spoof camera input from an emulator and pass device triage | **The intuitive rule misses this entirely.** Blocking `MEETS_VIRTUAL_INTEGRITY` blocks recognised Google Play Games for PC emulators, while an attacker's unrecognised emulator returns an *empty* `deviceRecognitionVerdict` — which that rule reads as "no block label present" and admits. Closed: a positive certified-device label is required; absence is the signal. Verified against Google's published verdict documentation. |
+| 21 | Carry hardware trust onto a file the device never saw | **Worked.** `attestation.py` advertised single-use challenge binding in three docstrings, a commit message and a PR body, and implemented it nowhere: `challenge_hash` was defined and called zero times, and `assess()` took the binding as a boolean the CALLER asserted. Spending a fresh nonce while presenting a token minted against an older one returned `hardware_attested / trusted`. Found by adversarially re-reading my own code after 24 tests and 2 invariants passed over it. Closed: the binding is read off the token's `requestDetails.requestHash`, and `assess()` requires it. |
+| 22 | Pass attestation with a repackaged app on a genuine handset | **Worked.** Only `deviceIntegrity` was read. The realistic attacker does not root the phone — rooting costs him the label. He modifies the app that decides what the camera returns and runs it on a genuine certified device, so `appRecognitionVerdict: UNRECOGNIZED_VERSION` sat beside a flawless `MEETS_STRONG_INTEGRITY` and returned `hardware_attested`. Closed: `PLAY_RECOGNIZED` required, optional package match. |
+| 23 | Block an upload with a malformed attestation payload | **Worked.** `payload.get("deviceIntegrity") or {}` raises `AttributeError` when the value is a str, list or int; uncaught in a route that is a 500 on a photo upload, and by the module's own headline property a crash IS a block. Closed: shape checks that fail closed to `attestation_unverifiable`. |
 
 ## On the tripwires themselves
 
@@ -45,3 +48,16 @@ precisely the refactor these exist to catch. One flagged its own docstring,
 because the docstring named the old behaviour it replaced.
 
 The remaining text-matching invariants have not been audited that way yet.
+
+## When the tripwires themselves were the problem
+
+Attacks 21-23 all survived a suite of 24 passing tests AND two passing
+invariants written specifically for that module. They survived for one reason:
+every test and both invariants built their Play Integrity payload the same
+incomplete way — deviceIntegrity only, no appIntegrity, no nonce. They pinned
+the tier ladder and never touched the boundary.
+
+Fixing the code broke six of the original tests and both invariants, which is
+the correct signal: they had been asserting the insecure default. The lesson is
+narrower than "write more tests" — it is that a test which constructs its own
+input through the happy path cannot find a hole in the path it never takes.
