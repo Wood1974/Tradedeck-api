@@ -156,3 +156,62 @@ client.
 *A new finding here would be: challenges being issued in production while this
 is still in-memory, or a shared implementation that loses single-use under
 concurrency.*
+
+---
+
+### AR-10 · `gps_corroborated` names a corroboration it does not perform
+**Reviewed 2026-09-15 · next review 2026-12-01**
+
+`integrity.assess()` returns `gps_corroborated`, and `routes.py` ships it in the
+API response (lines 577 and 617). The field compares EXIF GPS against the
+app-reported position — **both supplied by the same party, in the same request.**
+It cannot fail for anyone willing to write EXIF, which takes about twelve lines
+with `piexif`, the same library that reads it. This is the finding that produced
+"EXIF is not evidence"; the field survived the reframe that the finding caused.
+
+The geofence in `upload_photo` is the honest check and is unaffected: it measures
+the reported position against a site the **buyer** fixed at purchase, which is
+the one reference point the contractor does not supply.
+
+Accepted by the project owner on 2026-09-15, with the exposure understood: a
+third party integrating against this API reads `gps_corroborated: true` as a
+statement that the location was corroborated. In a contested proceeding it is
+one question — *who supplied both values you compared?*
+
+The fix is a rename, not an algorithm: the field states that two self-reported
+positions agree with each other, which is a real and mildly useful signal under
+an honest name. Nothing else in the record depends on it.
+
+*A new finding here would be: this field being cited as corroboration in an
+export, a certification, or anything a customer reads — that crosses from an
+accepted limit into an overclaim, which `SECURITY.md` treats as a defect.*
+
+---
+
+### AR-11 · `exif_captured_at` is a signed chain field the subject controls
+**Reviewed 2026-09-15 · next review 2026-12-01**
+
+`exif_captured_at` is one of `ledger.SIGNED_FIELDS`, so it is sealed into the
+custody chain — and it is read from EXIF `DateTimeOriginal`, which the uploader
+writes. The chain proves the value was not altered *after* it was recorded. It
+says nothing about whether the value was true when it arrived.
+
+The consequence is specific and currently dormant: `corroborate.py` computes
+solar azimuth and elevation from `(lat, lng, captured_at)`. The astronomy is
+exact and the sky is not editable — but if that check is ever wired to this
+field, an attacker with a photograph simply declares the capture time whose sun
+position matches the shadows already in it. The physics would be perfect and the
+input adversarial. `corroborate.py` is imported by `routes.py` and never called,
+so nothing ships from it today.
+
+Accepted by the project owner on 2026-09-15. Removing the field from the signed
+set is not a small change: the canonical form would change, which means
+`chain_version` 1 → 2 and a re-chain of every row ever written.
+
+The server-side times are the trustworthy ones and already exist: `received_at`
+in `upload_photo` and `recorded_at` on every chain entry. They prove "not
+after", never "not before" — and the export says so.
+
+*A new finding here would be: solar corroboration wired to `exif_captured_at`
+without anchoring the time to `received_at`, or any export presenting the EXIF
+capture time as established rather than asserted.*
