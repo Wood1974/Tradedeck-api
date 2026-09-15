@@ -794,6 +794,55 @@ def inv_attestation_labels_rather_than_blocks():
     return True, "attestation labels the record and never blocks a capture"
 
 
+def inv_fee_neutrality_clause_survives():
+    """The independence policy must keep its fee-neutrality hard line.
+
+    Issuer-pays — being paid by the party whose own records we seal — is the
+    arrangement that cost the rating agencies their credibility in 2008. It is
+    survivable on exactly one condition: the fee cannot move with the verdict.
+
+    The realistic failure is not an argument. It is a quiet deletion, on the
+    afternoon a customer offers a share of released funds, by someone who
+    reasons that a paragraph in a markdown file is not really a commitment.
+    This makes that deletion break the build.
+
+    It also requires the Amendments section to survive, because a policy that
+    can be rewritten without leaving a trace is worth nothing — the whole
+    value of the page is that its changes are visible.
+    """
+    doc = (SHIELD / "INDEPENDENCE.md")
+    if not doc.exists():
+        return False, "INDEPENDENCE.md is gone"
+    # Normalise before matching: the clause is a wrapped blockquote, so a raw
+    # substring test fails on the "> " prefixes and the line break, and would
+    # also fail if someone merely reflowed the paragraph. The tripwire must
+    # fire on deletion, not on formatting. (It fired on formatting first time
+    # out, which is how this got written.)
+    low = re.sub(r"[>*`_]", " ", doc.read_text().lower())
+    low = re.sub(r"\s+", " ", low)
+
+    if "identical whether the record is favourable or damning" not in low:
+        return False, ("the fee-neutrality hard line has been removed from "
+                       "INDEPENDENCE.md — issuer-pays without it is the 2008 "
+                       "rating-agency arrangement with nothing holding it")
+
+    for banned in ("share of funds released", "success fees",
+                   "equity, options, board seats", "contingent on an outcome"):
+        if banned not in low:
+            return False, (f"the prohibited-consideration list no longer names "
+                           f"{banned!r}; the hard line is being narrowed by "
+                           f"deletion rather than by amendment")
+
+    if "## amendments" not in low:
+        return False, ("the Amendments section is gone, so the commitments can "
+                       "now be rewritten without leaving a trace")
+    if "weaker position" not in low:
+        return False, ("the amendment log no longer states that issuer-pays is "
+                       "the weaker position — a weakening recorded as an "
+                       "improvement is how a policy rots quietly")
+    return True, "fee neutrality, the prohibited list and the amendment log all hold"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -833,6 +882,7 @@ INVARIANTS = (
     ("rebroadcast-never-accuses", "Turn a photograph of a flat wall into a fraud finding", inv_rebroadcast_never_accuses),
     ("attestation-fails-closed", "Claim hardware trust with an unverified or replayed attestation", inv_attestation_fails_closed),
     ("attestation-labels-not-blocks", "Turn a rooted phone into a subcontractor who cannot document his work", inv_attestation_labels_rather_than_blocks),
+    ("fee-neutrality-holds", "Quietly delete the one clause that makes issuer-pays survivable", inv_fee_neutrality_clause_survives),
 )
 
 
