@@ -43,6 +43,15 @@ written down rather than assumed.
    reconstructing our incentives from our price list could see a reason we
    might. If they can, the record is worth less and so is the company.
 
+   **That test requires a stranger to be able to read the price list**, so as
+   of 18 September 2026 it is published: `PRICING.md`, and `GET
+   /shield/public/pricing` for anyone who would rather not take a document's
+   word for it. The guarantee is structural — `pricing.quote()` takes a job
+   budget and nothing else, so there is no input through which a fee could
+   vary with a verdict — and three invariants fail the build if that changes:
+   a second parameter appears, a chargeable price goes missing from the
+   published list, or either public route acquires a login.
+
    We do not change a sealed record at any party's request regardless of who
    pays — see commitment 2.
 
@@ -59,7 +68,21 @@ written down rather than assumed.
    price. `audit/CLAIMS.md` lists what we have earned the right to say, and an
    invariant fails the build if an unearned claim reaches published text.
 
-5. **If we ever break one of these commitments, the fact and the date will
+5. **We publish how often we say no.** `GET /shield/public/results` serves the
+   outcome distribution — every verdict category, including the ones that cost
+   us money, counting retaken photographs rather than quietly dropping them
+   with the failures they contain. No account is needed to read it.
+
+   Two things about that endpoint matter more than the numbers in it. It
+   **withholds percentages below thirty closed jobs**, because a rate over a
+   handful of jobs moves by tens of points on a single outcome and "100% pass
+   rate" is the first thing a small sample is good for. And it **states in the
+   payload that these are our own unaudited numbers about our own product** —
+   a disclosure, not an attestation. Both are enforced by invariants, because
+   both are the kind of restraint that erodes the week someone needs a figure
+   for a deck.
+
+6. **If we ever break one of these commitments, the fact and the date will
    appear on this page.**
 
 ## Why the last one matters most

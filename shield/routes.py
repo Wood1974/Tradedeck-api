@@ -17,6 +17,7 @@ The security posture that separates this from the parent implementation:
 """
 import json
 import logging
+import time
 
 import requests
 import stripe
@@ -31,6 +32,7 @@ import ledger
 import notes as field_notes
 import pricing
 import protection
+import transparency
 import verdict as grading
 import vision
 from auth import require_auth, require_shield_job, utc_now_iso
@@ -160,6 +162,79 @@ def _signed_url(path, ttl=None):
 
 
 # ------------------------------------------------------------- quote / buy ---
+# ----------------------------------------------------------------- public ---
+# The only routes in this service that do not require a bearer token. Both are
+# read-only, aggregate, and deliberately reachable by someone who has never
+# bought anything — a commitment nobody outside can check is on the honour
+# system, and both of these exist to be checked.
+
+_PUBLIC_TTL = 900          # seconds; see the note on staleness below
+_results_cache = {"at": 0.0, "payload": None}
+
+
+def _public(payload, *, max_age):
+    """Serve an anonymous payload, overriding the global no-store default.
+
+    `harden()` sets Cache-Control: no-store with setdefault, which is right for
+    every authenticated route in this file and wrong for these two: they carry
+    nothing user-specific and being cached by an intermediary is a feature.
+    """
+    resp = jsonify(payload)
+    resp.headers["Cache-Control"] = f"public, max-age={max_age}"
+    return resp
+
+
+@bp.route("/public/pricing", methods=["GET"])
+def public_pricing():
+    """The complete price list. No auth, no arguments, no negotiation.
+
+    Every price this service can charge is here. `pricing.quote()` takes a job
+    budget and nothing else, so there is no input through which a fee could
+    vary with what a record says — which is the part of INDEPENDENCE.md
+    commitment 1 that a stranger can verify for themselves.
+    """
+    return _public(pricing.public_price_list(), max_age=3600)
+
+
+@bp.route("/public/results", methods=["GET"])
+def public_results():
+    """Aggregate outcomes, including the unflattering ones.
+
+    Cached in-process for fifteen minutes. That is a load control on an
+    unauthenticated endpoint that reads three tables, not a freshness
+    guarantee: each gunicorn worker holds its own copy, so two requests can
+    legitimately differ by one close-out. The payload's `generated_at` says
+    which moment the numbers describe.
+
+    Selection is column-minimal and unfiltered — no `.eq()`, no date window.
+    A filter here is how a report starts flattering its author, so the absence
+    of one is the point, and `transparency.METHOD` states it in the payload.
+    """
+    now = time.time()
+    if _results_cache["payload"] and now - _results_cache["at"] < _PUBLIC_TTL:
+        return _public(_results_cache["payload"], max_age=_PUBLIC_TTL)
+
+    try:
+        reports = (db().table("shield_completion_reports")
+                   .select("overall_verdict").execute().data or [])
+        photos = (db().table("shield_photos")
+                  .select("ai_verdict,has_exif,superseded_by,superseded_at")
+                  .execute().data or [])
+        events = (db().table("shield_custody_log")
+                  .select("event_type").execute().data or [])
+    except Exception:
+        log.exception("Public results query failed")
+        # Serving a stale report beats serving nothing; serving a zeroed one
+        # would be a false statement about our outcomes.
+        if _results_cache["payload"]:
+            return _public(_results_cache["payload"], max_age=60)
+        return _err("Outcome report temporarily unavailable", 503)
+
+    payload = transparency.report(reports, photos, events)
+    _results_cache.update(at=now, payload=payload)
+    return _public(payload, max_age=_PUBLIC_TTL)
+
+
 @bp.route("/quote", methods=["POST"])
 @require_auth
 def quote():

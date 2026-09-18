@@ -226,6 +226,68 @@ CLAIMS = (
                 "rather than our own test suite — which is precisely why it "
                 "is worth more than the others.",
     },
+    {
+        "id": "fee-does-not-follow-the-verdict",
+        "claim": "Our fee is identical whether the record is favourable or "
+                 "damning, and anyone can check that without asking us.",
+        "phrase": "identical whether the record is favourable or damning",
+        "needs": (
+            "DONE — a single price table with no outcome as an input. "
+            "pricing.quote() takes job_budget_cents and nothing else, so "
+            "there is no channel through which a verdict could reach a price.",
+            "DONE — the complete list served to anonymous callers at "
+            "GET /shield/public/pricing, with the prohibited arrangements "
+            "published beside the numbers.",
+            "DONE — price-list-is-complete sweeps the budget axis and fails "
+            "the build if any chargeable price is absent from that list, so a "
+            "secret fourth tier cannot exist quietly.",
+        ),
+        "test": "test_pricing.py — signature, completeness and neutrality; "
+                "invariants price-independent-of-verdict, "
+                "price-list-is-complete, pricing-and-results-public, each "
+                "verified by breaking it",
+        "earned": "2026-09-18",
+        "note": "Earned narrowly, and the limit belongs beside it. This "
+                "establishes that no fee moves with a verdict. It does not "
+                "remove the conflict of being paid by the sealed party at "
+                "all: a customer whose records keep coming back damning can "
+                "still leave, and enough of those is quiet pressure on "
+                "thresholds and defaults rather than on any single record. "
+                "Flat pricing closes the channel that failed in 2008; it does "
+                "not close the incentive. See INDEPENDENCE.md.",
+    },
+    {
+        "id": "published-outcome-rates",
+        "claim": "Our published pass and failure rates show how often this "
+                 "system says no.",
+        "phrase": "published pass and failure rates",
+        "needs": (
+            "DONE — GET /shield/public/results serves exact counts in every "
+            "verdict category, including superseded retakes, to anonymous "
+            "callers, and states its own limits in the payload.",
+            "At least 30 closed jobs. Below that the endpoint withholds "
+            "percentages on purpose: a rate over a handful of jobs moves by "
+            "tens of points on one outcome, and '100% pass rate' with n=1 is "
+            "the exact overclaim this ledger exists to stop.",
+            "Independent review. These are our own numbers about our own "
+            "product, computed by the party that issues the records. Until "
+            "someone else can recompute them, they are a disclosure and not "
+            "an attestation.",
+        ),
+        "test": "test_transparency.py and test_public_routes.py — categories "
+                "fixed, retakes counted, rates withheld below the minimum; "
+                "invariants results-cannot-hide-failures and "
+                "results-withhold-small-rates, each verified by breaking it",
+        "earned": None,
+        "note": "The mechanism is built and running; the sample is not there. "
+                "As of 2026-09-18 the platform has one Shield job on record, "
+                "so the endpoint publishes counts and explicitly refuses to "
+                "publish a percentage. That refusal is the claim's own "
+                "acceptance test running in production — when the number of "
+                "closed jobs crosses 30 the rates appear on their own, and "
+                "the first half of this claim becomes earnable without anyone "
+                "deciding it has.",
+    },
 )
 
 

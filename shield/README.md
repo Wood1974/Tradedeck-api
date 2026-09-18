@@ -189,7 +189,26 @@ Generate once: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 ## API
 
 All `/shield/*` routes require `Authorization: Bearer <supabase-jwt>` except the
-webhook, which authenticates by Stripe signature.
+webhook, which authenticates by Stripe signature, and the two public routes
+below.
+
+### Public — no account, no token
+
+Both exist because the commitments in `INDEPENDENCE.md` are worth nothing if
+only an insider can check them. A price list nobody outside can read does not
+constrain our pricing, and an outcome report only customers can fetch is not a
+disclosure.
+
+| Route | Purpose |
+|---|---|
+| `GET /shield/public/pricing` | The complete price list. Every price this service can charge, with the arrangements we never accept. Also `PRICING.md`. |
+| `GET /shield/public/results` | Outcome distribution across every closed job and every photograph, including the failures and the retakes. Withholds percentages below 30 closed jobs and states its own limits in the payload. |
+
+`pricing.quote()` takes a job budget and nothing else, so no fee can vary with
+a verdict — enforced by `price-independent-of-verdict`, `price-list-is-complete`
+and `pricing-and-results-public`, each verified by breaking it.
+
+### Authenticated
 
 | Route | Purpose |
 |---|---|

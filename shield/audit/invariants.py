@@ -479,7 +479,11 @@ def inv_every_integrity_note_raises_a_flag():
 # Anything a customer, a recipient, or an opposing party reads. The ledger
 # itself and its source are excluded for the obvious reason.
 PUBLISHED_DOCS = ("README.md", "PROTECTION.md", "audit/PROTOCOL.md",
-                  "audit/README.md", "audit/accepted-risks.md")
+                  "audit/README.md", "audit/accepted-risks.md",
+                  # Both are served to anonymous callers, which makes them the
+                  # most customer-facing text in the repo — exactly where an
+                  # unearned claim does the most damage.
+                  "PRICING.md", "INDEPENDENCE.md")
 
 # A claim named in order to deny it is the opposite of an overclaim — it is
 # the behaviour this product depends on. "Nothing here proves a photo came off
@@ -843,6 +847,176 @@ def inv_fee_neutrality_clause_survives():
     return True, "fee neutrality, the prohibited list and the amendment log all hold"
 
 
+def _route_decorators(func_name):
+    """Decorator names on a route function in routes.py, read from the AST.
+
+    Text matching cannot answer this: `require_auth` appears hundreds of times
+    in the file, and the question here is whether it sits on one specific
+    function. Commenting it out would leave every grep passing.
+    """
+    import ast
+    tree = ast.parse((SHIELD / "routes.py").read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            out = []
+            for dec in node.decorator_list:
+                target = dec.func if isinstance(dec, ast.Call) else dec
+                out.append(getattr(target, "attr", None) or getattr(target, "id", ""))
+            return out
+    return None
+
+
+def inv_price_list_and_results_are_public():
+    """The price list and the outcome report must be reachable without a token.
+
+    This is the whole mechanism behind two claims in INDEPENDENCE.md. A fee
+    that cannot vary with a verdict is checkable only if a stranger can read
+    the fee; an outcome report is a disclosure only if someone who has bought
+    nothing can fetch it. Put either behind `require_auth` and the commitment
+    silently reverts to the honour system while every test still passes.
+
+    The realistic regression is not malice. It is a sweep that adds auth to
+    every route in the file for consistency.
+    """
+    for route in ("public_pricing", "public_results"):
+        decorators = _route_decorators(route)
+        if decorators is None:
+            return False, (f"routes.{route} is gone — the published "
+                           f"{'price list' if 'pricing' in route else 'outcome report'} "
+                           f"is no longer served")
+        if "require_auth" in decorators or "require_shield_job" in decorators:
+            return False, (f"routes.{route} now requires authentication; a "
+                           f"disclosure only customers can read is not a "
+                           f"disclosure")
+    return True, "pricing and results are served to anonymous callers"
+
+
+def inv_price_cannot_depend_on_a_verdict():
+    """Price must be a function of job budget and nothing else.
+
+    Stated structurally rather than as a promise: `quote()` takes one argument,
+    so there is no channel through which an outcome could reach it. A second
+    parameter is the thing to catch — that is what an outcome-contingent fee
+    would need, and it would arrive looking like a reasonable refactor.
+    """
+    import inspect
+    sys.path.insert(0, str(SHIELD))
+    import pricing
+
+    params = list(inspect.signature(pricing.quote).parameters)
+    if params != ["job_budget_cents"]:
+        return False, (f"pricing.quote now takes {params}. Anything beyond the "
+                       f"job budget is a channel by which a fee could move "
+                       f"with a verdict — INDEPENDENCE.md commitment 1")
+
+    src = _source(pricing).lower()
+    for name in ("ai_verdict", "overall_verdict", "completion_score",
+                 "coverage_pct", "counts_toward_badge"):
+        if name in src:
+            return False, (f"pricing.py now reads {name!r}; price is being "
+                           f"computed from an outcome")
+    return True, "price depends on job budget alone, by signature"
+
+
+def inv_every_chargeable_price_is_published():
+    """No price exists that the published list does not contain.
+
+    A secret price is where an outcome-contingent fee would live, and it would
+    not announce itself — it would be a fourth tier, or a branch in `quote()`
+    that the listing comprehension does not walk. So this sweeps the budget
+    axis across and past every boundary and compares what comes back against
+    what is served.
+    """
+    sys.path.insert(0, str(SHIELD))
+    import pricing
+
+    published = {t["price_cents"] for t in pricing.public_price_list()["tiers"]}
+    probes = [0, 1, 499_999, 500_000, 500_001, 1_999_999, 2_000_000,
+              2_000_001, 10_000_000, 10 ** 12]
+    reachable = {pricing.quote(b)[1] for b in probes}
+
+    if reachable - published:
+        return False, (f"prices {sorted(reachable - published)} are chargeable "
+                       f"but absent from the published list")
+    if published - pricing.VALID_PRICES:
+        return False, (f"the published list advertises {sorted(published - pricing.VALID_PRICES)}, "
+                       f"which the price table cannot produce")
+    return True, f"all {len(published)} chargeable prices are published"
+
+
+def inv_results_cannot_hide_failures():
+    """The outcome report must keep counting the things that look bad.
+
+    Three deletions would each flatter the numbers while leaving the endpoint
+    working, so each is exercised here rather than asserted:
+
+      - dropping a verdict category, so a reader cannot tell 'no failures' from
+        'failures not reported';
+      - filtering superseded photos, which silently removes every failure that
+        was ever retaken — the most innocent-looking of the three, because
+        selecting live evidence is correct everywhere else in the codebase;
+      - discarding an unrecognised verdict, which shrinks the denominator and
+        improves every rate by accident.
+    """
+    sys.path.insert(0, str(SHIELD))
+    import transparency
+
+    for category in ("fail", "fake"):
+        if category not in transparency.JOB_VERDICTS:
+            return False, (f"{category!r} is no longer a reported job verdict; "
+                           f"a category that can only be absent cannot be "
+                           f"distinguished from one that is empty")
+
+    empty = transparency.report([], [], [])
+    if set(empty["job_verdicts"]) != set(transparency.JOB_VERDICTS):
+        return False, "the report no longer emits every verdict category at zero"
+
+    retaken_failure = [{"ai_verdict": "fail", "has_exif": True,
+                        "superseded_by": "p2", "superseded_at": "2026-09-01"}]
+    rep = transparency.report([], retaken_failure, [])
+    if rep["photo_verdicts"]["fail"] != 1:
+        return False, ("a superseded failing photo no longer counts — retakes "
+                       "have become a way to delete a failure from the "
+                       "published statistics")
+
+    odd = transparency.report([{"overall_verdict": "something-new"}], [], [])
+    if sum(odd["job_verdicts"].values()) != 1:
+        return False, ("an unrecognised verdict is being dropped rather than "
+                       "bucketed, which shrinks the denominator and inflates "
+                       "every published rate")
+    return True, "failures, retakes and unknown verdicts all stay in the counts"
+
+
+def inv_results_withhold_rates_below_sample():
+    """No percentage may be published over a sample too small to carry one.
+
+    "100% pass rate" over one job is arithmetically true, worthless, and the
+    single most likely sentence to reach a landing page. The guard is the
+    reason `job_verdict_rates_pct` is nullable at all, so the failure mode is
+    someone removing the None branch to simplify a template.
+    """
+    sys.path.insert(0, str(SHIELD))
+    import transparency
+
+    if transparency.MIN_SAMPLE < 30:
+        return False, (f"the minimum sample has been lowered to "
+                       f"{transparency.MIN_SAMPLE}; rates over a sample this "
+                       f"small move by tens of points on one outcome")
+
+    one = transparency.report([{"overall_verdict": "pass"}], [], [])
+    if one["job_verdict_rates_pct"] is not None:
+        return False, ("a rate is being published over a single closed job — "
+                       "a 100% pass rate with n=1 is the overclaim this "
+                       "product cannot afford")
+    if one["sufficient_sample"] is not False:
+        return False, "a one-job sample is being reported as sufficient"
+    if not one["limits"]:
+        return False, ("the report no longer states its own limits; unaudited "
+                       "self-reported numbers presented without that caveat "
+                       "are an implied attestation we have not earned")
+    return True, f"rates withheld below n={transparency.MIN_SAMPLE}, limits stated"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -883,6 +1057,11 @@ INVARIANTS = (
     ("attestation-fails-closed", "Claim hardware trust with an unverified or replayed attestation", inv_attestation_fails_closed),
     ("attestation-labels-not-blocks", "Turn a rooted phone into a subcontractor who cannot document his work", inv_attestation_labels_rather_than_blocks),
     ("fee-neutrality-holds", "Quietly delete the one clause that makes issuer-pays survivable", inv_fee_neutrality_clause_survives),
+    ("pricing-and-results-public", "Put the price list or the outcome report behind a login", inv_price_list_and_results_are_public),
+    ("price-independent-of-verdict", "Add an input by which a fee could move with a verdict", inv_price_cannot_depend_on_a_verdict),
+    ("price-list-is-complete", "Charge a price that does not appear on the published list", inv_every_chargeable_price_is_published),
+    ("results-cannot-hide-failures", "Bury failures by dropping a category or filtering retakes", inv_results_cannot_hide_failures),
+    ("results-withhold-small-rates", "Publish a 100% pass rate off a single job", inv_results_withhold_rates_below_sample),
 )
 
 
