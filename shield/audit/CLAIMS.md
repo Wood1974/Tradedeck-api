@@ -80,7 +80,7 @@ The one claim here whose proof is somebody else's register rather than our own t
 
 **Test:** test_transparency.py and test_public_routes.py — categories fixed, retakes counted, rates withheld below the minimum; invariants results-cannot-hide-failures and results-withhold-small-rates, each verified by breaking it
 
-The mechanism is built and running; the sample is not there. As of 2026-09-18 the platform has one Shield job on record, so the endpoint publishes counts and explicitly refuses to publish a percentage. That refusal is the claim's own acceptance test running in production — when the number of closed jobs crosses 30 the rates appear on their own, and the first half of this claim becomes earnable without anyone deciding it has.
+The mechanism is built and running; the sample is not. No job has been closed out yet, so there is nothing for a rate to be computed over and the endpoint says so instead of computing one. That refusal is the claim's own acceptance test running in production — when closed jobs cross the minimum the rates appear on their own, and the first half of this claim becomes earnable without anyone deciding it has. Deliberately no figure here: the endpoint reports the sample live, and a count copied into prose is wrong the day after it is written. An earlier draft of this note said 'one Shield job on record', which was true of shield_jobs and misleading about the thing that matters — shield_completion_reports was, and is, zero.
 
 ---
 
