@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shield</title>
+<meta name="description" content="Verify a Shield evidence package, and read the published price list and outcome report.">
+<!--
+  Standalone Shield.
+
+  No framework, no bundler, no CDN, no analytics, no fonts fetched from
+  anywhere. Three local modules and this file. That is not minimalism for its
+  own sake: the Verify tab has to work for someone who was handed a package by
+  a party they are in dispute with, and every remote dependency is a request
+  that tells somebody they are checking, or a script that could change what
+  the check does between the day it was audited and the day it is used.
+
+  The CSP below allows nothing external at all. If you add a dependency you
+  have to change it, which is the point.
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src <!--SCRIPT-HASH-->;
+               style-src <!--STYLE-HASH-->; img-src 'self' data: blob:;
+               connect-src *; base-uri 'none'; form-action 'none'">
+<!--STYLES-->
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <h1>Shield</h1>
+  </div>
+  <p class="tagline">Photographic evidence with a custody chain you can check yourself.</p>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" aria-selected="true"  data-tab="verify">Verify a package</button>
+  <button role="tab" aria-selected="false" data-tab="pricing">Price list</button>
+  <button role="tab" aria-selected="false" data-tab="results">Outcomes</button>
+  <button role="tab" aria-selected="false" data-tab="record">Record a job</button>
+</nav>
+
+<main>
+
+<!-- ------------------------------------------------------------- verify -- -->
+<section id="verify" class="panel" role="tabpanel">
+  <p class="lede">
+    Drop in an evidence package. It is verified <strong>here, in this page</strong>
+    — nothing is uploaded and no request is made, so nobody learns that you
+    checked. Turn your network off first if you would like to confirm that.
+  </p>
+
+  <div class="drop" id="drop" tabindex="0" role="button"
+       aria-label="Choose an evidence package JSON file">
+    <input type="file" id="packageFile" accept=".json,application/json" hidden>
+    <p><strong>Drop the package JSON here</strong>, or click to choose a file.</p>
+    <p class="muted" id="fileName">No file loaded.</p>
+  </div>
+
+  <label class="field">
+    <span>Head hash you were given earlier <em>(optional, but it is the only thing that detects deletion)</em></span>
+    <input type="text" id="expectHead" placeholder="64 hex characters, from your own records"
+           autocomplete="off" spellcheck="false">
+  </label>
+  <p class="muted small">
+    A chain with entries deleted from the end still verifies perfectly — every
+    remaining link is intact and the package simply states a shorter head. The
+    only thing that catches it is a head hash you already held, from the
+    close-out packet or an email, before the package you are now holding was
+    produced.
+  </p>
+
+  <div id="verifyResult" class="result" aria-live="polite"></div>
+
+  <details class="extra">
+    <summary>Check a photograph against the package</summary>
+    <p class="muted small">
+      Hashes a file in this page and compares it to the hash the package
+      recorded. This shows the file is the one that hash describes. It does not
+      show the photograph is of what anyone says it is, and nothing here shows
+      it came off a camera.
+    </p>
+    <input type="file" id="photoFile" accept="image/*">
+    <div id="photoResult" class="result"></div>
+  </details>
+</section>
+
+<!-- ------------------------------------------------------------ pricing -- -->
+<section id="pricing" class="panel" role="tabpanel" hidden>
+  <p class="lede">
+    The complete price list, served to anyone without an account. Every price
+    the service can charge is on it.
+  </p>
+  <div class="service-row">
+    <label class="field grow">
+      <span>Shield service URL</span>
+      <input type="url" id="baseUrl" value="http://localhost:5001"
+             autocomplete="off" spellcheck="false">
+    </label>
+    <button id="loadPricing" class="primary">Load</button>
+  </div>
+  <div id="pricingResult" class="result" aria-live="polite"></div>
+</section>
+
+<!-- ------------------------------------------------------------ results -- -->
+<section id="results" class="panel" role="tabpanel" hidden>
+  <p class="lede">
+    How often this system says no — including the numbers that cost the
+    operator money. Also public, also no account.
+  </p>
+  <button id="loadResults" class="primary">Load outcome report</button>
+  <div id="resultsResult" class="result" aria-live="polite"></div>
+</section>
+
+<!-- ------------------------------------------------------------- record -- -->
+<section id="record" class="panel" role="tabpanel" hidden>
+  <div class="warn">
+    <strong>This tab has never run against a live service.</strong>
+    It is written against the hardened routes and its request shapes are
+    covered by tests, but no capture has gone through it end to end. Treat it
+    as a reference client rather than a tool you have seen work. The Verify tab
+    above is in a different category: it is checked against the implementation
+    that writes production chains, by a differential test.
+  </div>
+
+  <label class="field">
+    <span>Bearer token</span>
+    <input type="password" id="token" placeholder="Supabase access token"
+           autocomplete="off">
+  </label>
+  <p class="muted small">
+    Held in this page only — never stored, never logged, never sent anywhere
+    but the service URL above.
+  </p>
+
+  <div class="two">
+    <label class="field">
+      <span>Job id</span>
+      <input type="text" id="jobId" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="buttons">
+      <button id="loadCheckpoints">Checkpoints</button>
+      <button id="loadCustody">Custody chain</button>
+      <button id="loadEvidence">Evidence package</button>
+    </div>
+  </div>
+
+  <div id="recordResult" class="result" aria-live="polite"></div>
+</section>
+
+</main>
+
+<footer>
+  <p>
+    Shield records; the buyer decides. A record establishes that nothing was
+    altered after it was written — not that a photograph came off a camera
+    sensor, not that entries were never omitted before the chain began, and not
+    that any assessment is correct. The method is published in
+    <code>SPEC.md</code>; the limits are in <code>audit/accepted-risks.md</code>;
+    what the product is not yet entitled to claim is in <code>audit/CLAIMS.md</code>.
+  </p>
+</footer>
+
+<!--SCRIPT-->
+</body>
+</html>
