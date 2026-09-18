@@ -28,6 +28,19 @@ Build a map from those fields, then serialise:
    change any historical hash.
 2. **Floats via `repr()`.** So `40.1` is never `40.10000000000001` on one
    machine and `40.1` on another.
+
+   **Which fields are floats:** `gps_lat` and `gps_lng`, and only those. Every
+   other signed field is a string, or a structure handled by rule 4. The
+   service coerces both with `float()` before sealing.
+
+   This has to be stated rather than inferred, and saying "floats via `repr()`"
+   does not state it. A Python implementation can ask the value what type it
+   is; an implementation in any other language is reading a package that has
+   been through JSON, where `40.0` and `40` are the same token. Deciding by
+   inspecting the value gets integral coordinates wrong — and *only* integral
+   ones, so a latitude of 40.76056 verifies and a latitude of exactly 40.0 does
+   not. Writing a third implementation is what surfaced this; §7 records the
+   part of it that is still unfixed.
 3. **Non-finite values are refused,** not rendered. `NaN` reaching a chain as
    the string `"nan"` would seal corrupt input as if it were a coordinate.
 4. **Nested dicts and lists** become compact JSON with sorted keys:
@@ -125,7 +138,36 @@ building — in a close-out packet, an email to an adjuster, an RFC 3161
 timestamp, a customer's own system — is worth more than the chain itself.
 Keep the head you were given.
 
-## 7. Versioning
+## 7. A known defect in this format
+
+`event_data` is free-form and rule 4 serialises it with the language's own JSON
+encoder, which renders the float `100.0` as `100.0` and the integer `100` as
+`100`. Those hash differently. After the package has been through JSON both are
+the token `100`, and unlike `gps_lat` there is no fixed field list to declare,
+because `event_data` is written at many call sites with whatever keys suit
+them.
+
+**So a non-Python verifier cannot always reproduce the hash**, and the case is
+not exotic: close-out seals `score` and `coverage_pct`, both produced by
+`round()`, both very often whole. The most important entry in a clean record is
+the one most likely to be affected.
+
+A verifier that hits this must not report tampering. Enumerate the readings of
+the whole numbers in `event_data`; if one of them reproduces the stored hash,
+the mismatch is explained by this defect and the honest report is **cannot
+verify**, not **altered**. It must also not report success on that alternative
+reading — a verifier that searches for an interpretation under which a package
+passes has stopped verifying. `webapp/verify.js` does exactly this and says so
+on screen.
+
+**The fix is a format change**: render nested floats through `repr()` as well,
+so a package carries its own types and any language can reproduce it. That
+invalidates every hash ever written, which makes it a `chain_version` bump and
+a migration under §8. It is recorded here rather than quietly fixed because
+this document is what a third party implements from, and they will hit this on
+their first real package.
+
+## 8. Versioning
 
 `chain_version` is 1. It changes only with a migration that re-chains existing
 rows, because a serialisation change silently invalidates every chain ever

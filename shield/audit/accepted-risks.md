@@ -215,3 +215,48 @@ after", never "not before" — and the export says so.
 *A new finding here would be: solar corroboration wired to `exif_captured_at`
 without anchoring the time to `received_at`, or any export presenting the EXIF
 capture time as established rather than asserted.*
+
+### AR-12 · A package's whole numbers cannot be read back outside Python
+
+**Found 2026-09-18, by writing a third implementation of the spec.**
+
+`ledger.canonical()` hands `event_data` to `json.dumps`, which renders the
+float `100.0` as `100.0` and the integer `100` as `100`. The two hash
+differently. Once the entry has been through JSON — which is how every package
+travels — both are the token `100`, and nothing in the package records which
+one was sealed.
+
+So a verifier in any language but Python cannot always reproduce the hash. That
+is a direct hit on the claim the spec exists to support: *implement it in any
+language*. `verifier/shield_verify.py` never noticed, because Python hands it
+back a float and it can ask.
+
+**The affected entry is the one that matters most.** `complete_job` seals
+`{"verdict": …, "score": …, "coverage_pct": …}`, both numbers from `round()`,
+both whole whenever a job scores 100 or 0 — so the close-out of a clean record
+is exactly the entry a browser, Go or Rust verifier cannot confirm.
+
+Unlike `gps_lat` and `gps_lng`, this cannot be closed by declaring which fields
+are floats: `event_data` is free-form and written at many call sites.
+
+**Mitigated, not fixed.** `webapp/verify.js` enumerates the readings of the
+whole numbers in an entry and, when one of them explains the mismatch, reports
+**cannot verify** rather than **altered**. It never reports success on the
+alternative reading — a verifier that searches for an interpretation under
+which a package passes has stopped verifying. Both behaviours are tested, and
+the first version of that check was wrong in the dangerous direction: it asked
+only "does event_data hold a whole number?", which is true of nearly every
+entry, so it excused every mismatch and the verifier could no longer report
+tampering at all. Its own test caught it.
+
+Accepted rather than fixed because the fix is a format change — render nested
+floats through `repr()` so a package carries its own types — and that
+invalidates every hash ever written: `chain_version` 1 → 2 plus a re-chain.
+
+**The window is open and will close.** `shield_custody_log` holds zero rows
+today, so the migration currently costs nothing. That stops being true with the
+first real customer, and this is the cheapest it will ever be to fix.
+
+*A new finding here would be: a verifier in any language reporting a package
+**altered** on this ambiguity, or reporting it **verified** under an
+alternative reading; or the fix being applied without a `chain_version` bump.*
