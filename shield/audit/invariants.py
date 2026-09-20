@@ -1121,6 +1121,108 @@ def inv_webapp_bundle_is_current():
     return True, "the shipped bundle matches its sources and fetches nothing"
 
 
+def inv_shield_schema_is_self_contained():
+    """Shield's own schema must reference nothing outside itself.
+
+    This is what separation actually means at the data layer, and it is the
+    property that decides whether Shield can ever be lifted into its own
+    database. One foreign key into `public.profiles` and it cannot — the lift
+    becomes a migration, and the product goes back to being unsellable to
+    anyone who is not already a TradeDeck user.
+
+    The realistic regression is not ideological. It is someone adding a
+    convenience column six months from now, because the tenant they are
+    thinking about happens to also be a TradeDeck contractor.
+
+    Verified against real Postgres when this was written — the migration was
+    applied to a live server and `pg_constraint` confirmed zero foreign keys
+    leaving the schema. This check is the cheap version that runs in CI.
+    """
+    path = next(iter(sorted(MIGRATIONS.glob("*_shield_standalone_schema.sql"))), None)
+    if path is None:
+        return False, "the standalone Shield schema migration is gone"
+
+    sql = path.read_text()
+    # Strip BOTH kinds of prose before matching: `--` lines and `COMMENT ON
+    # ... IS '...'` statements. The migration documents what it replaced, so
+    # it names `public.shield_jobs` and `homeowner_id` in order to say they
+    # are gone — and the first version of this check duly failed on that.
+    #
+    # This is the fourth time in this codebase a tripwire has fired on a
+    # description of the thing rather than the thing: five invariants needed
+    # rewriting to read the AST, `webapp-sends-no-evidence` flagged api.js's
+    # docstring, `test_the_module_knows_nothing_about_profiles_or_jobs` flagged
+    # tenancy.py's. In a codebase that explains itself this thoroughly, any
+    # text match has to strip the explanation first.
+    sql = re.sub(r"--[^\n]*", "", sql)
+    sql = re.sub(r"comment\s+on\s+[\s\S]*?;", "", sql, flags=re.I)
+    sql = sql.lower()
+
+    if "create schema if not exists shield" not in sql:
+        return False, "the migration no longer creates the shield schema"
+
+    # Any qualified reference to another schema's object.
+    strays = set(re.findall(r"\breferences\s+(?!shield\.)(\w+)\.(\w+)", sql))
+    if strays:
+        names = ", ".join(f"{s}.{t}" for s, t in sorted(strays))
+        return False, (f"shield tables now reference {names} — the schema is "
+                       f"no longer liftable, and Shield is coupled again")
+
+    for forbidden in ("public.jobs", "public.profiles", "shield_jobs",
+                      "homeowner_id", "contractor_id"):
+        if forbidden in sql:
+            return False, (f"the standalone schema mentions {forbidden!r}, "
+                           f"which belongs to TradeDeck")
+
+    tables = set(re.findall(r"create table if not exists shield\.(\w+)", sql))
+    untenanted = {t for t in tables if t != "tenants"
+                  and not re.search(rf"create table if not exists shield\.{t}\s*\("
+                                    rf"[^;]*?tenant_id", sql, re.S)}
+    if untenanted:
+        return False, (f"shield.{', shield.'.join(sorted(untenanted))} "
+                       f"carries no tenant_id, so it cannot be scoped and "
+                       f"reads from it would cross tenants")
+    return True, (f"{len(tables)} shield tables, all tenant-scoped, "
+                  f"nothing referenced outside the schema")
+
+
+def inv_legacy_auth_is_not_spreading():
+    """The TradeDeck-coupled auth path may shrink, never grow.
+
+    `legacy_auth.py` still exists because `routes.py` still imports it and a
+    service that will not boot is not a separated one. It is a dead end on
+    purpose: the moment a second module starts importing it, the separation
+    has stopped being a migration and become a fork, with two auth paths
+    maintained forever and one of them coupled.
+
+    Passes trivially once `legacy_auth.py` is deleted, which is the intended
+    end state.
+    """
+    legacy = SHIELD / "legacy_auth.py"
+    if not legacy.exists():
+        return True, "legacy_auth.py is gone; the port is complete"
+
+    importers = []
+    for path in sorted(SHIELD.glob("*.py")):
+        if path.name in ("legacy_auth.py",):
+            continue
+        src = re.sub(r"#[^\n]*", "", path.read_text())
+        src = re.sub(r'"""[\s\S]*?"""', "", src)
+        if re.search(r"^\s*(from|import)\s+legacy_auth\b", src, re.M):
+            importers.append(path.name)
+
+    if set(importers) - {"routes.py"}:
+        return False, (f"legacy_auth is now imported by {', '.join(importers)}; "
+                       f"only routes.py may, and only until it is ported")
+
+    new_auth = (SHIELD / "auth.py").read_text()
+    for term in ("homeowner", "contractor", "shield_jobs", "profiles"):
+        if term in re.sub(r'"""[\s\S]*?"""', "", new_auth):
+            return False, (f"auth.py uses {term!r} in code — TradeDeck "
+                           f"identity is leaking back into the new path")
+    return True, f"legacy auth confined to {importers or ['nothing']}"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1168,6 +1270,8 @@ INVARIANTS = (
     ("results-withhold-small-rates", "Publish a 100% pass rate off a single job", inv_results_withhold_rates_below_sample),
     ("webapp-sends-no-evidence", "Let the browser client hand the server a hash or verdict to trust", inv_webapp_sends_no_client_computed_evidence),
     ("webapp-bundle-current", "Ship a verifier file that is not the code that was reviewed", inv_webapp_bundle_is_current),
+    ("shield-schema-self-contained", "Couple Shield's own schema back to TradeDeck", inv_shield_schema_is_self_contained),
+    ("legacy-auth-not-spreading", "Grow the TradeDeck-coupled auth path instead of retiring it", inv_legacy_auth_is_not_spreading),
 )
 
 

@@ -35,7 +35,7 @@ import protection
 import transparency
 import verdict as grading
 import vision
-from auth import require_auth, require_shield_job, utc_now_iso
+from legacy_auth import require_auth, require_shield_job, utc_now_iso
 from db import db
 
 log = logging.getLogger(__name__)
