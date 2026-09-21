@@ -413,32 +413,6 @@ def ksl_scrape_get():
     return ksl_scrape()
 
 
-@app.route('/internal/analyze-photos', methods=['POST'])
-def internal_analyze_photos():
-    key = request.headers.get('X-Deploy-Key', '')
-    if key != 'xdI1O1XSQ9Y':
-        return jsonify({'error': 'Unauthorized'}), 401
-    import anthropic as ac, requests as rq, base64 as b64
-    client = ac.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
-    photos = request.get_json().get('photos', [])
-    results = []
-    for p in photos:
-        try:
-            img = rq.get(p['url'], timeout=15)
-            img_b64 = b64.b64encode(img.content).decode()
-            mt = 'image/png' if img.content[:4] == b'\x89PNG' else 'image/jpeg'
-            msg = client.messages.create(model='claude-haiku-4-5-20251001', max_tokens=200,
-                messages=[{'role':'user','content':[
-                    {'type':'image','source':{'type':'base64','media_type':mt,'data':img_b64}},
-                    {'type':'text','text':f'TradeDeck Shield inspector. Checkpoint: "{p["label"]}". Required: {p["instruction"]}. JSON only: {{"verdict":"pass|flag|fail","confidence":0.0,"notes":"brief","authentic":true}}'}
-                ]}])
-            import json as _j
-            r2 = _j.loads(msg.content[0].text.strip())
-            results.append({'photo_id':p['id'],'point_id':p['point_id'],**r2})
-        except Exception as e:
-            results.append({'photo_id':p['id'],'error':str(e)})
-    return jsonify({'results':results})
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
