@@ -1223,6 +1223,52 @@ def inv_legacy_auth_is_not_spreading():
     return True, f"legacy auth confined to {importers or ['nothing']}"
 
 
+def inv_no_corroboration_overclaim():
+    """A field may not be named for a corroboration the code does not perform.
+
+    `integrity.assess()` compares the EXIF coordinates against the coordinates
+    the client sent. Both arrive in the same request from the same party, so
+    agreement between them is self-consistency, not corroboration -- an
+    uploader willing to write EXIF gets `True` for about twelve lines of
+    `piexif`, the same library Shield reads it with.
+
+    It shipped as `gps_corroborated` until AR-10, and `routes.py` put it in the
+    API response, where a third party integrating against Shield reads it as an
+    established fact. In a contested proceeding it is one question: who
+    supplied both values you compared?
+
+    Renaming it was the whole fix -- the signal is real and mildly useful under
+    an honest name. This exists because a rename is exactly the kind of change
+    a later refactor reverts for consistency with an old client, without anyone
+    noticing the claim came back. Prose is stripped first: README.md and
+    audit/ATTACKS.md still say `gps_corroborated` on purpose, because they
+    record what the field was called on the day the attack ran, and rewriting
+    history to match a fix is its own kind of lie.
+    """
+    offenders = []
+    for name in ("integrity.py", "routes.py", "evidence.py", "verdict.py"):
+        path = SHIELD / name
+        if not path.exists():
+            continue
+        src = path.read_text()
+        src = re.sub(r'"""[\s\S]*?"""', "", src)
+        src = re.sub(r"#[^\n]*", "", src)
+        if re.search(r"\bgps_corroborated\b", src):
+            offenders.append(name)
+
+    if offenders:
+        return False, (f"{', '.join(offenders)} names a field "
+                       f"'gps_corroborated' again; both positions it compares "
+                       f"come from the same request (AR-10)")
+
+    integrity = (SHIELD / "integrity.py").read_text()
+    if "gps_self_consistent" not in integrity:
+        return False, ("integrity.assess() no longer returns "
+                       "gps_self_consistent; if it was renamed again, the new "
+                       "name must not claim corroboration")
+    return True, "the EXIF/client position agreement is named for what it is"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1272,6 +1318,7 @@ INVARIANTS = (
     ("webapp-bundle-current", "Ship a verifier file that is not the code that was reviewed", inv_webapp_bundle_is_current),
     ("shield-schema-self-contained", "Couple Shield's own schema back to TradeDeck", inv_shield_schema_is_self_contained),
     ("legacy-auth-not-spreading", "Grow the TradeDeck-coupled auth path instead of retiring it", inv_legacy_auth_is_not_spreading),
+    ("no-corroboration-overclaim", "Ship a field named for a corroboration the code does not perform", inv_no_corroboration_overclaim),
 )
 
 

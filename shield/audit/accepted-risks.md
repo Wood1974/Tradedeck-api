@@ -4,6 +4,10 @@ Known, understood, and deliberately not fixed. The daily audit must not list
 any of these again. If you can show one is **worse than described here**, that
 is a new finding — say exactly how it exceeds the entry.
 
+An entry marked **CLOSED** has been fixed. It stays here rather than being
+deleted, so that a reader who met the old behaviour can find out what happened
+to it, and so the audit still recognises the name.
+
 Each carries a review date. Past it, the entry is stale and worth re-arguing.
 
 ---
@@ -160,7 +164,28 @@ concurrency.*
 ---
 
 ### AR-10 · `gps_corroborated` names a corroboration it does not perform
-**Reviewed 2026-09-15 · next review 2026-12-01**
+**CLOSED 2026-09-24 · renamed to `gps_self_consistent`**
+
+> **Fixed.** The owner asked for the accepted risks to be closed; this was the
+> one on the list whose fix was already written down here and needed no
+> decision from anyone. `integrity.assess()` now returns
+> **`gps_self_consistent`**, and `routes.py` ships that name in both response
+> sites. The comparison is unchanged, because the comparison was never the
+> problem — the name was. The invariant `no-corroboration-overclaim` fails the
+> build if the old name returns to `integrity.py`, `routes.py`, `evidence.py`
+> or `verdict.py`, and it was confirmed by putting the old name back and
+> watching it trip.
+>
+> `README.md` and `ATTACKS.md` still say `gps_corroborated`. That is
+> deliberate: both record what the field was called on the day the attack ran,
+> and editing history to match a later fix is its own kind of overclaim.
+>
+> **This is now a breaking API change** for anything reading
+> `gps_corroborated` off a Shield response. Nothing does today — the hardened
+> `routes.py` has never served a request.
+
+The entry below is kept as written, because the reasoning is why the rename
+was the right fix rather than a new algorithm.
 
 `integrity.assess()` returns `gps_corroborated`, and `routes.py` ships it in the
 API response (lines 577 and 617). The field compares EXIF GPS against the

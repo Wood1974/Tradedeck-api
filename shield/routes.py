@@ -649,7 +649,7 @@ def upload_photo(shield_job_id):
                             "original_bytes": len(raw), "compressed_bytes": len(compressed),
                             "exif_status": assessment["exif_status"],
                             "gps_distance_m": assessment["gps_distance_m"],
-                            "gps_corroborated": assessment["gps_corroborated"],
+                            "gps_self_consistent": assessment["gps_self_consistent"],
                             "content_type": mime})
     if prior:
         log_custody(photo_id=prior["id"], shield_job_id=shield_job_id,
@@ -689,7 +689,7 @@ def upload_photo(shield_job_id):
         "analysable": comp_path is not None,
         "supersedes": prior["id"] if prior else None,
         "exif_status": assessment["exif_status"],
-        "gps_corroborated": assessment["gps_corroborated"],
+        "gps_self_consistent": assessment["gps_self_consistent"],
         "gps_distance_m": assessment["gps_distance_m"],
         "integrity_note": assessment["integrity_note"],
         "device": " ".join(filter(None, [exif.get("device_make"),

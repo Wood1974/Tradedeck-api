@@ -349,7 +349,14 @@ def assess(raw: bytes, mime: str, app_lat, app_lng, tolerance_m: int) -> dict:
         "has_exif": status == "present",
         "gps_distance_m": round(distance, 1) if distance is not None else None,
         "gps_mismatch": mismatch,
-        # True only when EXIF independently agrees with the reported position.
-        "gps_corroborated": distance is not None and not mismatch,
+        # Two positions the SAME party supplied agree with each other: the EXIF
+        # the uploader wrote, and the coordinates the uploader's client sent.
+        # That is a real signal -- lazy fraud does not bother to match them --
+        # but it is not corroboration, because corroboration needs a second
+        # source. The honest check is the geofence in upload_photo, which
+        # measures against a site the BUYER fixed at purchase. Named for what
+        # it does after AR-10: the old name, gps_corroborated, is what a third
+        # party integrating against this API read as an established fact.
+        "gps_self_consistent": distance is not None and not mismatch,
         "integrity_note": " ".join(notes) or None,
     }

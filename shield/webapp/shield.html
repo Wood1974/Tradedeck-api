@@ -19,7 +19,7 @@
   have to change it, which is the point.
 -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-wYbJpX2GAJTOTl8WELbz4uIcnUwyv/u3tFHiR8TQsdA=';
+      content="default-src 'none'; script-src 'sha256-Yks+FrGsuhVrW24NU/O5GtAowDa+i86lm7SlUrh31Cs=';
                style-src 'sha256-Yafav3cTXj4+i8an1iQzj6CpSehxFP8LMu9RDa9E/xw='; img-src 'self' data: blob:;
                connect-src *; base-uri 'none'; form-action 'none'">
 <style>
@@ -919,8 +919,9 @@ class ShieldClient {
    *
    * The coordinates travel with it because the service needs something to
    * measure against the buyer's geofence — not because they are believed.
-   * AR-10 records that `gps_corroborated` names a corroboration it does not
-   * perform, and the server re-derives everything it seals.
+   * The server re-derives everything it seals. What it returns is
+   * `gps_self_consistent` -- renamed from `gps_corroborated` under AR-10,
+   * because both positions it compares come from this same request.
    */
   uploadPhoto(jobId, { file, pointId, gpsLat, gpsLng }) {
     const form = new FormData();
