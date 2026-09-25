@@ -1,4 +1,4 @@
-# Shield custody chain — specification v1
+# Shield custody chain — specification v2
 
 Everything needed to verify a Shield evidence package without running Shield's
 code or contacting Shield. Implement it in any language; a working Python
@@ -18,8 +18,16 @@ Anything outside this set is metadata the chain does not vouch for.
 
 ```
 shield_job_id, photo_id, event_type, actor_id, actor_type, event_data,
-gps_lat, gps_lng, file_hash, integrity_note, exif_captured_at, recorded_at
+gps_lat, gps_lng, file_hash, integrity_note, recorded_at
 ```
+
+**`exif_captured_at` is deliberately not in that list**, and was removed in v2.
+It is read from EXIF `DateTimeOriginal`, which the uploader writes. Sealing it
+proved exactly one thing — that it had not changed since we recorded it — and
+read, to anyone who had not read this document, as though the capture time
+itself were established. It still travels in the record; the chain does not
+vouch for it. `recorded_at` is server-side and stays signed. It proves *not
+after*, never *not before*.
 
 Build a map from those fields, then serialise:
 
@@ -45,6 +53,18 @@ Build a map from those fields, then serialise:
    the string `"nan"` would seal corrupt input as if it were a coordinate.
 4. **Nested dicts and lists** become compact JSON with sorted keys:
    `json.dumps(v, sort_keys=True, separators=(",", ":"))`.
+
+   **Nested floats are rendered through `repr()` before this happens, at the
+   moment the entry is sealed — not at the moment it is hashed.** So a writer
+   storing `{"score": 100.0}` stores `{"score": "100.0"}`, and that is what the
+   package carries. A verifier hashes the row exactly as it arrives and does no
+   normalisation of its own.
+
+   The split matters and is easy to get backwards. Only the writer knows
+   whether `100` was an integer or a float; a reader in JavaScript cannot tell,
+   because JSON has one number type. If a verifier normalised, it would be
+   guessing. So the writer commits to the answer and the package carries it.
+   This is what v1 could not do, and §7 records what it cost.
 5. **The whole map** becomes compact JSON with sorted keys, the same way, then
    UTF-8 bytes.
 
@@ -138,37 +158,55 @@ building — in a close-out packet, an email to an adjuster, an RFC 3161
 timestamp, a customer's own system — is worth more than the chain itself.
 Keep the head you were given.
 
-## 7. A known defect in this format
+## 7. The defect that produced version 2
 
-`event_data` is free-form and rule 4 serialises it with the language's own JSON
-encoder, which renders the float `100.0` as `100.0` and the integer `100` as
-`100`. Those hash differently. After the package has been through JSON both are
-the token `100`, and unlike `gps_lat` there is no fixed field list to declare,
+**Fixed in v2. Recorded here because a third party implements from this
+document, and because how it was found is the useful part.**
+
+In v1, rule 4 serialised `event_data` with the language's own JSON encoder,
+which renders the float `100.0` as `100.0` and the integer `100` as `100`.
+Those hash differently. After the package had been through JSON both were the
+token `100`, and unlike `gps_lat` there was no fixed field list to declare,
 because `event_data` is written at many call sites with whatever keys suit
 them.
 
-**So a non-Python verifier cannot always reproduce the hash**, and the case is
-not exotic: close-out seals `score` and `coverage_pct`, both produced by
-`round()`, both very often whole. The most important entry in a clean record is
-the one most likely to be affected.
+**So a non-Python verifier could not always reproduce the hash** — and the case
+was not exotic. Close-out seals `score` and `coverage_pct`, both produced by
+`round()`, both very often whole. The most important entry in a clean record
+was the one most likely to be affected.
 
-A verifier that hits this must not report tampering. Enumerate the readings of
-the whole numbers in `event_data`; if one of them reproduces the stored hash,
-the mismatch is explained by this defect and the honest report is **cannot
-verify**, not **altered**. It must also not report success on that alternative
-reading — a verifier that searches for an interpretation under which a package
-passes has stopped verifying. `webapp/verify.js` does exactly this and says so
-on screen.
+It was found by writing a third implementation of this document in JavaScript.
+Neither Python implementation had noticed, because Python hands back a float
+and can be asked. A specification is only as good as its least similar
+implementation.
 
-**The fix is a format change**: render nested floats through `repr()` as well,
-so a package carries its own types and any language can reproduce it. That
-invalidates every hash ever written, which makes it a `chain_version` bump and
-a migration under §8. It is recorded here rather than quietly fixed because
-this document is what a third party implements from, and they will hit this on
-their first real package.
+v2 closes it by moving the decision to the writer: nested floats are rendered
+through `repr()` at seal time, so the stored row and the package both carry
+`"100.0"`, and any language reproduces the hash by reading what it was given.
+
+**A verifier meeting a v1 entry must still not report tampering.** Enumerate
+the readings of the whole numbers in `event_data`; if one reproduces the
+stored hash, the mismatch is explained by this defect and the honest report is
+**cannot verify**, not **altered**. It must not report success on that
+alternative reading either — a verifier that searches for an interpretation
+under which a package passes has stopped verifying. `webapp/verify.js` does
+this, gated on `chain_version` being 1, and says so on screen.
+
+That gate is load-bearing. Applying the same leniency to a v2 entry would hand
+an attacker a sentence to hide behind: edit any entry containing a whole
+number, and the verifier prints *not evidence that anything was altered* over
+the top of it.
 
 ## 8. Versioning
 
-`chain_version` is 1. It changes only with a migration that re-chains existing
-rows, because a serialisation change silently invalidates every chain ever
-written. The canonical form above is pinned by tests in both implementations.
+`chain_version` is **2**. It changes only with a migration that re-chains
+existing rows, because a serialisation change silently invalidates every chain
+ever written. The canonical form above is pinned by tests in all three
+implementations.
+
+**The 1 → 2 bump cost nothing, and that was the only reason to do it when it
+was done.** `shield_custody_log` had neither `prev_hash` nor `entry_hash`, so
+no chain had ever been written and the migration this section demands had
+nothing to re-chain. The same change after the first real record would have
+invalidated it. A format defect in an evidence product gets more expensive
+every day it is left, and this one had a window where the price was zero.

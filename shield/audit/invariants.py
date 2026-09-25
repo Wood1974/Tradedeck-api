@@ -1121,6 +1121,281 @@ def inv_webapp_bundle_is_current():
     return True, "the shipped bundle matches its sources and fetches nothing"
 
 
+def inv_shield_schema_is_self_contained():
+    """Shield's own schema must reference nothing outside itself.
+
+    This is what separation actually means at the data layer, and it is the
+    property that decides whether Shield can ever be lifted into its own
+    database. One foreign key into `public.profiles` and it cannot — the lift
+    becomes a migration, and the product goes back to being unsellable to
+    anyone who is not already a TradeDeck user.
+
+    The realistic regression is not ideological. It is someone adding a
+    convenience column six months from now, because the tenant they are
+    thinking about happens to also be a TradeDeck contractor.
+
+    Verified against real Postgres when this was written — the migration was
+    applied to a live server and `pg_constraint` confirmed zero foreign keys
+    leaving the schema. This check is the cheap version that runs in CI.
+    """
+    path = next(iter(sorted(MIGRATIONS.glob("*_shield_standalone_schema.sql"))), None)
+    if path is None:
+        return False, "the standalone Shield schema migration is gone"
+
+    sql = path.read_text()
+    # Strip BOTH kinds of prose before matching: `--` lines and `COMMENT ON
+    # ... IS '...'` statements. The migration documents what it replaced, so
+    # it names `public.shield_jobs` and `homeowner_id` in order to say they
+    # are gone — and the first version of this check duly failed on that.
+    #
+    # This is the fourth time in this codebase a tripwire has fired on a
+    # description of the thing rather than the thing: five invariants needed
+    # rewriting to read the AST, `webapp-sends-no-evidence` flagged api.js's
+    # docstring, `test_the_module_knows_nothing_about_profiles_or_jobs` flagged
+    # tenancy.py's. In a codebase that explains itself this thoroughly, any
+    # text match has to strip the explanation first.
+    sql = re.sub(r"--[^\n]*", "", sql)
+    sql = re.sub(r"comment\s+on\s+[\s\S]*?;", "", sql, flags=re.I)
+    sql = sql.lower()
+
+    if "create schema if not exists shield" not in sql:
+        return False, "the migration no longer creates the shield schema"
+
+    # Any qualified reference to another schema's object.
+    strays = set(re.findall(r"\breferences\s+(?!shield\.)(\w+)\.(\w+)", sql))
+    if strays:
+        names = ", ".join(f"{s}.{t}" for s, t in sorted(strays))
+        return False, (f"shield tables now reference {names} — the schema is "
+                       f"no longer liftable, and Shield is coupled again")
+
+    for forbidden in ("public.jobs", "public.profiles", "shield_jobs",
+                      "homeowner_id", "contractor_id"):
+        if forbidden in sql:
+            return False, (f"the standalone schema mentions {forbidden!r}, "
+                           f"which belongs to TradeDeck")
+
+    tables = set(re.findall(r"create table if not exists shield\.(\w+)", sql))
+    untenanted = {t for t in tables if t != "tenants"
+                  and not re.search(rf"create table if not exists shield\.{t}\s*\("
+                                    rf"[^;]*?tenant_id", sql, re.S)}
+    if untenanted:
+        return False, (f"shield.{', shield.'.join(sorted(untenanted))} "
+                       f"carries no tenant_id, so it cannot be scoped and "
+                       f"reads from it would cross tenants")
+    return True, (f"{len(tables)} shield tables, all tenant-scoped, "
+                  f"nothing referenced outside the schema")
+
+
+def inv_legacy_auth_is_not_spreading():
+    """The TradeDeck-coupled auth path may shrink, never grow.
+
+    `legacy_auth.py` still exists because `routes.py` still imports it and a
+    service that will not boot is not a separated one. It is a dead end on
+    purpose: the moment a second module starts importing it, the separation
+    has stopped being a migration and become a fork, with two auth paths
+    maintained forever and one of them coupled.
+
+    Passes trivially once `legacy_auth.py` is deleted, which is the intended
+    end state.
+    """
+    legacy = SHIELD / "legacy_auth.py"
+    if not legacy.exists():
+        return True, "legacy_auth.py is gone; the port is complete"
+
+    importers = []
+    for path in sorted(SHIELD.glob("*.py")):
+        if path.name in ("legacy_auth.py",):
+            continue
+        src = re.sub(r"#[^\n]*", "", path.read_text())
+        src = re.sub(r'"""[\s\S]*?"""', "", src)
+        if re.search(r"^\s*(from|import)\s+legacy_auth\b", src, re.M):
+            importers.append(path.name)
+
+    if set(importers) - {"routes.py"}:
+        return False, (f"legacy_auth is now imported by {', '.join(importers)}; "
+                       f"only routes.py may, and only until it is ported")
+
+    new_auth = (SHIELD / "auth.py").read_text()
+    for term in ("homeowner", "contractor", "shield_jobs", "profiles"):
+        if term in re.sub(r'"""[\s\S]*?"""', "", new_auth):
+            return False, (f"auth.py uses {term!r} in code — TradeDeck "
+                           f"identity is leaking back into the new path")
+    return True, f"legacy auth confined to {importers or ['nothing']}"
+
+
+def inv_no_corroboration_overclaim():
+    """A field may not be named for a corroboration the code does not perform.
+
+    `integrity.assess()` compares the EXIF coordinates against the coordinates
+    the client sent. Both arrive in the same request from the same party, so
+    agreement between them is self-consistency, not corroboration -- an
+    uploader willing to write EXIF gets `True` for about twelve lines of
+    `piexif`, the same library Shield reads it with.
+
+    It shipped as `gps_corroborated` until AR-10, and `routes.py` put it in the
+    API response, where a third party integrating against Shield reads it as an
+    established fact. In a contested proceeding it is one question: who
+    supplied both values you compared?
+
+    Renaming it was the whole fix -- the signal is real and mildly useful under
+    an honest name. This exists because a rename is exactly the kind of change
+    a later refactor reverts for consistency with an old client, without anyone
+    noticing the claim came back. Prose is stripped first: README.md and
+    audit/ATTACKS.md still say `gps_corroborated` on purpose, because they
+    record what the field was called on the day the attack ran, and rewriting
+    history to match a fix is its own kind of lie.
+    """
+    offenders = []
+    for name in ("integrity.py", "routes.py", "evidence.py", "verdict.py"):
+        path = SHIELD / name
+        if not path.exists():
+            continue
+        src = path.read_text()
+        src = re.sub(r'"""[\s\S]*?"""', "", src)
+        src = re.sub(r"#[^\n]*", "", src)
+        if re.search(r"\bgps_corroborated\b", src):
+            offenders.append(name)
+
+    if offenders:
+        return False, (f"{', '.join(offenders)} names a field "
+                       f"'gps_corroborated' again; both positions it compares "
+                       f"come from the same request (AR-10)")
+
+    integrity = (SHIELD / "integrity.py").read_text()
+    if "gps_self_consistent" not in integrity:
+        return False, ("integrity.assess() no longer returns "
+                       "gps_self_consistent; if it was renamed again, the new "
+                       "name must not claim corroboration")
+    return True, "the EXIF/client position agreement is named for what it is"
+
+
+def inv_subject_time_is_not_signed():
+    """A value the subject writes may not sit in the signed set. AR-11.
+
+    `exif_captured_at` comes from EXIF DateTimeOriginal, which the uploader
+    writes. Sealing it proved one thing -- that we had not changed it since
+    recording -- and read, to anyone who had not read the spec, as though the
+    capture time were established.
+
+    The consequence is specific. `corroborate.py` computes solar azimuth and
+    elevation from (lat, lng, captured_at). The astronomy is exact and the sky
+    is not editable, so wiring that check to a time the subject declares hands
+    an attacker a perfect result from an adversarial input: take any
+    photograph, declare the capture time whose sun position matches the shadows
+    already in it.
+
+    Checks all three implementations, because a signed-field list that differs
+    between them is a chain only one of them can verify.
+    """
+    def signed_fields_of(src):
+        """The SIGNED_FIELDS literal, with prose removed first.
+
+        Stripping comments AFTER slicing the literal is not enough, and the
+        first version of this check did exactly that: a non-greedy match ended
+        at the first ')' it met, which was the one in a comment reading
+        "(AR-11)". The list looked empty and the invariant passed while the
+        browser implementation sealed the field again. It was caught by
+        breaking all three implementations on purpose and noticing that one of
+        them did not trip.
+
+        That is the fifth tripwire in this repository to fire on a description
+        of a thing rather than the thing. In a codebase that explains itself
+        this thoroughly, prose has to come out before any matching starts.
+        """
+        src = re.sub(r'"""[\s\S]*?"""', "", src)
+        src = re.sub(r"/\*[\s\S]*?\*/", "", src)
+        src = re.sub(r"(//|#)[^\n]*", "", src)
+
+        at = src.find("SIGNED_FIELDS")
+        if at < 0:
+            return None
+        opens = {"[": "]", "(": ")"}
+        start = next((i for i in range(at, len(src)) if src[i] in opens), -1)
+        if start < 0:
+            return None
+        close, depth = opens[src[start]], 0
+        for i in range(start, len(src)):
+            if src[i] == src[start]:
+                depth += 1
+            elif src[i] == close:
+                depth -= 1
+                if depth == 0:
+                    return src[start:i + 1]
+        return None
+
+    targets = {
+        "ledger.py": SHIELD / "ledger.py",
+        "verifier/shield_verify.py": SHIELD / "verifier" / "shield_verify.py",
+        "webapp/verify.js": SHIELD / "webapp" / "verify.js",
+    }
+    for name, path in targets.items():
+        body = signed_fields_of(path.read_text())
+        if body is None:
+            return False, f"{name} has no SIGNED_FIELDS list to check"
+        if "exif_captured_at" in body:
+            return False, (f"{name} seals exif_captured_at again -- the "
+                           f"subject writes that value, see AR-11")
+
+    corroborate = SHIELD / "corroborate.py"
+    if corroborate.exists():
+        src = re.sub(r'"""[\s\S]*?"""', "", corroborate.read_text())
+        src = re.sub(r"#[^\n]*", "", src)
+        if "exif_captured_at" in src:
+            return False, ("corroborate.py reads exif_captured_at in code; "
+                           "solar geometry against a subject-declared time is "
+                           "exact arithmetic on an adversarial input (AR-11)")
+    return True, "no subject-supplied time is sealed, and solar is not wired to one"
+
+
+def inv_nested_floats_carry_their_type():
+    """A package must say which numbers were floats. AR-12, chain_version 2.
+
+    JSON has one number type. In v1 the float 100.0 and the int 100 hashed
+    differently but travelled as the same token, so a verifier in any language
+    but Python could not reproduce the hash -- and it hit the close-out entry
+    of every clean job, because score and coverage_pct come from round().
+
+    v2 puts the decision where the answer exists: seal() renders nested floats
+    through repr() before storing, so the row and the package both carry
+    "100.0". Two things must stay true, and both are easy to undo by accident:
+
+      * seal() normalises. If it stops, the fix is gone and nothing else
+        notices, because Python can still verify its own writes.
+      * canonical() does NOT normalise. If it starts, Python hashes raw and
+        normalised input alike while the browser can only hash what the
+        package gave it -- the implementations then agree on sealed rows and
+        diverge on everything else. That regression was written once during
+        this very change and caught by the differential test.
+    """
+    import importlib
+    import sys
+    sys.path.insert(0, str(SHIELD))
+    ledger = importlib.import_module("ledger")
+    importlib.reload(ledger)
+
+    if ledger.CHAIN_VERSION < 2:
+        return False, (f"CHAIN_VERSION is {ledger.CHAIN_VERSION}; v1 packages "
+                       f"cannot be verified outside Python (AR-12)")
+
+    sealed = ledger.seal({"event_type": "job_completed",
+                          "event_data": {"score": 100.0, "count": 3}},
+                         "0" * 64)
+    if sealed["event_data"].get("score") != "100.0":
+        return False, ("seal() no longer renders nested floats through repr(); "
+                       "a browser cannot tell the stored 100 from 100.0")
+    if sealed["event_data"].get("count") != 3:
+        return False, "seal() is mangling integers, which were never ambiguous"
+
+    raw = {"event_type": "x", "event_data": {"score": 100.0}}
+    norm = {"event_type": "x", "event_data": {"score": "100.0"}}
+    if ledger.canonical(raw) == ledger.canonical(norm):
+        return False, ("canonical() is normalising; normalisation is a "
+                       "write-time step, and doing it at hash time makes the "
+                       "Python and browser implementations diverge on any row "
+                       "that did not come from seal()")
+    return True, f"chain_version {ledger.CHAIN_VERSION}; nested floats carry their type"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1168,6 +1443,11 @@ INVARIANTS = (
     ("results-withhold-small-rates", "Publish a 100% pass rate off a single job", inv_results_withhold_rates_below_sample),
     ("webapp-sends-no-evidence", "Let the browser client hand the server a hash or verdict to trust", inv_webapp_sends_no_client_computed_evidence),
     ("webapp-bundle-current", "Ship a verifier file that is not the code that was reviewed", inv_webapp_bundle_is_current),
+    ("shield-schema-self-contained", "Couple Shield's own schema back to TradeDeck", inv_shield_schema_is_self_contained),
+    ("legacy-auth-not-spreading", "Grow the TradeDeck-coupled auth path instead of retiring it", inv_legacy_auth_is_not_spreading),
+    ("no-corroboration-overclaim", "Ship a field named for a corroboration the code does not perform", inv_no_corroboration_overclaim),
+    ("subject-time-not-signed", "Seal a timestamp the subject wrote, or aim solar geometry at one", inv_subject_time_is_not_signed),
+    ("nested-floats-carry-their-type", "Ship a package only Python can verify", inv_nested_floats_carry_their_type),
 )
 
 

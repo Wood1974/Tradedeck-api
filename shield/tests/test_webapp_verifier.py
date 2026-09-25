@@ -280,25 +280,32 @@ class TestChainVerification:
 
 
 class TestTheJsonFloatAmbiguity:
-    """An integral float inside event_data cannot survive JSON transport.
+    """The defect AR-12 named, and what chain_version 2 did about it.
 
-    Python seals `{"score": 100.0}` differently from `{"score": 100}`, and by
-    the time a package reaches a browser both read as the token `100`. Unlike
-    gps_lat there is no fixed field list to declare, because event_data is
-    free-form and written at many call sites.
+    In v1, Python sealed `{"score": 100.0}` differently from `{"score": 100}`,
+    and by the time a package reached a browser both read as the token `100`.
+    That hit the close-out entry of every passing job — `complete_job` seals
+    `score` and `coverage_pct`, both from `round()`, both very often integral —
+    so the browser could not check the single most important entry in a clean
+    record.
 
-    This is the close-out entry of every passing job — `complete_job` seals
-    `score` and `coverage_pct`, both from `round()`, both very often integral.
-    So the browser verifier cannot check the single most important entry in a
-    clean record, and that has to be said out loud rather than discovered by a
-    recipient.
+    v2 renders nested floats through repr() at seal time, so the stored row and
+    the package both carry `"100.0"` and any language reproduces the hash. The
+    first test below is that fix working.
 
-    What must NOT happen is the verifier calling it tampering. That is an
-    accusation against an honest contractor caused by a trailing zero, and to
-    the reader it is indistinguishable from the real finding.
+    The old behaviour still matters for a v1 package, and the rule there is
+    unchanged: do not call it tampering. That is an accusation against an
+    honest contractor caused by a trailing zero, and to a reader it is
+    indistinguishable from the real finding.
     """
 
-    def test_an_integral_float_is_reported_ambiguous_not_tampered(self):
+    def test_a_clean_close_out_now_verifies_in_the_browser(self):
+        """The whole point of chain_version 2.
+
+        Same entry that was unverifiable in v1 — a close-out scoring 100 —
+        now verifies in the browser with no caveat, because seal() stored the
+        float as "100.0" and the package carries its own type.
+        """
         entries, _ = build_chain(n=2)
         sealed = ledger.seal(
             entry(event_data={"verdict": "pass", "score": 100.0,
@@ -306,17 +313,66 @@ class TestTheJsonFloatAmbiguity:
                   event_type="completed", photo_id=None,
                   recorded_at="2026-09-14T11:00:00+00:00"),
             entries[-1]["entry_hash"])
+        assert sealed["event_data"]["score"] == "100.0"
         entries.append(sealed)
+
+        got = js(op="verify", entries=entries, shield_job_id="job-abc")
+        assert got["intact"] is True, got.get("reason")
+        assert not got.get("ambiguous")
+
+    def test_a_version_one_entry_is_still_ambiguous_not_tampered(self):
+        """A v1 package must not be accused by a v2 verifier.
+
+        No v1 chain was ever written — the live table had neither prev_hash
+        nor entry_hash when the bump happened — so this guards a case that
+        should never arrive. It is here because the alternative, if one ever
+        did, is telling a contractor their record was altered when it was our
+        format that could not be read.
+        """
+        entries, _ = build_chain(n=2)
+        raw = entry(event_data={"verdict": "pass", "score": 100.0,
+                                "coverage_pct": 100.0},
+                    event_type="completed", photo_id=None,
+                    recorded_at="2026-09-14T11:00:00+00:00")
+        # Sealed the v1 way: event_data left as Python wrote it.
+        v1 = {**raw, "chain_version": 1,
+              "prev_hash": entries[-1]["entry_hash"],
+              "entry_hash": ledger.link(raw, entries[-1]["entry_hash"])}
+        entries.append(v1)
 
         got = js(op="verify", entries=entries, shield_job_id="job-abc")
         assert got["intact"] is False
         assert got["brokeAt"] == 2
         assert got["ambiguous"] is True, (
-            "an integral float in event_data was reported as tampering — the "
+            "an integral float in a v1 entry was reported as tampering — the "
             "verifier is accusing someone because of a trailing zero"
         )
         assert "not evidence that anything was altered" in got["reason"]
         assert "Python verifier" in got["reason"]
+
+    def test_a_version_two_mismatch_is_never_excused_as_ambiguity(self):
+        """The escape hatch must not survive into the version that fixed it.
+
+        A v2 entry carries its own types, so there is nothing left to be
+        ambiguous about. If the hatch still applied, an attacker could edit a
+        v2 entry containing any whole number and have the verifier print
+        "not evidence that anything was altered" over the top of it.
+        """
+        entries, _ = build_chain(n=2)
+        sealed = ledger.seal(
+            entry(event_data={"verdict": "pass", "score": 100.0},
+                  event_type="completed", photo_id=None,
+                  recorded_at="2026-09-14T11:00:00+00:00"),
+            entries[-1]["entry_hash"])
+        entries.append(sealed)
+        entries[2]["event_data"] = {"verdict": "pass", "score": "40.0"}
+
+        got = js(op="verify", entries=entries, shield_job_id="job-abc")
+        assert got["intact"] is False
+        assert got["brokeAt"] == 2
+        assert not got.get("ambiguous"), (
+            "a v2 entry was edited and the verifier excused it as the JSON "
+            "float ambiguity — v2 exists precisely so that cannot happen")
 
     def test_real_tampering_is_still_called_tampering(self):
         """The escape hatch must not swallow the finding it sits next to."""
