@@ -202,7 +202,11 @@ create table if not exists shield.custody_log (
     recorded_at       timestamptz not null default now(),
     prev_hash         text not null check (prev_hash ~ '^[a-f0-9]{64}$'),
     entry_hash        text not null unique check (entry_hash ~ '^[a-f0-9]{64}$'),
-    chain_version     int not null default 1
+    -- 2 since 2026-09-25. Nested floats are sealed through repr() and
+    -- exif_captured_at is no longer signed; see shield/SPEC.md sections 7-8.
+    -- This migration has never been applied, so there is no v1 row anywhere
+    -- and nothing to re-chain.
+    chain_version     int not null default 2
 );
 
 comment on table shield.custody_log is

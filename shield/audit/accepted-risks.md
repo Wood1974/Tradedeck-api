@@ -214,7 +214,21 @@ accepted limit into an overclaim, which `SECURITY.md` treats as a defect.*
 ---
 
 ### AR-11 · `exif_captured_at` is a signed chain field the subject controls
-**Reviewed 2026-09-15 · next review 2026-12-01**
+**CLOSED 2026-09-25 · removed from `SIGNED_FIELDS` in chain_version 2**
+
+> **Fixed**, by the route this entry itself contemplated: the field left the
+> signed set. It still travels in the record; the chain no longer vouches for
+> it, which is the honest position for a value the uploader writes.
+>
+> The entry called removal "not a small change" because the canonical form
+> moves, which means a re-chain. It cost nothing: no chain had ever been
+> written, so there was nothing to re-chain. It went in alongside AR-12, which
+> needed the same bump.
+>
+> `recorded_at` stays signed and is server-side. The invariant
+> `subject-time-not-signed` fails the build if the field returns to any of the
+> three implementations, or if `corroborate.py` starts reading it — the solar
+> check against a subject-declared time was this entry's stated danger.
 
 `exif_captured_at` is one of `ledger.SIGNED_FIELDS`, so it is sealed into the
 custody chain — and it is read from EXIF `DateTimeOriginal`, which the uploader
@@ -242,6 +256,28 @@ without anchoring the time to `received_at`, or any export presenting the EXIF
 capture time as established rather than asserted.*
 
 ### AR-12 · A package's whole numbers cannot be read back outside Python
+**CLOSED 2026-09-25 · nested floats sealed through `repr()` in chain_version 2**
+
+> **Fixed**, by the route SPEC.md §7 prescribed: the writer commits to the
+> type. `seal()` now renders nested floats through `repr()` before storing, so
+> the row and the package both carry `"100.0"` and any language reproduces the
+> hash from what it was given.
+>
+> The decision had to move to the writer, because only the writer knows. A
+> verifier in JavaScript cannot tell 100 from 100.0 — that is the defect. An
+> early version of this fix normalised inside `canonical()` instead, which made
+> Python hash raw and normalised input alike while the browser could only hash
+> what the package carried; the differential test against `verify.js` caught it
+> within a minute.
+>
+> `webapp/verify.js` keeps the ambiguity path for entries declaring
+> `chain_version` 1 and refuses to apply it to v2, because excusing a v2
+> mismatch would hand an attacker the sentence *not evidence that anything was
+> altered* to hide behind. Both behaviours are tested.
+>
+> Guarded by `nested-floats-carry-their-type`, confirmed by breaking it four
+> ways: seal not normalising, canonical normalising, the version rolled back,
+> and integers mangled.
 
 **Found 2026-09-18, by writing a third implementation of the spec.**
 

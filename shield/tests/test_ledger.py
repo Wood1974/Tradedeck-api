@@ -193,9 +193,13 @@ def test_nan_is_refused_rather_than_serialised():
 
 
 def test_chain_version_is_pinned():
-    """Bumping this silently invalidates every chain ever written."""
-    assert ledger.CHAIN_VERSION == 1
-    assert ledger.seal({"event_type": "x"}, "0" * 64)["chain_version"] == 1
+    """Bumping this silently invalidates every chain ever written.
+
+    Superseded in value by test_chain_version_is_two below, which says what
+    version 2 is for. Kept because the assertion it makes -- that seal() stamps
+    whatever CHAIN_VERSION says, rather than a literal -- is its own check.
+    """
+    assert ledger.seal({"event_type": "x"}, "0" * 64)["chain_version"] == ledger.CHAIN_VERSION
 
 
 def test_hashes_are_sha256_hex():
@@ -208,3 +212,93 @@ def test_sealing_is_deterministic():
     raw = {"event_type": "uploaded", "shield_job_id": JOB, "recorded_at": "2026-01-01T00:00:00+00:00"}
     prev = ledger.genesis_hash(JOB)
     assert ledger.seal(copy.deepcopy(raw), prev)["entry_hash"] == ledger.seal(copy.deepcopy(raw), prev)["entry_hash"]
+
+
+# --------------------------------------------------------------- v2 ------
+# chain_version 2 closes AR-11 and AR-12. Both are format changes, so both
+# had to wait for a version bump; the chain was empty when it happened, so
+# the re-chain SPEC.md §8 requires had nothing to re-chain.
+
+def test_chain_version_is_two():
+    """v1 could not be verified outside Python. See SPEC.md §7."""
+    assert ledger.CHAIN_VERSION == 2
+    assert ledger.seal({"event_type": "x"}, "0" * 64)["chain_version"] == 2
+
+
+def test_whole_float_and_int_seal_differently_in_event_data():
+    """AR-12: the defect itself.
+
+    json.dumps renders the float 100.0 as `100.0` and the int 100 as `100`,
+    which hash differently -- but after the package has been through JSON both
+    read back as the token 100, so a non-Python verifier could not tell which
+    had been sealed. v2 renders nested floats through repr(), so the stored
+    event_data carries the distinction and any language can reproduce it.
+    """
+    as_float = ledger.normalize_event_data({"score": 100.0})
+    as_int = ledger.normalize_event_data({"score": 100})
+
+    assert as_float == {"score": "100.0"}, "a float must carry its own type"
+    assert as_int == {"score": 100}, "an int is already unambiguous in JSON"
+    assert as_float != as_int
+
+
+def test_normalized_event_data_survives_a_json_round_trip():
+    """The property the whole bump exists for.
+
+    A package travels as JSON. If canonical() over the round-tripped value
+    differs from canonical() over the original, a recipient cannot verify it.
+    """
+    import json as _json
+    entry = {"event_type": "job_completed",
+             "event_data": ledger.normalize_event_data(
+                 {"verdict": "pass", "score": 100.0, "coverage_pct": 100.0,
+                  "partial": 99.5, "count": 3})}
+    reparsed = _json.loads(_json.dumps(entry))
+    assert ledger.canonical(entry) == ledger.canonical(reparsed)
+
+
+def test_nested_floats_are_normalized_at_any_depth():
+    out = ledger.normalize_event_data(
+        {"a": {"b": [1.0, {"c": 2.5}]}, "d": (3.0,)})
+    assert out == {"a": {"b": ["1.0", {"c": "2.5"}]}, "d": ["3.0"]}
+
+
+def test_seal_stores_the_normalized_event_data():
+    """Normalising only inside canonical() would not fix anything.
+
+    The recipient reads event_data out of the package, not out of our process.
+    If the stored value still said 100.0-as-a-number, they would still be
+    unable to tell it from 100.
+    """
+    sealed = ledger.seal({"event_type": "job_completed",
+                          "event_data": {"score": 100.0}},
+                         "0" * 64)
+    assert sealed["event_data"] == {"score": "100.0"}
+    assert ledger.link({"event_type": "job_completed",
+                        "event_data": {"score": "100.0"}},
+                       "0" * 64) == sealed["entry_hash"]
+
+
+def test_non_finite_nested_values_are_still_refused():
+    with pytest.raises(ValueError):
+        ledger.normalize_event_data({"x": float("nan")})
+    with pytest.raises(ValueError):
+        ledger.normalize_event_data({"x": [float("inf")]})
+
+
+def test_exif_captured_at_is_not_a_signed_field():
+    """AR-11: the subject writes it, so the chain must not appear to vouch.
+
+    EXIF DateTimeOriginal is written by the uploader. Sealing it proved only
+    that it had not changed since we recorded it -- which reads, to anyone who
+    has not read the spec, as though the capture time were established. The
+    server-side times stay signed and are the trustworthy ones.
+    """
+    assert "exif_captured_at" not in ledger.SIGNED_FIELDS
+    assert "recorded_at" in ledger.SIGNED_FIELDS
+
+    base = {"event_type": "uploaded", "shield_job_id": JOB}
+    without = ledger.link(base, "0" * 64)
+    with_exif = ledger.link({**base, "exif_captured_at": "2026-01-01T00:00:00Z"},
+                            "0" * 64)
+    assert without == with_exif, "a subject-supplied time must not move the hash"

@@ -1269,6 +1269,133 @@ def inv_no_corroboration_overclaim():
     return True, "the EXIF/client position agreement is named for what it is"
 
 
+def inv_subject_time_is_not_signed():
+    """A value the subject writes may not sit in the signed set. AR-11.
+
+    `exif_captured_at` comes from EXIF DateTimeOriginal, which the uploader
+    writes. Sealing it proved one thing -- that we had not changed it since
+    recording -- and read, to anyone who had not read the spec, as though the
+    capture time were established.
+
+    The consequence is specific. `corroborate.py` computes solar azimuth and
+    elevation from (lat, lng, captured_at). The astronomy is exact and the sky
+    is not editable, so wiring that check to a time the subject declares hands
+    an attacker a perfect result from an adversarial input: take any
+    photograph, declare the capture time whose sun position matches the shadows
+    already in it.
+
+    Checks all three implementations, because a signed-field list that differs
+    between them is a chain only one of them can verify.
+    """
+    def signed_fields_of(src):
+        """The SIGNED_FIELDS literal, with prose removed first.
+
+        Stripping comments AFTER slicing the literal is not enough, and the
+        first version of this check did exactly that: a non-greedy match ended
+        at the first ')' it met, which was the one in a comment reading
+        "(AR-11)". The list looked empty and the invariant passed while the
+        browser implementation sealed the field again. It was caught by
+        breaking all three implementations on purpose and noticing that one of
+        them did not trip.
+
+        That is the fifth tripwire in this repository to fire on a description
+        of a thing rather than the thing. In a codebase that explains itself
+        this thoroughly, prose has to come out before any matching starts.
+        """
+        src = re.sub(r'"""[\s\S]*?"""', "", src)
+        src = re.sub(r"/\*[\s\S]*?\*/", "", src)
+        src = re.sub(r"(//|#)[^\n]*", "", src)
+
+        at = src.find("SIGNED_FIELDS")
+        if at < 0:
+            return None
+        opens = {"[": "]", "(": ")"}
+        start = next((i for i in range(at, len(src)) if src[i] in opens), -1)
+        if start < 0:
+            return None
+        close, depth = opens[src[start]], 0
+        for i in range(start, len(src)):
+            if src[i] == src[start]:
+                depth += 1
+            elif src[i] == close:
+                depth -= 1
+                if depth == 0:
+                    return src[start:i + 1]
+        return None
+
+    targets = {
+        "ledger.py": SHIELD / "ledger.py",
+        "verifier/shield_verify.py": SHIELD / "verifier" / "shield_verify.py",
+        "webapp/verify.js": SHIELD / "webapp" / "verify.js",
+    }
+    for name, path in targets.items():
+        body = signed_fields_of(path.read_text())
+        if body is None:
+            return False, f"{name} has no SIGNED_FIELDS list to check"
+        if "exif_captured_at" in body:
+            return False, (f"{name} seals exif_captured_at again -- the "
+                           f"subject writes that value, see AR-11")
+
+    corroborate = SHIELD / "corroborate.py"
+    if corroborate.exists():
+        src = re.sub(r'"""[\s\S]*?"""', "", corroborate.read_text())
+        src = re.sub(r"#[^\n]*", "", src)
+        if "exif_captured_at" in src:
+            return False, ("corroborate.py reads exif_captured_at in code; "
+                           "solar geometry against a subject-declared time is "
+                           "exact arithmetic on an adversarial input (AR-11)")
+    return True, "no subject-supplied time is sealed, and solar is not wired to one"
+
+
+def inv_nested_floats_carry_their_type():
+    """A package must say which numbers were floats. AR-12, chain_version 2.
+
+    JSON has one number type. In v1 the float 100.0 and the int 100 hashed
+    differently but travelled as the same token, so a verifier in any language
+    but Python could not reproduce the hash -- and it hit the close-out entry
+    of every clean job, because score and coverage_pct come from round().
+
+    v2 puts the decision where the answer exists: seal() renders nested floats
+    through repr() before storing, so the row and the package both carry
+    "100.0". Two things must stay true, and both are easy to undo by accident:
+
+      * seal() normalises. If it stops, the fix is gone and nothing else
+        notices, because Python can still verify its own writes.
+      * canonical() does NOT normalise. If it starts, Python hashes raw and
+        normalised input alike while the browser can only hash what the
+        package gave it -- the implementations then agree on sealed rows and
+        diverge on everything else. That regression was written once during
+        this very change and caught by the differential test.
+    """
+    import importlib
+    import sys
+    sys.path.insert(0, str(SHIELD))
+    ledger = importlib.import_module("ledger")
+    importlib.reload(ledger)
+
+    if ledger.CHAIN_VERSION < 2:
+        return False, (f"CHAIN_VERSION is {ledger.CHAIN_VERSION}; v1 packages "
+                       f"cannot be verified outside Python (AR-12)")
+
+    sealed = ledger.seal({"event_type": "job_completed",
+                          "event_data": {"score": 100.0, "count": 3}},
+                         "0" * 64)
+    if sealed["event_data"].get("score") != "100.0":
+        return False, ("seal() no longer renders nested floats through repr(); "
+                       "a browser cannot tell the stored 100 from 100.0")
+    if sealed["event_data"].get("count") != 3:
+        return False, "seal() is mangling integers, which were never ambiguous"
+
+    raw = {"event_type": "x", "event_data": {"score": 100.0}}
+    norm = {"event_type": "x", "event_data": {"score": "100.0"}}
+    if ledger.canonical(raw) == ledger.canonical(norm):
+        return False, ("canonical() is normalising; normalisation is a "
+                       "write-time step, and doing it at hash time makes the "
+                       "Python and browser implementations diverge on any row "
+                       "that did not come from seal()")
+    return True, f"chain_version {ledger.CHAIN_VERSION}; nested floats carry their type"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1319,6 +1446,8 @@ INVARIANTS = (
     ("shield-schema-self-contained", "Couple Shield's own schema back to TradeDeck", inv_shield_schema_is_self_contained),
     ("legacy-auth-not-spreading", "Grow the TradeDeck-coupled auth path instead of retiring it", inv_legacy_auth_is_not_spreading),
     ("no-corroboration-overclaim", "Ship a field named for a corroboration the code does not perform", inv_no_corroboration_overclaim),
+    ("subject-time-not-signed", "Seal a timestamp the subject wrote, or aim solar geometry at one", inv_subject_time_is_not_signed),
+    ("nested-floats-carry-their-type", "Ship a package only Python can verify", inv_nested_floats_carry_their_type),
 )
 
 
