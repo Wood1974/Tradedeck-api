@@ -50,7 +50,11 @@ serialised output for identifiers rather than trusting this paragraph.
 from datetime import datetime, timezone
 
 # Fixed category lists. Every one appears in every report, at zero if need be.
-JOB_VERDICTS = ("pass", "flag", "fail", "fake", "unrecognised")
+# "incomplete" is a verdict, not an absence: the work may have been fine and
+# the evidence was not gathered. Bucketing it under "unrecognised" would hide
+# the commonest real failure of an evidence product behind a word that reads
+# like a data problem.
+JOB_VERDICTS = ("pass", "flag", "fail", "fake", "incomplete", "unrecognised")
 PHOTO_VERDICTS = ("pass", "flag", "fail", "fake", "unanalysed", "unrecognised")
 
 # Below this, no percentage is published. Thirty is not a magic number — it is
@@ -129,12 +133,38 @@ def _rates(counts, total):
     return {name: round(100.0 * n / total, 1) for name, n in counts.items()}
 
 
-def report(completion_reports, photos, custody_events, *, generated_at=None) -> dict:
+def _source_caveat(sources):
+    """A limit line naming any source that could not be read.
+
+    Appended to LIMITS rather than tucked into a `sources` field nobody reads,
+    because the whole point of the limits list is that it travels with the
+    numbers.
+    """
+    if not sources:
+        return []
+    missing = [name for name, state in sources.items() if state != "counted"]
+    if not missing:
+        return []
+    return [("These counts are INCOMPLETE. The following data sources could "
+             "not be read and contributed zero rows: " + ", ".join(sorted(missing))
+             + ". Treat every figure here as a lower bound, not a total.")]
+
+
+def report(completion_reports, photos, custody_events, *,
+           generated_at=None, sources=None) -> dict:
     """Build the public outcome report from raw rows.
 
     Pure: rows in, counts out, no database and no network. That keeps it
     testable without a provisioned environment — the same reason the invariants
     read source rather than exercising routes.
+
+    `sources` names where the rows came from and, more importantly, where they
+    could not be read from. Shield's outcomes live in two schemas during the
+    migration: the original `public.shield_*` tables and the tenant-scoped
+    `shield` schema. A source that is unreachable contributes zero rows, and a
+    zero that looks like "nothing happened" when it means "we did not look" is
+    the fourth way a self-published statistic flatters its author. So it is
+    named in the payload rather than absorbed into the totals.
     """
     jobs_total = len(completion_reports)
     photos_total = len(photos)
@@ -179,5 +209,6 @@ def report(completion_reports, photos, custody_events, *, generated_at=None) -> 
         "integrity_flags": flags,
         "attestation": {"hardware_attested": 0, "note": ATTESTATION_NOTE},
         "method": METHOD,
-        "limits": list(LIMITS),
+        "sources": sources or {},
+        "limits": list(LIMITS) + _source_caveat(sources),
     }

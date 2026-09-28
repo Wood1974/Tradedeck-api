@@ -34,6 +34,8 @@ update, so a contractor could upload a real photo and point the analyser at a
 stock image of perfect work. That is the mistake this file is shaped to make
 impossible: no route here accepts a value it could derive.
 """
+import hashlib
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -693,6 +695,49 @@ def complete(record_id):
             "verified": graded.get("verified"),
         },
     })
+
+    # The outcome has to land in completion_reports, not only in the chain.
+    # /public/results counts this table, so a close-out that seals itself into
+    # the custody log and writes no row here is an outcome the published
+    # failure rate structurally cannot include -- which is the one defect an
+    # honesty claim does not survive.
+    report = {
+        "record_id": record_id,
+        "external_ref": g.record.get("external_ref"),
+        "overall_verdict": graded.get("verdict"),
+        "score": graded.get("score"),
+        "coverage_pct": graded.get("coverage_pct"),
+        "checkpoints_total": graded.get("checkpoints_total"),
+        "checkpoints_verified": graded.get("checkpoints_verified"),
+        "missing": graded.get("missing"),
+        "failing": graded.get("failing"),
+        "summary": graded.get("summary"),
+        "custody_head_hash": head,
+        "closed_at": _now(),
+    }
+    # Hash the report the same way the chain hashes an entry: sorted keys,
+    # tight separators. A recipient can recompute it from the JSON they were
+    # given without guessing at our formatting.
+    canonical = json.dumps(report, sort_keys=True, separators=(",", ":"),
+                           default=str)
+    try:
+        _t("completion_reports").insert({
+            "tenant_id": _principal().tenant_id,
+            "record_id": record_id,
+            "overall_verdict": graded.get("verdict"),
+            "completion_score": float(graded.get("score") or 0.0),
+            "coverage_pct": float(graded.get("coverage_pct") or 0.0),
+            "report_json": report,
+            "report_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+            "custody_head_hash": head,
+        }).execute()
+    except Exception:
+        # The record is already marked complete and the chain already carries
+        # the outcome, so failing the request would report a failure for work
+        # that happened. Logged loudly instead: a missing row here shows up as
+        # a gap between the chain and the published report, which is exactly
+        # what someone should notice.
+        log.exception("Completion report insert failed for %s", record_id)
 
     return jsonify({
         "record_id": record_id,

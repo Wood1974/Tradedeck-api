@@ -523,3 +523,76 @@ class TestCloseOut:
                            json={}).get_json()
         assert len(body["head_hash"]) == 64
         assert "outside Shield" in body["keep_this"]
+
+
+class TestTheOutcomeReachesThePublishedReport:
+    """Closing a record must land in completion_reports, not only the chain.
+
+    /public/results counts that table. A close-out that seals its outcome into
+    the custody log and writes no row there is an outcome the published failure
+    rate structurally cannot include — and a rate that cannot include our
+    failures is worse than no rate at all. This is the same defect as omitting
+    a verdict category, arriving through the write path instead of the read.
+    """
+
+    def _closable(self, store, verdict="pass"):
+        store.rows["photos"] = [{
+            "id": "ph-1", "tenant_id": TENANT_A, "record_id": RECORD_A,
+            "checkpoint_id": "cp-1", "verdict": verdict,
+            "superseded_by": None, "superseded_at": None,
+        }]
+
+    def test_closing_writes_a_completion_report(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        self._closable(store)
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        body = client.post(f"/shield/v2/records/{RECORD_A}/complete",
+                           json={}).get_json()
+
+        written = [w for t, w in store.writes if t == "completion_reports"
+                   for w in (w if isinstance(w, list) else [w])]
+        assert written, "the outcome never reached completion_reports"
+        row = written[0]
+        assert row["tenant_id"] == TENANT_A
+        assert row["overall_verdict"] == body["grade"]["verdict"]
+        assert row["custody_head_hash"] == body["head_hash"]
+        assert len(row["report_sha256"]) == 64
+
+    def test_an_incomplete_record_is_still_reported(self, app_and_db):
+        """The outcome most worth publishing must not be the one that fails.
+
+        A record whose checkpoints were not all documented grades
+        'incomplete'. The schema's verdict constraint originally allowed only
+        pass/flag/fail/fake, so this insert would have failed on exactly the
+        jobs that went worst.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        store.rows["photos"] = []          # nothing documented at all
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        body = client.post(f"/shield/v2/records/{RECORD_A}/complete",
+                           json={}).get_json()
+        assert body["grade"]["verdict"] == "incomplete"
+
+        written = [w for t, w in store.writes if t == "completion_reports"
+                   for w in (w if isinstance(w, list) else [w])]
+        assert written and written[0]["overall_verdict"] == "incomplete"
+
+        import transparency
+        assert "incomplete" in transparency.JOB_VERDICTS, (
+            "an incomplete job would be bucketed as 'unrecognised', which "
+            "reads like a data problem rather than a failure to document")
+
+    def test_the_report_hash_is_reproducible_from_the_stored_json(self, app_and_db):
+        """A recipient must be able to recompute it without guessing."""
+        import hashlib
+        import json
+        flask_app, store, keys, tenant_api = app_and_db
+        self._closable(store)
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        client.post(f"/shield/v2/records/{RECORD_A}/complete", json={})
+
+        row = [w for t, w in store.writes if t == "completion_reports"
+               for w in (w if isinstance(w, list) else [w])][0]
+        canonical = json.dumps(row["report_json"], sort_keys=True,
+                               separators=(",", ":"), default=str)
+        assert hashlib.sha256(canonical.encode()).hexdigest() == row["report_sha256"]

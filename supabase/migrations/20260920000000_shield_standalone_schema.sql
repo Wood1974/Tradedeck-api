@@ -275,8 +275,14 @@ create table if not exists shield.completion_reports (
     id                uuid primary key default gen_random_uuid(),
     tenant_id         uuid not null references shield.tenants(id) on delete restrict,
     record_id         uuid not null references shield.records(id) on delete restrict,
+    -- 'incomplete' is here because verdict.grade() returns it and it is the
+    -- outcome most worth publishing: a record whose checkpoints were not all
+    -- documented. Leaving it out of the constraint would have made the insert
+    -- fail on precisely the jobs that went worst, which is how a published
+    -- failure rate quietly becomes a published success rate.
     overall_verdict   text not null
-                      check (overall_verdict in ('pass', 'flag', 'fail', 'fake')),
+                      check (overall_verdict in ('pass', 'flag', 'fail',
+                                                 'fake', 'incomplete')),
     completion_score  double precision not null,
     coverage_pct      double precision not null,
     report_json       jsonb not null,
