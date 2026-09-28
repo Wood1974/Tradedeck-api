@@ -16,6 +16,7 @@ real photo's row and the client-supplied hash went into the custody log as the
 evidence. So the tests here send those fields and assert they are ignored.
 """
 import base64
+import hashlib
 import io
 import json
 import os
@@ -507,7 +508,9 @@ class TestCaptureWithARealAttestation:
         challenge = got.get_json()["challenge"]
 
         blob, key_id, root_pem = attest_fixtures.build(
-            challenge=challenge, app_id=app_id, **kw)
+            challenge=challenge, app_id=app_id,
+            payload_sha256=kw.pop("payload_sha256",
+                                  hashlib.sha256(JPEG).digest()), **kw)
         monkeypatch.setenv("APPLE_APP_ATTEST_ROOT_PEM", root_pem)
         monkeypatch.setenv("APP_ATTEST_APP_ID", APP_ID)
         return {
@@ -555,6 +558,54 @@ class TestCaptureWithARealAttestation:
         blob = json.dumps(row)
         assert attestation.TIER_HARDWARE in blob
         assert "totally-made-up-tier" not in blob
+
+    def test_an_attestation_does_not_carry_over_to_another_file(
+            self, app_and_db, monkeypatch):
+        """A genuine device, an honest attestation, somebody else's photograph.
+
+        This is the attack a challenge alone does not stop, and the reason the
+        attestation is bound to `SHA256(challenge || SHA256(bytes))` rather
+        than to the challenge by itself. The attestation below is real and
+        live; only the file is swapped.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+
+        got = client.post(
+            f"/shield/v2/records/{RECORD_A}/photos",
+            data=dict({"checkpoint_id": "cp-1",
+                       "file": (io.BytesIO(JPEG + b"tampered"), "shot.jpg")},
+                      **fields),
+            content_type="multipart/form-data")
+        assert got.status_code == 422, (
+            "an attestation minted over one file was accepted for another")
+        assert not [w for t, w in store.writes if t == "photos"]
+
+    def test_a_payload_digest_from_the_caller_is_ignored(self, app_and_db,
+                                                          monkeypatch):
+        """The same rule as every other derived field, on the newest one.
+
+        Written because a mutation survived: letting the request supply
+        `payload_sha256` hands the attacker the other half of the binding —
+        attest over a real photograph, send its digest, upload anything. The
+        digest must come from the bytes that arrived and from nowhere else.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+        fields["payload_sha256"] = base64.b64encode(
+            hashlib.sha256(JPEG).digest()).decode()
+
+        got = client.post(
+            f"/shield/v2/records/{RECORD_A}/photos",
+            data=dict({"checkpoint_id": "cp-1",
+                       "file": (io.BytesIO(JPEG + b"not what was attested"),
+                                "shot.jpg")},
+                      **fields),
+            content_type="multipart/form-data")
+        assert got.status_code == 422, (
+            "the caller's own payload digest was used instead of the bytes")
 
     def test_a_challenge_is_spent_once(self, app_and_db, monkeypatch):
         """The replay: same device, same attestation, a second photograph."""

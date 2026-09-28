@@ -42,6 +42,8 @@ import attestation                                               # noqa: E402
 
 APP_ID = "ABCDE12345.com.tradedeck.shield"
 CHALLENGE = "challenge-issued-for-this-one-capture"
+PHOTO = b"\xff\xd8\xff\xe0 the bytes this attestation is supposed to be about"
+PHOTO_SHA = hashlib.sha256(PHOTO).digest()
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
 
 
@@ -95,7 +97,7 @@ def _auth_data(*, credential_id, app_id=APP_ID, counter=0,
     return out[:40] if truncate else out
 
 
-def build(*, challenge=CHALLENGE, app_id=APP_ID, counter=0,
+def build(*, challenge=CHALLENGE, payload_sha256=None, app_id=APP_ID, counter=0,
           aaguid=app_attest.AAGUID_PROD, fmt="apple-appattest",
           nonce_over=None, omit_nonce_ext=False, credential_id=None,
           leaf_expired=False, unlinked=False, drop_intermediate=False,
@@ -125,8 +127,9 @@ def build(*, challenge=CHALLENGE, app_id=APP_ID, counter=0,
     auth_data = _auth_data(credential_id=credential_id or key_id,
                            app_id=app_id, counter=counter, aaguid=aaguid,
                            truncate=truncate_auth_data)
-    client_data_hash = hashlib.sha256((nonce_over or challenge).encode()).digest()
-    nonce = hashlib.sha256(auth_data + client_data_hash).digest()
+    client_data = ((nonce_over or challenge).encode()
+                   + (payload_sha256 or PHOTO_SHA))
+    nonce = hashlib.sha256(auth_data + hashlib.sha256(client_data).digest()).digest()
 
     extra = () if omit_nonce_ext else ((_nonce_extension(nonce), False),)
     leaf_issuer_key = root_key if unlinked else inter_key
@@ -152,9 +155,11 @@ def run(**kw):
     challenge = kw.pop("verify_challenge", CHALLENGE)
     app_id = kw.pop("verify_app_id", APP_ID)
     key_id_override = kw.pop("verify_key_id", None)
+    payload = kw.pop("verify_payload_sha256", PHOTO_SHA)
     allow_dev = kw.pop("allow_development", False)
     blob, key_id, root_pem = build(**kw)
-    return app_attest.verify(blob, challenge=challenge, app_id=app_id,
+    return app_attest.verify(blob, challenge=challenge,
+                             payload_sha256=payload, app_id=app_id,
                              key_id=key_id_override or key_id,
                              root_pem=root_pem,
                              allow_development=allow_dev, now=NOW)
@@ -208,6 +213,38 @@ def test_verifying_against_another_challenge_is_refused():
     out = run(verify_challenge="a-freshly-issued-challenge")
     assert out["verified"] is False
     assert "not bound" in out["reason"]
+
+
+def test_an_attestation_does_not_transfer_to_other_bytes():
+    """The attack the challenge alone does not stop.
+
+    A genuine iPhone, a genuine app, an honest attestation against a live
+    challenge — and a stock photograph of somebody else's finished roof in the
+    same request. If `clientDataHash` covered only the challenge, every check
+    would pass and the forged file would be sealed into the chain wearing
+    hardware trust. That is AR-1 reappearing one layer up.
+    """
+    out = run(verify_payload_sha256=hashlib.sha256(b"a different file").digest())
+    assert out["verified"] is False
+    assert "not bound to this photograph" in out["reason"]
+
+
+def test_an_attestation_minted_over_other_bytes_is_refused():
+    """Same attack from the client's side."""
+    out = run(payload_sha256=hashlib.sha256(b"what the device really saw").digest())
+    assert out["verified"] is False
+    assert "not bound to this photograph" in out["reason"]
+
+
+def test_without_a_payload_digest_nothing_verifies():
+    """No call shape can forget it, so no deployment can be bound to nothing."""
+    blob, key_id, root = build()
+    for empty in (None, b""):
+        out = app_attest.verify(blob, challenge=CHALLENGE,
+                                payload_sha256=empty, app_id=APP_ID,
+                                key_id=key_id, root_pem=root, now=NOW)
+        assert out["verified"] is False
+        assert "payload digest" in out["reason"]
 
 
 def test_a_leaf_without_the_nonce_extension_is_refused():
@@ -273,7 +310,8 @@ def test_an_expired_certificate_is_refused():
 def test_an_attestation_carrying_no_chain_is_refused():
     blob = cbor2.dumps({"fmt": "apple-appattest", "attStmt": {"x5c": []},
                         "authData": b"\x00" * 60})
-    out = app_attest.verify(blob, challenge=CHALLENGE, app_id=APP_ID,
+    out = app_attest.verify(blob, challenge=CHALLENGE,
+                            payload_sha256=PHOTO_SHA, app_id=APP_ID,
                             key_id=b"", root_pem=_a_root(), now=NOW)
     assert out["verified"] is False
     assert "no certificate chain" in out["reason"]
@@ -353,7 +391,8 @@ def test_with_no_root_configured_nothing_verifies():
     """
     blob, key_id, _root = build()
     for empty in (None, "", b""):
-        out = app_attest.verify(blob, challenge=CHALLENGE, app_id=APP_ID,
+        out = app_attest.verify(blob, challenge=CHALLENGE,
+                                payload_sha256=PHOTO_SHA, app_id=APP_ID,
                                 key_id=key_id, root_pem=empty, now=NOW)
         assert out["verified"] is False
         assert "root certificate is configured" in out["reason"]
@@ -361,8 +400,9 @@ def test_with_no_root_configured_nothing_verifies():
 
 def test_with_no_challenge_nothing_verifies():
     blob, key_id, root = build()
-    out = app_attest.verify(blob, challenge=None, app_id=APP_ID,
-                            key_id=key_id, root_pem=root, now=NOW)
+    out = app_attest.verify(blob, challenge=None, payload_sha256=PHOTO_SHA,
+                            app_id=APP_ID, key_id=key_id, root_pem=root,
+                            now=NOW)
     assert out["verified"] is False
     assert "no challenge" in out["reason"]
 
@@ -404,7 +444,8 @@ def test_garbage_never_raises():
     cases += [bytes(rnd.randrange(256) for _ in range(rnd.randrange(1, 300)))
               for _ in range(300)]
     for blob in cases:
-        out = app_attest.verify(blob, challenge=CHALLENGE, app_id=APP_ID,
+        out = app_attest.verify(blob, challenge=CHALLENGE,
+                                payload_sha256=PHOTO_SHA, app_id=APP_ID,
                                 key_id=b"\x00" * 32, root_pem=root, now=NOW)
         assert out["verified"] is False
         assert isinstance(out["reason"], str) and out["reason"]
@@ -412,7 +453,8 @@ def test_garbage_never_raises():
 
 def test_every_refusal_has_the_same_shape():
     """No caller should have to guess which keys a refusal carries."""
-    for out in (app_attest.verify(b"", challenge=CHALLENGE, app_id=APP_ID,
+    for out in (app_attest.verify(b"", challenge=CHALLENGE,
+                                  payload_sha256=PHOTO_SHA, app_id=APP_ID,
                                   key_id=b"", root_pem=_a_root(), now=NOW),
                 run(counter=3), run(omit_nonce_ext=True)):
         assert out["verified"] is False

@@ -31,10 +31,12 @@ path.
 **Status 2026-09-28 — the server half is built, the client half is not.**
 `app_attest.py` verifies an Apple App Attest attestation: CBOR decode, X.509
 chain walked to a root supplied as configuration, the nonce extension checked
-against `SHA256(authData || SHA256(challenge))`, key id, app id, counter and
-attestation environment. `/shield/v2/records/<id>/capture-challenge` issues the
+against `SHA256(authData || SHA256(challenge || SHA256(photo bytes)))`, key
+id, app id, counter and attestation environment. The photo digest in that
+formula is what stops the attack a challenge alone does not: attest honestly on
+a real device, then upload somebody else's photograph. `/shield/v2/records/<id>/capture-challenge` issues the
 single-use nonce, and `tenant_api._attestation_for` spends it exactly once per
-attempt. Every check is break-tested: removing any one of the fifteen fails a
+attempt. Every check is break-tested: removing any one of the sixteen fails a
 test. So `verified=True` is now reachable, which it was not, and an attested
 iOS capture is recorded while everything else is refused.
 
@@ -77,7 +79,7 @@ one exists. "Add rate limiting" is not a finding.*
 ### AR-3 · No integration tests against live services
 **Reviewed 2026-09-14 · next review 2026-11-01**
 
-Storage, database and model calls are unexercised. All 458 tests and 54
+Storage, database and model calls are unexercised. All 463 tests and 55
 invariants are static or in-process. A behaviour that only appears against real
 Supabase, Stripe or Anthropic would not be caught here.
 

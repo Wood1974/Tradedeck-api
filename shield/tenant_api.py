@@ -404,7 +404,7 @@ def capture_challenge(record_id):
     }), 201
 
 
-def _attestation_for(req, principal):
+def _attestation_for(req, principal, payload_sha256):
     """Decide whether one capture may be recorded at all.
 
     Returns attestation.assess()'s verdict. The only tiers that count are the
@@ -420,6 +420,12 @@ def _attestation_for(req, principal):
     The challenge is spent exactly once, whatever the outcome. A failed
     attestation that left the nonce live would let an attacker grind attempts
     against one challenge until something stuck.
+
+    `payload_sha256` is the digest of the bytes that actually arrived,
+    computed here, and the attestation must be bound to it. Without that the
+    attestation says a genuine app was running when the nonce was issued and
+    nothing at all about the file in the same request — so an attacker with a
+    real iPhone attests honestly and uploads a stock photograph.
     """
     platform = (req.form.get("attestation_platform") or "").strip().lower()
     token = (req.form.get("attestation") or "").strip()
@@ -438,6 +444,7 @@ def _attestation_for(req, principal):
             checked = app_attest.verify(
                 blob,
                 challenge=nonce,
+                payload_sha256=payload_sha256,
                 app_id=config.get("APP_ATTEST_APP_ID") or "",
                 key_id=_b64(req.form.get("attestation_key_id")),
                 root_pem=config.get("APPLE_APP_ATTEST_ROOT_PEM"),
@@ -527,7 +534,8 @@ def upload_photo(record_id):
     # And the client does not exist yet. Until the iOS app ships, this gate is
     # verifiable but unreachable in practice, which is the honest state of the
     # product rather than an outage.
-    attested = _attestation_for(request, _principal())
+    attested = _attestation_for(request, _principal(),
+                                hashlib.sha256(raw).digest())
     if not attested["trusted"]:
         return _err(
             f"This capture was not accepted: {attested['reason']} "

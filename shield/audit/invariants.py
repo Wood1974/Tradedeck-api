@@ -1564,6 +1564,60 @@ def inv_attestation_anchor_is_configuration():
     return True, "the Apple root is configuration, and absent means refuse"
 
 
+
+def inv_attestation_covers_the_bytes():
+    """An attestation must be bound to the photograph, not only to a moment.
+
+    `clientDataHash` is 32 bytes the app chooses, and the tempting
+    implementation hashes the server's challenge alone. That produces an
+    attestation which is entirely genuine and means: "a real app on real Apple
+    silicon was running when you issued this nonce." It says nothing about the
+    file in the same request.
+
+    So the attack is not a forged attestation at all. An attacker buys an
+    iPhone, runs the real Shield app, requests a challenge, attests honestly —
+    and uploads a stock photograph of somebody else's finished roof. Every
+    check passes, the file is hashed, chained and exported inside a package
+    marked evidence, and it carries `hardware_attested`. That is AR-1 back
+    again one layer up, wearing the badge that was supposed to close it.
+
+    Two things must stay true: `app_attest.verify` folds a payload digest into
+    the client data and refuses without one, and `tenant_api` derives that
+    digest from the bytes that arrived rather than accepting one.
+    """
+    attest = SHIELD / "app_attest.py"
+    api = SHIELD / "tenant_api.py"
+    if not attest.exists() or not api.exists():
+        return True, "the capture path is not present"
+
+    code = re.sub(r'"""[\s\S]*?"""', "", attest.read_text())
+    code = re.sub(r"#[^\n]*", "", code)
+
+    signature = re.search(r"def verify\(([^)]*)\)", code)
+    if not signature or "payload_sha256" not in signature.group(1):
+        return False, ("app_attest.verify no longer takes a payload digest, "
+                       "so an attestation covers a moment and not a file")
+    if not re.search(r"if not payload_sha256", code):
+        return False, ("app_attest.verify no longer refuses without a payload "
+                       "digest, so a caller can bind the attestation to nothing")
+    if not re.search(r"client_data\s*=[^\n]*\n?[^\n]*payload_sha256", code):
+        return False, ("the payload digest is no longer folded into the "
+                       "client data that the nonce commits to")
+
+    api_code = re.sub(r'"""[\s\S]*?"""', "", api.read_text())
+    api_code = re.sub(r"#[^\n]*", "", api_code)
+    # `[^)]*` would stop at the first ")", which is `_principal()`'s -- the
+    # same prose-versus-thing mistake in punctuation form. Bound the span
+    # instead of excluding a character that legitimately appears in it.
+    if not re.search(r"_attestation_for\(\s*request[\s\S]{0,160}?"
+                     r"hashlib\.sha256\(raw\)", api_code):
+        return False, ("tenant_api no longer derives the attested digest from "
+                       "the uploaded bytes")
+    if re.search(r'(form|json|args)\.get\(\s*["\']payload_sha256', api_code):
+        return False, ("tenant_api accepts a payload digest from the caller, "
+                       "which hands the attacker the other half of the binding")
+    return True, "an attestation is bound to the exact bytes it arrived with"
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1619,6 +1673,7 @@ INVARIANTS = (
     ("tenant-api-derives-evidence", "Let a paying tenant hand the service its own hash or verdict", inv_tenant_api_derives_its_evidence),
     ("no-unattested-capture", "Record a photograph that cannot prove it came from a camera", inv_no_unattested_capture_is_recorded),
     ("attestation-anchor-is-configuration", "Verify a forged attestation against a root an attacker chose", inv_attestation_anchor_is_configuration),
+    ("attestation-covers-the-bytes", "Attest honestly on a real device and upload somebody else's photograph", inv_attestation_covers_the_bytes),
 )
 
 

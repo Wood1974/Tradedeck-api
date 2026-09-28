@@ -31,10 +31,10 @@ Apple's, in order, and every step fails closed:
   1. Decode the CBOR attestation object; require fmt "apple-appattest".
   2. Build the certificate chain from `attStmt.x5c` and validate it to the
      configured root, checking validity dates.
-  3. nonce = SHA256( authData || SHA256(challenge) ).
+  3. nonce = SHA256( authData || SHA256(challenge || SHA256(photo bytes)) ).
   4. The leaf must carry extension 1.2.840.113635.100.8.2 containing exactly
      that nonce. This is the binding: it is what makes the attestation about
-     THIS capture rather than some earlier moment.
+     THIS photograph rather than some earlier moment or some other file.
   5. keyId must equal SHA256 of the leaf's public key in uncompressed point
      form, and must equal the credentialId inside authData.
   6. rpIdHash must equal SHA256(appId), so an attestation minted for another
@@ -42,9 +42,21 @@ Apple's, in order, and every step fails closed:
   7. The signature counter must be 0, which is what Apple specifies for an
      attestation (as opposed to an assertion).
 
-Step 4 is the one worth staring at. Without it an attacker replays a genuine
-attestation from a genuine device onto a file that device never saw, and every
-other check still passes.
+Step 4 is the one worth staring at, and it has two halves that are easy to
+confuse.
+
+The challenge half stops a replay across time: without it, one attestation
+from one genuine device covers every upload forever.
+
+The photo-digest half stops a replay across *files*, and leaving it out is the
+subtler mistake. `clientDataHash` is 32 bytes the app chooses, so an
+implementation that hashes only the challenge produces an attestation meaning
+"a genuine app on genuine hardware was running when you issued this nonce" —
+which is true, and says nothing whatever about the bytes that arrive in the
+same request. An attacker holding a real iPhone attests honestly and uploads a
+stock photograph of somebody else's finished roof. Every other check passes.
+That is AR-1 reappearing one layer up, so `payload_sha256` is required rather
+than optional: there is no call shape that can forget it.
 """
 import hashlib
 import logging
@@ -129,13 +141,20 @@ def _chain_is_valid(leaf, intermediates, root, now):
     return True, None
 
 
-def verify(attestation_bytes, *, challenge, app_id, key_id, root_pem,
-           allow_development=False, now=None):
+def verify(attestation_bytes, *, challenge, payload_sha256, app_id, key_id,
+           root_pem, allow_development=False, now=None):
     """Check one attestation. Returns a dict `interpret_app_attest` can read.
 
-    `challenge` is the single-use value this server issued. `key_id` is the
-    key identifier the client claims, base64-decoded to bytes by the caller.
-    `app_id` is "TEAMID.bundle.identifier".
+    `challenge` is the single-use value this server issued. `payload_sha256`
+    is the digest of the bytes this attestation is supposed to be about —
+    computed by the server from what actually arrived, never accepted from the
+    caller. `key_id` is the key identifier the client claims, base64-decoded
+    to bytes by the caller. `app_id` is "TEAMID.bundle.identifier".
+
+    The client computes the same thing: clientDataHash =
+    SHA256(challenge_utf8 || SHA256(photo bytes)), passed to
+    DCAppAttestService.attestKey. Hash a different file and the nonce does not
+    match, which is the entire point.
 
     Never raises. A malformed blob from an untrusted client is an expected
     input on this path, not an exception, and a traceback escaping here would
@@ -149,6 +168,9 @@ def verify(attestation_bytes, *, challenge, app_id, key_id, root_pem,
     if not challenge:
         return _no("no challenge was supplied, so nothing binds this "
                    "attestation to a capture")
+    if not payload_sha256:
+        return _no("no payload digest was supplied, so nothing binds this "
+                   "attestation to the bytes that arrived")
 
     now = now or datetime.now(timezone.utc)
 
@@ -185,8 +207,9 @@ def verify(attestation_bytes, *, challenge, app_id, key_id, root_pem,
     leaf = certs[0]
 
     # ---- the binding ------------------------------------------------------
-    client_data_hash = hashlib.sha256(
-        challenge.encode() if isinstance(challenge, str) else challenge).digest()
+    client_data = (challenge.encode() if isinstance(challenge, str)
+                   else challenge) + payload_sha256
+    client_data_hash = hashlib.sha256(client_data).digest()
     expected_nonce = hashlib.sha256(auth_data + client_data_hash).digest()
 
     try:
@@ -202,8 +225,8 @@ def verify(attestation_bytes, *, challenge, app_id, key_id, root_pem,
     # a 32-byte SHA-256 they do not control appear in a certificate Apple
     # signed, which is the property being relied on.
     if expected_nonce not in ext_bytes:
-        return _no("the attestation is not bound to this challenge — it "
-                   "attests some other moment, or another server's capture")
+        return _no("the attestation is not bound to this photograph — it "
+                   "attests some other moment, or some other file")
 
     # ---- the key ----------------------------------------------------------
     public_key = leaf.public_key()
@@ -245,5 +268,6 @@ def verify(attestation_bytes, *, challenge, app_id, key_id, root_pem,
         "token_nonce": challenge,
         "key_id": computed_key_id,
         "reason": "chain validates to the configured Apple root, and the "
-                  "attestation is bound to this capture's challenge",
+                  "attestation is bound to this challenge and to these "
+                  "exact bytes",
     }

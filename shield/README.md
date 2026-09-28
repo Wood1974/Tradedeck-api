@@ -74,8 +74,8 @@ shield/
 ├── pricing.py       server-side price tiers
 ├── auth.py          Supabase JWT + shield-job authorization
 ├── config.py        env validation, fails fast
-├── audit/           daily red-team: 54 invariants, protocol, accepted-risk ledger
-└── tests/           458 tests
+├── audit/           daily red-team: 55 invariants, protocol, accepted-risk ledger
+└── tests/           463 tests
 ```
 
 **`codes.py` is the domain asset** — 45 checkpoints with real citations
@@ -174,7 +174,7 @@ Defects found by adversarial review and closed here:
 ```bash
 cp shield/.env.example shield/.env      # six values are mandatory
 pip install -r shield/requirements.txt
-python -m pytest shield/tests -q        # 458 tests
+python -m pytest shield/tests -q        # 463 tests
 gunicorn --chdir shield --bind 0.0.0.0:$PORT app:app
 ```
 
@@ -254,15 +254,20 @@ supply. `whoami`, `records`, `checkpoints`, `photos`, `custody`, `package`,
 
 | Route | Purpose |
 |---|---|
-| `POST /shield/v2/records/<id>/capture-challenge` | A single-use nonce for one capture by one actor. SHA-256 it and use the digest as the `clientDataHash` for `DCAppAttestService.attestKey`. |
+| `POST /shield/v2/records/<id>/capture-challenge` | A single-use nonce for one capture by one actor. The client photographs first, then calls `DCAppAttestService.attestKey` with `clientDataHash = SHA256(challenge_utf8 ‖ SHA256(photo bytes))`. |
 
 **Photographs are only recorded if the device attested to the capture.** The
 upload takes `attestation`, `attestation_key_id` (both base64),
 `attestation_challenge` and `attestation_platform=ios`; `app_attest.verify`
 walks the chain to the configured Apple root itself and refuses anything else.
-Without the nonce an attestation proves the device was genuine at *some*
-moment, so the same one would cover every upload forever — it is spent once per
-attempt, pass or fail.
+Both halves of that hash are load-bearing. Without the nonce an attestation
+proves the device was genuine at *some* moment, so one would cover every upload
+forever — it is spent once per attempt, pass or fail. Without the photo digest
+the attestation says a real app on real silicon was running when the nonce was
+issued, and nothing about the file in the same request: an attacker buys an
+iPhone, runs the real app, attests honestly, and uploads a stock photograph of
+somebody else's finished roof. The server derives that digest from the bytes
+that arrived and never accepts one.
 
 A file chosen from storage cannot be attested, so there is no browser capture
 path and the console does not offer one. Android is closed: Play Integrity
