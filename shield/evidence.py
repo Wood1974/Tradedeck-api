@@ -59,8 +59,8 @@ def _note_records(rows):
         out.append({
             **thread,
             "photo_id":     n.get("photo_id"),
-            "point_id":     n.get("point_id"),
-            "author_role":  n.get("author_role"),
+            "point_id":     n.get("checkpoint_id") or n.get("point_id"),
+            "author_role":  n.get("author_role") or n.get("author_ref"),
             "medium":       n.get("medium"),
             "observed_utc": n.get("observed_at"),
             "written_utc":  n.get("written_at"),
@@ -84,8 +84,8 @@ def build_manifest(*, job, points, photos, custody, report=None, notes=None):
     for n in note_records:
         if n.get("photo_id"):
             by_photo.setdefault(n["photo_id"], []).append(n)
-        elif n.get("point_id"):
-            by_point.setdefault(n["point_id"], []).append(n)
+        elif n.get("checkpoint_id") or n.get("point_id"):
+            by_point.setdefault(n.get("checkpoint_id") or n["point_id"], []).append(n)
 
     items = []
     for pt in sorted(points, key=lambda p: p.get("point_number") or 0):
@@ -98,20 +98,28 @@ def build_manifest(*, job, points, photos, custody, report=None, notes=None):
             "checkpoint_number": pt.get("point_number"),
             "checkpoint":        pt.get("label"),
             "requirement":       pt.get("description"),
-            "code_section":      pt.get("irc_code") or pt.get("ibc_code"),
+            "code_section":      (pt.get("code_reference")
+                                  or pt.get("irc_code") or pt.get("ibc_code")),
             "must_show":         pt.get("must_show"),
             "photo_id":          live.get("id") if live else None,
             "sha256_original":   live.get("original_hash") if live else None,
-            "hash_algorithm":    live.get("original_hash_algo", "SHA-256") if live else None,
+            "hash_algorithm":    (live.get("original_hash_algo", "SHA-256")
+                                  if live else None),
             "size_bytes":        live.get("original_size_bytes") if live else None,
-            "received_utc":      live.get("server_received_at") if live else None,
+            "received_utc":      ((live.get("received_at")
+                                   or live.get("server_received_at"))
+                                  if live else None),
             "exif_captured_utc": live.get("exif_captured_at") if live else None,
             "has_camera_metadata": live.get("has_exif") if live else None,
             "metres_from_site":  live.get("site_distance_m") if live else None,
-            "verdict":           live.get("ai_verdict") if live else None,
-            "confidence":        live.get("ai_confidence") if live else None,
+            "verdict":           ((live.get("verdict") or live.get("ai_verdict"))
+                                  if live else None),
+            "confidence":        ((live.get("verdict_confidence")
+                                   or live.get("ai_confidence"))
+                                  if live else None),
             "model":             live.get("ai_model") if live else None,
-            "assessment":        live.get("ai_notes") if live else None,
+            "assessment":        ((live.get("verdict_notes") or live.get("ai_notes"))
+                                  if live else None),
             # Retakes are disclosed, never hidden. A checkpoint photographed
             # four times before it passed is a fact about the job, and a
             # package that conceals it invites exactly the impeachment it was
@@ -120,7 +128,8 @@ def build_manifest(*, job, points, photos, custody, report=None, notes=None):
                              + by_point.get(pt["id"], []),
             "superseded_attempts": [
                 {"photo_id": r.get("id"), "sha256_original": r.get("original_hash"),
-                 "verdict": r.get("ai_verdict"), "superseded_utc": r.get("superseded_at")}
+                 "verdict": r.get("verdict") or r.get("ai_verdict"),
+                 "superseded_utc": r.get("superseded_at")}
                 for r in retakes],
         })
 

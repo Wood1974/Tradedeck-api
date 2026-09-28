@@ -6,8 +6,15 @@ contractor does not control, adjudicates the work against the cited code
 section, and keeps a hash-chained custody record that can be verified by
 someone who does not trust us.
 
-Self-contained: imports nothing from the parent app.
-`git subtree split --prefix=shield` lifts it into its own repo with history.
+Self-contained: imports nothing from the parent TradeDeck app. Auth is
+tenant-scoped (`shield.tenants` + API keys / members). Data lives in the
+`shield` schema. `git subtree split --prefix=shield` lifts it into its own
+repo with history.
+
+**TradeDeck marketplace continues to run the embedded `shield_api.py`
+blueprint on `tradedeck-api.onrender.com`.** That path is untouched. This
+package is the sellable, multi-tenant product; the marketplace keeps its
+existing `/shield/*` behaviour for its own users.
 
 ---
 

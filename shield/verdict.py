@@ -56,6 +56,11 @@ def is_live(photo) -> bool:
     return not (photo.get("superseded_by") or photo.get("superseded_at"))
 
 
+def _checkpoint_key(photo):
+    """Accept either the standalone column or the legacy TradeDeck name."""
+    return photo.get("checkpoint_id") or photo.get("point_id")
+
+
 def live_photo_for(point_id, photos):
     """The one photo that stands as evidence for a checkpoint, or None.
 
@@ -70,7 +75,7 @@ def live_photo_for(point_id, photos):
     answer does not depend on how the rows arrived.
     """
     live = [ph for ph in photos
-            if ph.get("point_id") == point_id and is_live(ph)]
+            if _checkpoint_key(ph) == point_id and is_live(ph)]
     if not live:
         return None
     live.sort(key=lambda ph: (ph.get("uploaded_at") or "", ph.get("id") or ""))
@@ -80,7 +85,7 @@ def live_photo_for(point_id, photos):
 def superseded_for(point_id, photos):
     """Earlier attempts at a checkpoint, oldest first. Disclosed, never hidden."""
     out = [ph for ph in photos
-           if ph.get("point_id") == point_id and not is_live(ph)]
+           if _checkpoint_key(ph) == point_id and not is_live(ph)]
     out.sort(key=lambda ph: (ph.get("uploaded_at") or "", ph.get("id") or ""))
     return out
 
@@ -90,7 +95,7 @@ def _verdict_of(point):
     photo = point.get("photo") or {}
     if not is_live(photo):
         return None
-    return photo.get("ai_verdict")
+    return photo.get("verdict") or photo.get("ai_verdict")
 
 
 def grade(points) -> dict:

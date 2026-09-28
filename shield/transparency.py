@@ -138,7 +138,7 @@ def report(completion_reports, photos, custody_events, *, generated_at=None) -> 
 
     job_counts = _tally((r.get("overall_verdict") for r in completion_reports),
                         JOB_VERDICTS)
-    photo_counts = _tally((p.get("ai_verdict") for p in photos),
+    photo_counts = _tally((p.get("verdict") or p.get("ai_verdict") for p in photos),
                           PHOTO_VERDICTS, none_bucket="unanalysed")
 
     superseded = sum(1 for p in photos if _is_superseded(p))

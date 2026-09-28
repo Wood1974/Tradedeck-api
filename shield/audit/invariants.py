@@ -93,7 +93,9 @@ def inv_analyze_trusts_nothing():
 
 def inv_analyze_write_is_conditional():
     import routes
-    if 'is_("ai_verdict", "null")' not in _source(routes.analyze_photo):
+    src = _source(routes.analyze_photo)
+    # Standalone schema uses `verdict`; the TradeDeck-era column was `ai_verdict`.
+    if 'is_("verdict", "null")' not in src and 'is_("ai_verdict", "null")' not in src:
         return False, "verdict write is no longer conditional — concurrent calls " \
                       "can each bill a vision request and the last writer wins"
     return True, "verdict write is conditional on no existing verdict"
@@ -102,7 +104,10 @@ def inv_analyze_write_is_conditional():
 def inv_upload_scopes_the_checkpoint():
     import routes
     src = _source(routes.upload_photo)
-    if '.eq("shield_job_id", shield_job_id)' not in src:
+    # Standalone: record_id. TradeDeck-era: shield_job_id. Either scopes the
+    # checkpoint to this job; the absence of both is the regression.
+    if ('.eq("record_id", shield_job_id)' not in src
+            and '.eq("shield_job_id", shield_job_id)' not in src):
         return False, "point_id is not scoped to the job — a photo can be filed " \
                       "against a checkpoint belonging to someone else's job"
     return True, "point_id must belong to this shield job"
@@ -114,7 +119,11 @@ def inv_upload_hashes_before_touching():
     try:
         i_read = src.index("raw = upload.read()")
         i_hash = src.index("integrity.sha256(raw)")
-        i_store = src.index("db().storage")
+        # Standalone writes through store.storage(); the parent used db().storage.
+        if "store.storage()" in src:
+            i_store = src.index("store.storage()")
+        else:
+            i_store = src.index("db().storage")
         i_comp = src.index("compress_for_model")
     except ValueError as exc:
         return False, f"upload pipeline no longer recognisable: {exc}"
@@ -159,14 +168,21 @@ def inv_badge_counts_distinct_jobs():
 def inv_checkpoints_lock_and_are_buyer_owned():
     import routes
     src = _source(routes.generate_checkpoints)
-    if 'role="homeowner"' not in src:
+    # Buyer-owned: either the legacy decorator role="homeowner", or an explicit
+    # buyer_ref gate in the standalone service. Lock + schedule hash stay.
+    buyer_owned = (
+        'role="homeowner"' in src
+        or "buyer_ref" in src
+        or 'actor_type="buyer"' in src
+    )
+    if not buyer_owned:
         return False, "the audited party can define the audit criteria"
     if "checkpoints_locked_at" not in src:
         return False, "the checkpoint schedule can be rewritten after the work " \
                       "has been photographed and graded"
     if "schedule_sha256" not in src:
         return False, "the locked schedule is no longer sealed into the chain"
-    return True, "homeowner-only, locks once, schedule hash in the chain"
+    return True, "buyer-only, locks once, schedule hash in the chain"
 
 
 def inv_custody_is_chained():
@@ -197,14 +213,19 @@ def inv_custody_chain_detects_tampering():
 
 def inv_actor_is_derived_not_asserted():
     import routes
-    if routes.actor_role({"homeowner_id": "h", "contractor_id": "c"}, "c") != "contractor":
-        return False, "actor role misattributes the contractor"
-    if routes.actor_role({"homeowner_id": "h", "contractor_id": "c"}, "h") != "homeowner":
-        return False, "actor role misattributes the homeowner"
-    if "actor_role(g.shield_job" not in _source(routes.complete_job):
-        return False, "close-out hardcodes the actor — a contractor closing his " \
+    if routes.actor_role({"buyer_ref": "h", "subject_ref": "c"}, "c") != "subject":
+        return False, "actor role misattributes the subject"
+    if routes.actor_role({"buyer_ref": "h", "subject_ref": "c"}, "h") != "buyer":
+        return False, "actor role misattributes the buyer"
+    # Also accept the TradeDeck names so a half-ported caller cannot silently
+    # mint the wrong seal — they must map first.
+    if routes.actor_role({"homeowner_id": "h", "contractor_id": "c"}, "c") != "system":
+        return False, "legacy TradeDeck party keys must not resolve as roles"
+    src = _source(routes.complete_job)
+    if "actor_role(g.record" not in src and "actor_role(g.shield_job" not in src:
+        return False, "close-out hardcodes the actor — a subject closing their " \
                       "own job would be recorded as the buyer signing off"
-    return True, "actor derived from the job's parties"
+    return True, "actor derived from the record's parties"
 
 
 def inv_payment_is_verified():
@@ -884,7 +905,8 @@ def inv_price_list_and_results_are_public():
             return False, (f"routes.{route} is gone — the published "
                            f"{'price list' if 'pricing' in route else 'outcome report'} "
                            f"is no longer served")
-        if "require_auth" in decorators or "require_shield_job" in decorators:
+        if "require_tenant" in decorators or "require_auth" in decorators \
+                or "require_shield_job" in decorators or "require_record" in decorators:
             return False, (f"routes.{route} now requires authentication; a "
                            f"disclosure only customers can read is not a "
                            f"disclosure")

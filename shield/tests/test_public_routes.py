@@ -44,6 +44,9 @@ class FakeDB:
         self._tables, self._fail = tables, fail
         self.selected = {}
 
+    def schema(self, _name):
+        return self
+
     def table(self, name):
         if self._fail:
             raise RuntimeError("database unavailable")
@@ -93,24 +96,24 @@ class TestPricingIsReachableWithoutAToken:
 
 class TestResultsAreReachableWithoutAToken:
     TABLES = {
-        "shield_completion_reports": [{"overall_verdict": "pass"},
-                                      {"overall_verdict": "fail"}],
-        "shield_photos": [{"ai_verdict": "pass", "has_exif": True,
-                           "superseded_by": None, "superseded_at": None},
-                          {"ai_verdict": "fail", "has_exif": False,
-                           "superseded_by": "x", "superseded_at": "2026-09-01"}],
-        "shield_custody_log": [{"event_type": "integrity_flag"},
-                               {"event_type": "uploaded"}],
+        "completion_reports": [{"overall_verdict": "pass"},
+                               {"overall_verdict": "fail"}],
+        "photos": [{"verdict": "pass", "has_exif": True,
+                    "superseded_by": None, "superseded_at": None},
+                   {"verdict": "fail", "has_exif": False,
+                    "superseded_by": "x", "superseded_at": "2026-09-01"}],
+        "custody_log": [{"event_type": "integrity_flag"},
+                        {"event_type": "uploaded"}],
     }
 
     def test_no_token_required(self, client, monkeypatch):
         c, routes = client
-        monkeypatch.setattr(routes, "db", lambda: FakeDB(self.TABLES))
+        monkeypatch.setattr(routes.store, "db", lambda: FakeDB(self.TABLES))
         assert c.get("/shield/public/results").status_code == 200
 
     def test_reports_the_failures_not_only_the_passes(self, client, monkeypatch):
         c, routes = client
-        monkeypatch.setattr(routes, "db", lambda: FakeDB(self.TABLES))
+        monkeypatch.setattr(routes.store, "db", lambda: FakeDB(self.TABLES))
         body = c.get("/shield/public/results").get_json()
         assert body["job_verdicts"]["fail"] == 1
         assert body["photo_verdicts"]["fail"] == 1
@@ -119,7 +122,7 @@ class TestResultsAreReachableWithoutAToken:
     def test_withholds_rates_on_a_tiny_sample(self, client, monkeypatch):
         """Two jobs must not be served to the world as a 50% pass rate."""
         c, routes = client
-        monkeypatch.setattr(routes, "db", lambda: FakeDB(self.TABLES))
+        monkeypatch.setattr(routes.store, "db", lambda: FakeDB(self.TABLES))
         body = c.get("/shield/public/results").get_json()
         assert body["sufficient_sample"] is False
         assert body["job_verdict_rates_pct"] is None
@@ -132,16 +135,16 @@ class TestResultsAreReachableWithoutAToken:
         is the kind of quiet falsehood this whole module exists to prevent.
         """
         c, routes = client
-        monkeypatch.setattr(routes, "db", lambda: FakeDB({}, fail=True))
+        monkeypatch.setattr(routes.store, "db", lambda: FakeDB({}, fail=True))
         resp = c.get("/shield/public/results")
         assert resp.status_code == 503
         assert "job_verdicts" not in resp.get_json()
 
     def test_stale_numbers_beat_no_numbers_once_a_report_exists(self, client, monkeypatch):
         c, routes = client
-        monkeypatch.setattr(routes, "db", lambda: FakeDB(self.TABLES))
+        monkeypatch.setattr(routes.store, "db", lambda: FakeDB(self.TABLES))
         first = c.get("/shield/public/results").get_json()
-        monkeypatch.setattr(routes, "db", lambda: FakeDB({}, fail=True))
+        monkeypatch.setattr(routes.store, "db", lambda: FakeDB({}, fail=True))
         routes._results_cache["at"] = 0.0          # force the query path
         again = c.get("/shield/public/results")
         assert again.status_code == 200
@@ -149,7 +152,7 @@ class TestResultsAreReachableWithoutAToken:
 
     def test_no_identifiers_reach_an_anonymous_caller(self, client, monkeypatch):
         c, routes = client
-        monkeypatch.setattr(routes, "db", lambda: FakeDB(self.TABLES))
+        monkeypatch.setattr(routes.store, "db", lambda: FakeDB(self.TABLES))
         blob = c.get("/shield/public/results").get_data(as_text=True)
         for key in ("shield_job_id", "contractor_id", "homeowner_id",
                     "site_address", "gps_lat", "report_json"):

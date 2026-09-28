@@ -324,12 +324,18 @@ def next_step(*, job, points, photos, notes, now=None) -> dict:
                    "Holding an exported chain head is what proves the record "
                    "was not rewritten later.",
         "severity": top["severity"] if top else "none",
-        "for": practice["who"] if practice else "homeowner",
+        "for": practice["who"] if practice else "buyer",
     }
 
 
 def practices_for(role=None) -> list:
     """The full guide, optionally filtered to one party's responsibilities."""
-    if role in ("homeowner", "contractor"):
-        return [p for p in PRACTICES if p["who"] == role]
+    # Standalone Shield uses buyer/subject; TradeDeck used homeowner/contractor.
+    aliases = {
+        "buyer": "homeowner", "homeowner": "homeowner",
+        "subject": "contractor", "contractor": "contractor",
+    }
+    if role in aliases:
+        want = aliases[role]
+        return [p for p in PRACTICES if p["who"] == want]
     return list(PRACTICES)
