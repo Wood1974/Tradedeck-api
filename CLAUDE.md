@@ -7,11 +7,15 @@ trust system and (planned) milestone-based escrow. The frontend lives in
 the sibling `tradedeck` repo (`Wood1974/Tradeneck`) — see that repo's
 CLAUDE.md for product context.
 
-This file reflects the **actual repo contents as of Aug 2026**, verified
+This file reflects the **actual repo contents as of Sep 2026**, verified
 by reading `app.py` directly — not carried over from planning notes, which
 had drifted significantly from what's actually here.
 
-## What this service actually does (verified from app.py, 631 lines)
+**Sep 2026 update**: Draw/escrow functionality removed to align Shield as a 
+standalone evidence verification system. Shield operates independently from 
+job payment workflows.
+
+## What this service actually does
 
 - **Its own auth system**, entirely separate from the frontend's Supabase
   Auth: `/api/auth/register`, `/api/auth/login`, `/api/auth/me`. Passwords
@@ -64,13 +68,13 @@ had drifted significantly from what's actually here.
   service's SQLite schema** (defined inline in `app.py`'s `init_db()`).
   Reconciling the two schemas is unresolved.
 
-## What's described elsewhere but NOT in this repo (verified absent)
+## Draw/Escrow Removal (Sep 2026)
 
-- No Stripe Connect integration, no escrow logic, no draw/milestone
-  endpoints, no photo upload or AI photo-quality-check code — despite
-  earlier notes describing all of this as "built Aug 2026." Confirm with
-  the project owner whether this exists uncommitted somewhere before
-  re-building it from scratch.
+Draw/milestone/escrow functionality was **intentionally removed** to align 
+with Shield's architecture as a standalone evidence verification system. 
+Draw/escrow concepts belong to job-workflow payment splits, which are 
+independent of Shield's evidence collection and integrity verification. 
+Stripe payment processing is retained for Shield Pro subscription billing.
 
 ## Environment variables (see `render.yaml` / set in Render dashboard — never commit real values)
 

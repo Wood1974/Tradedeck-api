@@ -1,0 +1,150 @@
+name: Apply Shield Migrations to Supabase
+
+on:
+  workflow_dispatch:
+    inputs:
+      supabase_service_key:
+        description: 'Supabase service role key for jlaajejpqjldpbinktln'
+        required: false
+        type: string
+
+jobs:
+  apply-migrations:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Supabase client
+        run: pip install supabase
+      
+      - name: Apply Migration 1 - Base Schema & RLS
+        run: python3 << 'PYTHON'
+import subprocess
+from supabase import create_client
+
+SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
+SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
+
+client = create_client(SUPABASE_URL, SERVICE_KEY)
+
+with open('supabase/migrations/20260914000000_shield_schema_and_rls.sql', 'r') as f:
+    sql = f.read()
+
+try:
+    result = client.rpc('execute_sql', {'sql': sql}).execute()
+    print("✓ Migration 1 applied successfully")
+except Exception as e:
+    print(f"✗ Migration 1 failed: {e}")
+    exit(1)
+PYTHON
+      
+      - name: Apply Migration 2 - Hardening
+        run: python3 << 'PYTHON'
+import subprocess
+from supabase import create_client
+
+SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
+SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
+
+client = create_client(SUPABASE_URL, SERVICE_KEY)
+
+with open('supabase/migrations/20260914010000_shield_hardening.sql', 'r') as f:
+    sql = f.read()
+
+try:
+    result = client.rpc('execute_sql', {'sql': sql}).execute()
+    print("✓ Migration 2 applied successfully")
+except Exception as e:
+    print(f"✗ Migration 2 failed: {e}")
+    exit(1)
+PYTHON
+      
+      - name: Apply Migration 3 - Field Notes
+        run: python3 << 'PYTHON'
+from supabase import create_client
+
+SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
+SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
+
+client = create_client(SUPABASE_URL, SERVICE_KEY)
+
+with open('supabase/migrations/20260914020000_shield_field_notes.sql', 'r') as f:
+    sql = f.read()
+
+try:
+    result = client.rpc('execute_sql', {'sql': sql}).execute()
+    print("✓ Migration 3 applied successfully")
+except Exception as e:
+    print(f"✗ Migration 3 failed: {e}")
+    exit(1)
+PYTHON
+      
+      - name: Apply Migration 4 - Retake Index
+        run: python3 << 'PYTHON'
+from supabase import create_client
+
+SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
+SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
+
+client = create_client(SUPABASE_URL, SERVICE_KEY)
+
+with open('supabase/migrations/20260914030000_shield_retake_index.sql', 'r') as f:
+    sql = f.read()
+
+try:
+    result = client.rpc('execute_sql', {'sql': sql}).execute()
+    print("✓ Migration 4 applied successfully")
+except Exception as e:
+    print(f"✗ Migration 4 failed: {e}")
+    exit(1)
+PYTHON
+      
+      - name: Apply Migration 5 - RLS Security Fixes
+        run: python3 << 'PYTHON'
+from supabase import create_client
+
+SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
+SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
+
+client = create_client(SUPABASE_URL, SERVICE_KEY)
+
+with open('supabase/migrations/20260928000000_rls_close_privilege_escalation.sql', 'r') as f:
+    sql = f.read()
+
+try:
+    result = client.rpc('execute_sql', {'sql': sql}).execute()
+    print("✓ Migration 5 applied successfully")
+except Exception as e:
+    print(f"✗ Migration 5 failed: {e}")
+    exit(1)
+PYTHON
+      
+      - name: Verify Migrations
+        run: python3 << 'PYTHON'
+from supabase import create_client
+
+SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
+SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
+
+client = create_client(SUPABASE_URL, SERVICE_KEY)
+
+verify_sql = """
+SELECT table_name 
+FROM information_schema.tables 
+WHERE table_schema = 'public' AND table_name LIKE 'shield_%'
+ORDER BY table_name;
+"""
+
+try:
+    result = client.rpc('execute_sql', {'sql': verify_sql}).execute()
+    print("✓ Verification successful")
+    print(result)
+except Exception as e:
+    print(f"✗ Verification failed: {e}")
+PYTHON
