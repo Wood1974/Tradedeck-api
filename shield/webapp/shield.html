@@ -19,7 +19,7 @@
   have to change it, which is the point.
 -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-wYbJpX2GAJTOTl8WELbz4uIcnUwyv/u3tFHiR8TQsdA=';
+      content="default-src 'none'; script-src 'sha256-CO76O97Hl7byzNPDvkiaA7M4KyI23CNQR+DXF8Q9g8A=';
                style-src 'sha256-Yafav3cTXj4+i8an1iQzj6CpSehxFP8LMu9RDa9E/xw='; img-src 'self' data: blob:;
                connect-src *; base-uri 'none'; form-action 'none'">
 <style>
@@ -364,7 +364,10 @@ const GENESIS_PREFIX = "shield-custody-genesis-v1:";
 const SIGNED_FIELDS = [
   "shield_job_id", "photo_id", "event_type", "actor_id", "actor_type",
   "event_data", "gps_lat", "gps_lng", "file_hash", "integrity_note",
-  "exif_captured_at", "recorded_at",
+  // exif_captured_at is NOT here since chain_version 2 (AR-11): the uploader
+  // writes EXIF DateTimeOriginal, so sealing it proved only that we had not
+  // changed it, which reads as though the capture time were established.
+  "recorded_at",
 ];
 
 /**
@@ -698,7 +701,12 @@ async function verifyChain(entries, shieldJobId, { expectHead = null } = {}) {
     }
     if (recomputed !== entry.entry_hash) {
       result.brokeAt = i;
-      if (await ambiguityExplains(entry, expectedPrev)) {
+      // Only version 1 can be ambiguous. Version 2 renders nested floats
+      // through repr(), so the package says which it sealed -- and excusing a
+      // v2 mismatch as "a whole number might have been a float" would hand an
+      // attacker the exact sentence they want a verifier to print.
+      const mayBeV1 = Number(entry.chain_version ?? 1) === 1;
+      if (mayBeV1 && await ambiguityExplains(entry, expectedPrev)) {
         // Do not accuse. See mayBeAmbiguous.
         result.ambiguous = true;
         result.reason = `${position} cannot be verified from JSON alone. Its ` +
@@ -919,8 +927,9 @@ class ShieldClient {
    *
    * The coordinates travel with it because the service needs something to
    * measure against the buyer's geofence — not because they are believed.
-   * AR-10 records that `gps_corroborated` names a corroboration it does not
-   * perform, and the server re-derives everything it seals.
+   * The server re-derives everything it seals. What it returns is
+   * `gps_self_consistent` -- renamed from `gps_corroborated` under AR-10,
+   * because both positions it compares come from this same request.
    */
   uploadPhoto(jobId, { file, pointId, gpsLat, gpsLng }) {
     const form = new FormData();

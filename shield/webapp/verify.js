@@ -48,7 +48,10 @@ const GENESIS_PREFIX = "shield-custody-genesis-v1:";
 export const SIGNED_FIELDS = [
   "shield_job_id", "photo_id", "event_type", "actor_id", "actor_type",
   "event_data", "gps_lat", "gps_lng", "file_hash", "integrity_note",
-  "exif_captured_at", "recorded_at",
+  // exif_captured_at is NOT here since chain_version 2 (AR-11): the uploader
+  // writes EXIF DateTimeOriginal, so sealing it proved only that we had not
+  // changed it, which reads as though the capture time were established.
+  "recorded_at",
 ];
 
 /**
@@ -382,7 +385,12 @@ export async function verifyChain(entries, shieldJobId, { expectHead = null } = 
     }
     if (recomputed !== entry.entry_hash) {
       result.brokeAt = i;
-      if (await ambiguityExplains(entry, expectedPrev)) {
+      // Only version 1 can be ambiguous. Version 2 renders nested floats
+      // through repr(), so the package says which it sealed -- and excusing a
+      // v2 mismatch as "a whole number might have been a float" would hand an
+      // attacker the exact sentence they want a verifier to print.
+      const mayBeV1 = Number(entry.chain_version ?? 1) === 1;
+      if (mayBeV1 && await ambiguityExplains(entry, expectedPrev)) {
         // Do not accuse. See mayBeAmbiguous.
         result.ambiguous = true;
         result.reason = `${position} cannot be verified from JSON alone. Its ` +

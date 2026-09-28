@@ -101,8 +101,9 @@ export class ShieldClient {
    *
    * The coordinates travel with it because the service needs something to
    * measure against the buyer's geofence — not because they are believed.
-   * AR-10 records that `gps_corroborated` names a corroboration it does not
-   * perform, and the server re-derives everything it seals.
+   * The server re-derives everything it seals. What it returns is
+   * `gps_self_consistent` -- renamed from `gps_corroborated` under AR-10,
+   * because both positions it compares come from this same request.
    */
   uploadPhoto(jobId, { file, pointId, gpsLat, gpsLng }) {
     const form = new FormData();

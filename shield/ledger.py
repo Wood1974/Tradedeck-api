@@ -46,7 +46,18 @@ import json
 from datetime import datetime, timezone
 
 # Bump only with a migration that re-chains existing rows. Pinned by a test.
-CHAIN_VERSION = 1
+#
+# 2 (2026-09-25) closed two defects that both needed the canonical form to
+# change, so both had to wait for a bump. It was done while shield_custody_log
+# was still empty -- no chain had ever been written, because the live table had
+# neither prev_hash nor entry_hash -- so the re-chain SPEC.md section 8 requires
+# had nothing to re-chain. The same change after the first real record would
+# have invalidated it.
+#
+#   AR-12  nested floats now render through repr(), so a package carries its
+#          own types and a verifier in any language can reproduce the hash.
+#   AR-11  exif_captured_at left SIGNED_FIELDS; the subject writes it.
+CHAIN_VERSION = 2
 
 # Genesis link for a job's first entry. Distinct per job so two jobs can never
 # share a prefix, and derived rather than constant so it is self-describing.
@@ -67,9 +78,80 @@ SIGNED_FIELDS = (
     "gps_lng",
     "file_hash",
     "integrity_note",
-    "exif_captured_at",
     "recorded_at",
 )
+
+# Deliberately NOT signed, since chain_version 2: `exif_captured_at`.
+#
+# It is read from EXIF DateTimeOriginal, which the uploader writes. Sealing it
+# proved one thing -- that it had not changed since we recorded it -- and read,
+# to anyone who had not read the spec, as though the capture time itself were
+# established. That is the gap AR-11 named, and it is not theoretical:
+# corroborate.py computes solar azimuth from (lat, lng, captured_at), so an
+# attacker holding a photograph could declare the capture time whose sun
+# position matches the shadows already in it. The astronomy would be exact and
+# the input adversarial.
+#
+# It still travels in the record. The chain simply no longer vouches for it,
+# which is the honest position for a value the subject supplies.
+# `recorded_at` and the upload's `received_at` are server-side and stay signed;
+# they prove "not after", never "not before", and the export says so.
+
+
+def _finite(value, key):
+    """repr() a float, refusing the two that are not numbers.
+
+    repr() would turn NaN and Infinity into the strings 'nan' and 'inf' and
+    seal them as if they were real values, sailing past allow_nan. A non-finite
+    number in an evidence record is corrupt input, not something to
+    canonicalise.
+    """
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError(
+            f"non-finite value for {key!r} cannot be sealed into the "
+            f"custody chain")
+    return repr(value)
+
+
+def normalize_event_data(value, _key="event_data"):
+    """Render every nested float as its repr(), recursively. AR-12.
+
+    Why this is not cosmetic
+    ------------------------
+    `json.dumps` renders the float 100.0 as `100.0` and the int 100 as `100`.
+    Those hash differently. But a package travels as JSON, and after the round
+    trip both are the token `100` -- so a verifier in any language but Python
+    could not tell which one had been sealed, and the spec's central promise
+    ("implement it in any language") did not hold.
+
+    The entry it hit hardest was the one that matters most: close-out seals
+    `score` and `coverage_pct`, both from round(), both whole whenever a job
+    scores 100 or 0. The close-out of a clean record was exactly the entry a
+    browser, Go or Rust verifier could not confirm.
+
+    Unlike gps_lat, it could not be closed by declaring which fields are
+    floats, because event_data is free-form and written at many call sites.
+    So the value itself carries the answer: after this, a float is the string
+    "100.0" in the stored row and in the package, and an int is the number 100.
+    No reader has to guess, and no reader has to reimplement CPython's float
+    repr to check a whole number.
+
+    `seal()` applies this before hashing, so the row and the hash agree.
+    Normalising only inside canonical() would have fixed nothing -- the
+    recipient reads event_data out of the package, not out of our process.
+
+    Idempotent: a string stays a string, so re-normalising a stored row is
+    safe.
+    """
+    if isinstance(value, bool):
+        return value          # bool is an int subclass; leave it alone
+    if isinstance(value, float):
+        return _finite(value, _key)
+    if isinstance(value, dict):
+        return {k: normalize_event_data(v, k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [normalize_event_data(v, _key) for v in value]
+    return value
 
 
 def genesis_hash(shield_job_id: str) -> str:
@@ -93,18 +175,19 @@ def canonical(entry: dict) -> bytes:
         if value is None:
             continue
         if isinstance(value, float):
-            # repr() would turn NaN/Infinity into the strings 'nan'/'inf' and
-            # seal them as if they were real coordinates, sailing past
-            # allow_nan. A non-finite value in an evidence record is corrupt
-            # input, not something to canonicalise.
-            if value != value or value in (float("inf"), float("-inf")):
-                raise ValueError(
-                    f"non-finite value for {key!r} cannot be sealed into the "
-                    f"custody chain")
-            value = repr(value)
+            value = _finite(value, key)
         elif isinstance(value, datetime):
             value = value.astimezone(timezone.utc).isoformat()
         elif isinstance(value, (dict, list)):
+            # Deliberately NOT normalised here. canonical() is a function of
+            # the row as stored, and normalisation is a write-time step in
+            # seal() -- because only the writer knows whether 100 was an int
+            # or a float. JavaScript cannot tell, which is the defect AR-12
+            # names. If this normalised, Python would hash raw and normalised
+            # input alike while the browser could only hash what the package
+            # gave it, and the two implementations would quietly disagree on
+            # anything that had not been through seal(). The differential test
+            # caught precisely that.
             value = json.dumps(value, sort_keys=True, separators=(",", ":"),
                                default=str, allow_nan=False)
         out[key] = value
@@ -118,11 +201,20 @@ def link(entry: dict, prev_hash: str) -> str:
 
 
 def seal(entry: dict, prev_hash: str) -> dict:
-    """Return the entry with its chain fields populated, ready to insert."""
-    return {**entry,
+    """Return the entry with its chain fields populated, ready to insert.
+
+    `event_data` comes back normalised (AR-12), because the row that is stored
+    has to be the row that was hashed. If we hashed "100.0" and stored 100.0,
+    the recipient -- who only ever sees the stored value -- would be back to
+    guessing which one we meant.
+    """
+    sealed = dict(entry)
+    if isinstance(sealed.get("event_data"), (dict, list)):
+        sealed["event_data"] = normalize_event_data(sealed["event_data"])
+    return {**sealed,
             "chain_version": CHAIN_VERSION,
             "prev_hash": prev_hash,
-            "entry_hash": link(entry, prev_hash)}
+            "entry_hash": link(sealed, prev_hash)}
 
 
 def verify_chain(entries: list, shield_job_id: str) -> dict:

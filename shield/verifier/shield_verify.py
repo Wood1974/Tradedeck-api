@@ -52,7 +52,7 @@ import json
 import os
 import sys
 
-SPEC_VERSION = 1
+SPEC_VERSION = 2
 GENESIS_PREFIX = "shield-custody-genesis-v1:"
 
 # Fixed order. The hash covers these fields and nothing else — see SPEC.md.
@@ -67,12 +67,23 @@ SIGNED_FIELDS = (
     "gps_lng",
     "file_hash",
     "integrity_note",
-    "exif_captured_at",
     "recorded_at",
 )
 
+# NOT signed since v2 (AR-11): exif_captured_at. The uploader writes EXIF
+# DateTimeOriginal, so sealing it proved only that we had not changed it since
+# recording -- which reads as though the capture time were established. It is
+# still in the record; the chain simply does not vouch for it.
+
 
 # --------------------------------------------------------------- hashing ---
+def _finite(value, key):
+    """repr() a float, refusing NaN and Infinity rather than sealing them."""
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError("non-finite value for %r" % key)
+    return repr(value)
+
+
 def genesis_hash(shield_job_id):
     """The value the first entry's prev_hash must equal."""
     return hashlib.sha256((GENESIS_PREFIX + str(shield_job_id)).encode()).hexdigest()
@@ -91,10 +102,12 @@ def canonical(entry):
         if value is None:
             continue
         if isinstance(value, float):
-            if value != value or value in (float("inf"), float("-inf")):
-                raise ValueError("non-finite value for %r" % key)
-            value = repr(value)
+            value = _finite(value, key)
         elif isinstance(value, (dict, list)):
+            # Not normalised: normalisation is a write-time step in the
+            # ledger, because only the writer knows whether 100 was an int or
+            # a float. A verifier hashes the row exactly as the package
+            # carries it.
             value = json.dumps(value, sort_keys=True, separators=(",", ":"),
                                default=str, allow_nan=False)
         out[key] = value

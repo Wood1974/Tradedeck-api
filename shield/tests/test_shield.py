@@ -76,7 +76,7 @@ def test_jpeg_gps_is_extracted_and_corroborates():
     r = integrity.assess(make_jpeg(), "image/jpeg", *SLC, 500)
     assert r["exif_status"] == "present"
     assert r["has_exif"] is True
-    assert r["gps_corroborated"] is True
+    assert r["gps_self_consistent"] is True
     assert r["gps_mismatch"] is False
     assert r["integrity_note"] is None
     assert r["exif"]["device_model"] == "iPhone 15 Pro"
@@ -85,14 +85,14 @@ def test_jpeg_gps_is_extracted_and_corroborates():
 def test_spoofed_position_is_flagged():
     r = integrity.assess(make_jpeg(), "image/jpeg", 41.12, -111.89, 500)
     assert r["gps_mismatch"] is True
-    assert r["gps_corroborated"] is False
+    assert r["gps_self_consistent"] is False
     assert "GPS mismatch" in r["integrity_note"]
 
 
 def test_exif_without_gps_is_not_treated_as_corroboration():
     r = integrity.assess(make_jpeg(gps=False), "image/jpeg", *SLC, 500)
     assert r["has_exif"] is True
-    assert r["gps_corroborated"] is False
+    assert r["gps_self_consistent"] is False
     assert "not independently corroborated" in r["integrity_note"]
 
 
