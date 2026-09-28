@@ -34,6 +34,8 @@ update, so a contractor could upload a real photo and point the analyser at a
 stock image of perfect work. That is the mistake this file is shaped to make
 impossible: no route here accepts a value it could derive.
 """
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -43,6 +45,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, g, jsonify, request
 
 import config
+import app_attest
 import attestation
 import integrity
 import ledger
@@ -57,6 +60,18 @@ bp = Blueprint("shield_v2", __name__, url_prefix="/shield/v2")
 
 SCHEMA = "shield"
 MAX_CHECKPOINTS = 40
+
+#: Single-use capture challenges. Issued to one actor, spent once, on a clock.
+#:
+#: AR-9, restated where it bites rather than left in the register: this store
+#: is per process. Under more than one gunicorn worker a challenge issued by
+#: worker A is invisible to worker B, so a legitimate capture is refused
+#: depending on which worker answers, and "single use" holds per worker rather
+#: than per service. That is a correctness bug under load and an availability
+#: one before it is a security one, and the fix is a shared store (the
+#: database, or Redis) behind this same interface. Until the owner picks one,
+#: run a single worker.
+CHALLENGES = attestation.ChallengeStore()
 
 
 def _t(name):
@@ -343,35 +358,111 @@ def set_checkpoints(record_id):
     return jsonify({"checkpoints": res.data or [], "locked": True}), 201
 
 
-def _attestation_for(req):
+def _b64(value):
+    """Decode base64 from an untrusted client. None rather than an exception.
+
+    Accepts standard and URL-safe alphabets with or without padding, because
+    which one arrives depends on how the client happened to encode it, and a
+    capture refused over an alphabet choice would be indistinguishable on the
+    device from a refused attestation.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    text += "=" * (-len(text) % 4)
+    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            return decoder(text)
+        except (binascii.Error, ValueError):
+            continue
+    return None
+
+
+@bp.route("/records/<record_id>/capture-challenge", methods=["POST"])
+@require_tenant
+@require_record()
+def capture_challenge(record_id):
+    """Issue the single-use nonce one capture must be bound to.
+
+    Without this the app could present the same attestation for every upload
+    forever, including uploads of files the device never saw. The nonce is
+    what makes an attestation say *this capture* rather than "this device was
+    genuine at some point".
+
+    It is issued to the calling actor and spent by them, so one party cannot
+    have their challenge answered by another party's device.
+    """
+    nonce = CHALLENGES.issue(_principal().actor_id)
+    CHALLENGES.purge()
+    return jsonify({
+        "challenge": nonce,
+        "expires_in_s": attestation.CHALLENGE_TTL_S,
+        "client_data_hash_alg": "sha256",
+        "note": ("Hash this value with SHA-256 and use the digest as the "
+                 "clientDataHash for DCAppAttestService.attestKey. Send the "
+                 "challenge back verbatim as attestation_challenge."),
+    }), 201
+
+
+def _attestation_for(req, principal):
     """Decide whether one capture may be recorded at all.
 
     Returns attestation.assess()'s verdict. The only tiers that count are the
     two in `attestation.TRUSTED_TIERS`; absence, ambiguity and refusal are all
     the same answer here, which is no.
 
-    `verified` is never set True by this function and cannot be. Granting
-    hardware trust means verifying a signature chain to Apple's or Google's
-    root, and this service has neither dependency. A parameter that let a
-    caller assert its own verification would be the whole defect in one line.
+    Two things this function is careful never to do. It does not accept a
+    caller's word that verification happened -- `verified` comes only from
+    `app_attest.verify`, which walks the chain itself. And it does not treat a
+    missing trust anchor as a reason to skip the chain check: with no root
+    configured, `verify` refuses, and so does this.
+
+    The challenge is spent exactly once, whatever the outcome. A failed
+    attestation that left the nonce live would let an attacker grind attempts
+    against one challenge until something stuck.
     """
     platform = (req.form.get("attestation_platform") or "").strip().lower()
     token = (req.form.get("attestation") or "").strip()
+    nonce = (req.form.get("attestation_challenge") or "").strip()
     if not token:
         return {"trusted": False, "tier": attestation.TIER_UNATTESTED,
                 "reason": "no device attestation was presented."}
 
-    if platform == "android":
+    challenge_ok = CHALLENGES.consume(nonce, principal.actor_id)
+
+    if platform == "ios":
+        blob = _b64(token)
+        if blob is None:
+            verdict = attestation.interpret_app_attest(verified=False)
+        else:
+            checked = app_attest.verify(
+                blob,
+                challenge=nonce,
+                app_id=config.get("APP_ATTEST_APP_ID") or "",
+                key_id=_b64(req.form.get("attestation_key_id")),
+                root_pem=config.get("APPLE_APP_ATTEST_ROOT_PEM"),
+                allow_development=(
+                    config.get("APP_ATTEST_ALLOW_DEVELOPMENT") == "1"))
+            if not checked["verified"]:
+                log.info("App Attest refused for record: %s", checked["reason"])
+            verdict = attestation.interpret_app_attest(
+                verified=checked["verified"],
+                receipt_ok=checked["receipt_ok"],
+                token_nonce=checked["token_nonce"],
+                expect_nonce=nonce or None)
+    elif platform == "android":
+        # Play Integrity needs a decrypted token, which means either Google's
+        # API or the JWE keys. Neither is built, so this stays closed rather
+        # than being waved through -- an unverified verdict cannot reach a
+        # trusted tier, by construction.
         verdict = attestation.interpret_play_integrity({}, verified=False)
-    elif platform == "ios":
-        verdict = attestation.interpret_app_attest(verified=False)
     else:
         return {"trusted": False, "tier": attestation.TIER_UNVERIFIABLE,
                 "reason": f"attestation_platform {platform!r} is not one this "
                           f"service can check."}
 
     return attestation.assess(platform=platform, verdict=verdict,
-                              challenge_ok=None)
+                              challenge_ok=challenge_ok if nonce else None)
 
 
 # ------------------------------------------------------------------ photos --
@@ -421,14 +512,22 @@ def upload_photo(record_id):
     # A forgeable record dressed in a hash chain is worse than no record,
     # because it is the hash chain that makes people believe it.
     #
-    # Consequence, stated plainly rather than discovered later: nothing can
-    # pass this gate today. Granting trust requires `verified=True`, which
-    # requires CBOR-decoding an App Attest blob and walking the X.509 chain to
-    # Apple's root, or decrypting a Play Integrity token -- neither is built,
-    # and neither can be built without the native app AR-1 describes. So photo
-    # capture is CLOSED until that app exists. That is the honest state of the
-    # product, not an outage.
-    attested = _attestation_for(request)
+    # What can pass it, precisely, as of 2026-09-28. iOS: `app_attest.verify`
+    # CBOR-decodes the attestation, walks the X.509 chain to the configured
+    # Apple root and checks the nonce binding, so a genuine capture from the
+    # Shield app on genuine hardware is recorded. That requires both
+    # APPLE_APP_ATTEST_ROOT_PEM and APP_ATTEST_APP_ID to be set: with either
+    # missing, verification refuses rather than skipping the chain check, and
+    # iOS capture is closed on that deployment.
+    #
+    # Android: still closed. Play Integrity needs a decrypted token, which is
+    # not built. Web: closed permanently and by design -- a file chosen from
+    # storage cannot be attested, so the console offers no capture path at all.
+    #
+    # And the client does not exist yet. Until the iOS app ships, this gate is
+    # verifiable but unreachable in practice, which is the honest state of the
+    # product rather than an outage.
+    attested = _attestation_for(request, _principal())
     if not attested["trusted"]:
         return _err(
             f"This capture was not accepted: {attested['reason']} "

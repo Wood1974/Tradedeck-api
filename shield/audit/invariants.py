@@ -1472,10 +1472,13 @@ def inv_no_unattested_capture_is_recorded():
         upload path hardcoded "unattested", which is exactly the row this
         rule exists to stop existing.
 
-    Nothing passes this gate today, by construction: trust needs
-    `verified=True`, which needs a signature chain to Apple's or Google's
-    root, which needs the native app AR-1 describes. Capture is closed until
-    it ships, and that is the honest state rather than an outage.
+    What passes it, as of 2026-09-28, is exactly one thing: an App Attest
+    attestation that `app_attest.verify` walked to the configured Apple root
+    itself, bound to a single-use challenge this service issued. Android is
+    still closed (Play Integrity needs a decrypted token, which is not built)
+    and the web console has no capture path at all, by design. The iOS client
+    does not exist yet either, so the gate is verifiable but not yet reachable
+    in practice — which is the honest state of the product, not an outage.
     """
     path = SHIELD / "tenant_api.py"
     if not path.exists():
@@ -1509,6 +1512,56 @@ def inv_no_unattested_capture_is_recorded():
         return False, (f"TRUSTED_TIERS has {len(attestation.TRUSTED_TIERS)} "
                        f"entries; widening it widens what counts as proof")
     return True, "capture is refused unless a device vouched for it"
+
+
+def inv_attestation_anchor_is_configuration():
+    """The trust anchor is never a certificate committed to this repository.
+
+    This is the invariant that decides whether App Attest verification means
+    anything at all, and its failure is invisible by reading the code.
+
+    A root certificate pasted into a source file is one of two things. Wrong,
+    in which case nothing ever verifies and the failure looks like a bug in
+    the iOS app — annoying, survivable. Or right-looking and not Apple's, in
+    which case `app_attest.verify` cheerfully validates a chain an attacker
+    minted, every forged capture earns `hardware_attested`, and the custody
+    chain wraps it in exactly the credibility the product sells. A reviewer
+    cannot tell those two apart by eye, and neither can a test.
+
+    So the anchor arrives as PEM through APPLE_APP_ATTEST_ROOT_PEM, and a
+    missing one is a refusal rather than a fallback. Both halves matter: a
+    module that falls back to a built-in root when the variable is unset has
+    the same defect with an extra step, and would pass a check that only
+    looked for the variable being read.
+    """
+    findings = []
+    for path in sorted(SHIELD.glob("*.py")):
+        src = path.read_text()
+        if "BEGIN CERTIFICATE" in src:
+            findings.append(f"{path.name} contains an embedded certificate")
+        code = re.sub(r'"""[\s\S]*?"""', "", src)
+        code = re.sub(r"#[^\n]*", "", code)
+        if re.search(r'APPLE_APP_ATTEST_ROOT_PEM"?\)?\s*(or|if)\s', code):
+            findings.append(f"{path.name} falls back when the root is unset")
+    if findings:
+        return False, "; ".join(findings)
+
+    attest = SHIELD / "app_attest.py"
+    if not attest.exists():
+        return True, "app_attest.py is not present"
+    code = re.sub(r'"""[\s\S]*?"""', "", attest.read_text())
+    code = re.sub(r"#[^\n]*", "", code)
+    # The signature specifically, not the file. `root_pem` appears in the body
+    # too, so a check that only searched the text would keep holding after the
+    # parameter was renamed away -- the same prose-versus-thing mistake that
+    # has now bitten five tripwires in this file.
+    signature = re.search(r"def verify\(([^)]*)\)", code)
+    if not signature or "root_pem" not in signature.group(1):
+        return False, "app_attest.verify no longer takes the root as a parameter"
+    if not re.search(r"if not root_pem", code):
+        return False, ("app_attest no longer refuses when no root is "
+                       "configured, so a missing anchor may skip the chain check")
+    return True, "the Apple root is configuration, and absent means refuse"
 
 
 INVARIANTS = (
@@ -1565,6 +1618,7 @@ INVARIANTS = (
     ("nested-floats-carry-their-type", "Ship a package only Python can verify", inv_nested_floats_carry_their_type),
     ("tenant-api-derives-evidence", "Let a paying tenant hand the service its own hash or verdict", inv_tenant_api_derives_its_evidence),
     ("no-unattested-capture", "Record a photograph that cannot prove it came from a camera", inv_no_unattested_capture_is_recorded),
+    ("attestation-anchor-is-configuration", "Verify a forged attestation against a root an attacker chose", inv_attestation_anchor_is_configuration),
 )
 
 

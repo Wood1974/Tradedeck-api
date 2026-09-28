@@ -15,13 +15,24 @@ and point the analyser at a stock image of perfect work; the pass landed on the
 real photo's row and the client-supplied hash went into the custody log as the
 evidence. So the tests here send those fields and assert they are ignored.
 """
+import base64
 import io
+import json
 import os
 import sys
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+
+import attestation  # noqa: E402
+
+# The attestation generator lives with the tests that break it, and is reused
+# here rather than copied: a second copy would drift, and the copy in the file
+# that tests the accept path is exactly the one that must not.
+attest_fixtures = pytest.importorskip(
+    "test_app_attest", reason="cbor2/cryptography are not installed")
 
 CI_ENV = {
     "SUPABASE_URL": "https://ci.invalid",
@@ -35,6 +46,24 @@ CI_ENV = {
 TENANT_A = "aaaaaaaa-0000-0000-0000-00000000000a"
 TENANT_B = "bbbbbbbb-0000-0000-0000-00000000000b"
 RECORD_A = "11111111-0000-0000-0000-000000000001"
+APP_ID = "ABCDE12345.com.tradedeck.shield"
+
+#: A real, minimal JPEG. The refusal tests can use four magic bytes because
+#: nothing downstream of the gate ever runs on them; an accepted capture is
+#: decoded, measured and EXIF-read, so it needs a file that actually is one.
+JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
+    "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwh"
+    "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAAR"
+    "CAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAA"
+    "AgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkK"
+    "FhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWG"
+    "h4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl"
+    "5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREA"
+    "AgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYk"
+    "NOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOE"
+    "hYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk"
+    "5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q==")
 
 
 # ----------------------------------------------------------- a fake Supabase
@@ -302,9 +331,11 @@ class TestCaptureMustAttest:
     something marked "evidence", and the chain is what makes a reader believe
     it.
 
-    Nothing can pass this gate today, and that is the point: granting trust
-    needs a signature chain to Apple's or Google's root, which needs the
-    native app AR-1 describes. Capture is closed until it exists.
+    What can pass it is one thing only: an App Attest attestation that
+    `app_attest.verify` walked to the configured Apple root itself, bound to a
+    challenge this service issued and has not spent. The class below proves
+    that path end to end. Everything here proves the door stays shut for
+    everything else -- and `verified` is never a value a caller supplies.
     """
 
     def test_an_upload_with_no_attestation_is_refused(self, app_and_db):
@@ -451,6 +482,206 @@ class TestTheRecordLifecycle:
                                 "file": (io.BytesIO(b""), "x.jpg")},
                           content_type="multipart/form-data")
         assert got.status_code == 400
+
+
+class TestCaptureWithARealAttestation:
+    """The other half: prove the door actually opens for a genuine capture.
+
+    Every other test in this file proves a refusal, and a gate that refuses
+    everything passes all of them. If the accept path were broken -- a field
+    renamed between `app_attest.verify` and `interpret_app_attest`, a challenge
+    never spent, a root read from the wrong key -- capture would be silently
+    closed forever and the suite would stay green.
+
+    The chain is minted by `test_app_attest`, and handed to the service the
+    same way Apple's root would be: through APPLE_APP_ATTEST_ROOT_PEM. That
+    substitution is the reason the anchor is configuration rather than a
+    constant.
+    """
+
+    def attest(self, monkeypatch, client, record_id=RECORD_A, app_id=APP_ID,
+               **kw):
+        """Ask for a challenge, then answer it with a real attestation."""
+        got = client.post(f"/shield/v2/records/{record_id}/capture-challenge")
+        assert got.status_code == 201, got.get_json()
+        challenge = got.get_json()["challenge"]
+
+        blob, key_id, root_pem = attest_fixtures.build(
+            challenge=challenge, app_id=app_id, **kw)
+        monkeypatch.setenv("APPLE_APP_ATTEST_ROOT_PEM", root_pem)
+        monkeypatch.setenv("APP_ATTEST_APP_ID", APP_ID)
+        return {
+            "attestation": base64.b64encode(blob).decode(),
+            "attestation_key_id": base64.b64encode(key_id).decode(),
+            "attestation_challenge": challenge,
+            "attestation_platform": "ios",
+        }, root_pem
+
+    def post(self, client, fields, checkpoint="cp-1"):
+        data = {"checkpoint_id": checkpoint,
+                "file": (io.BytesIO(JPEG), "shot.jpg")}
+        data.update(fields)
+        return client.post(f"/shield/v2/records/{RECORD_A}/photos",
+                           data=data, content_type="multipart/form-data")
+
+    def test_a_genuine_attested_capture_is_recorded(self, app_and_db,
+                                                    monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+
+        got = self.post(client, fields)
+        assert got.status_code == 201, got.get_json()
+
+        written = [w for t, w in store.writes if t == "photos"]
+        assert written, "a verified capture wrote no photo row"
+        assert store.uploads, "a verified capture stored no object"
+        assert [w for t, w in store.writes if t == "custody_log"]
+
+    def test_the_recorded_tier_is_hardware_and_is_derived(self, app_and_db,
+                                                          monkeypatch):
+        """The row must say hardware_attested because the chain verified.
+
+        Not because the client asked for it: the request below also claims a
+        tier of its own, and the stored value has to be the derived one.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+        fields["attestation_tier"] = "totally-made-up-tier"
+
+        assert self.post(client, fields).status_code == 201
+        row = [w for t, w in store.writes if t == "photos"][0]
+        blob = json.dumps(row)
+        assert attestation.TIER_HARDWARE in blob
+        assert "totally-made-up-tier" not in blob
+
+    def test_a_challenge_is_spent_once(self, app_and_db, monkeypatch):
+        """The replay: same device, same attestation, a second photograph."""
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+
+        assert self.post(client, fields).status_code == 201
+        again = self.post(client, fields)
+        assert again.status_code == 422, (
+            "a spent challenge was accepted a second time -- one attestation "
+            "would then cover every upload forever")
+
+    def test_a_challenge_issued_to_another_actor_is_not_spendable(
+            self, app_and_db, monkeypatch):
+        """Otherwise one party's device answers another party's challenge."""
+        flask_app, store, keys, tenant_api = app_and_db
+        mine = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        theirs = client_for(flask_app, store, tenant_api, TENANT_A, keys,
+                            kind="member", role="admin")
+        fields, _root = self.attest(monkeypatch, theirs)
+        assert self.post(mine, fields).status_code == 422
+
+    def test_with_no_root_configured_even_a_genuine_capture_is_refused(
+            self, app_and_db, monkeypatch):
+        """A missing anchor closes the gate; it never skips the chain check.
+
+        This is the fail-open shape that would matter most: a deployment that
+        forgot the environment variable and recorded everything.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+        monkeypatch.delenv("APPLE_APP_ATTEST_ROOT_PEM")
+
+        assert self.post(client, fields).status_code == 422
+        assert not [w for t, w in store.writes if t == "photos"]
+
+    def test_a_chain_to_someone_elses_root_is_refused(self, app_and_db,
+                                                      monkeypatch):
+        """The forged attestation: the attacker runs their own CA."""
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+        _blob, _key, other = attest_fixtures.build(challenge="x", app_id=APP_ID)
+        monkeypatch.setenv("APPLE_APP_ATTEST_ROOT_PEM", other)
+
+        assert self.post(client, fields).status_code == 422
+
+    def test_an_attestation_for_another_bundle_is_refused(self, app_and_db,
+                                                          monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client,
+                                    app_id="ZZZZZ99999.com.someone.else")
+        monkeypatch.setenv("APP_ATTEST_APP_ID", APP_ID)
+        assert self.post(client, fields).status_code == 422
+
+    def test_a_development_attestation_is_refused_unless_enabled(
+            self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client,
+                                    aaguid=attest_fixtures.app_attest.AAGUID_DEV)
+        assert self.post(client, fields).status_code == 422
+
+    def test_the_refusal_says_the_chain_did_not_verify(self, app_and_db,
+                                                       monkeypatch):
+        """The reason must come from the verifier, not from somewhere near it.
+
+        Written because a mutation survived the rest of this class: hardcoding
+        `verified=True` in the wiring still produced a refusal, because
+        `receipt_ok` and `token_nonce` come from the same result and either one
+        withholds trust on its own. Safe, and it made the reason wrong -- the
+        operator reading the log would be told the key or app identity
+        mismatched when in fact the chain did not verify. An inaccurate reason
+        is how a real misconfiguration gets diagnosed as the wrong thing, so
+        the text is pinned.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+        _b, _k, other = attest_fixtures.build(challenge="x", app_id=APP_ID)
+        monkeypatch.setenv("APPLE_APP_ATTEST_ROOT_PEM", other)
+
+        error = self.post(client, fields).get_json()["error"]
+        assert "not cryptographically verified" in error, error
+        assert "did not match" not in error, (
+            "a chain failure is being reported as a key or app-identity "
+            "mismatch")
+
+    def test_android_is_closed_even_with_a_live_challenge(self, app_and_db,
+                                                          monkeypatch):
+        """Play Integrity is not built, so Android capture must stay shut.
+
+        The other Android test presents no challenge, which means the binding
+        check refuses it before the platform branch matters. This one spends a
+        real one, so the only thing left holding the door is that an
+        unverified Play Integrity verdict cannot reach a trusted tier.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        got = client.post(
+            f"/shield/v2/records/{RECORD_A}/capture-challenge")
+        challenge = got.get_json()["challenge"]
+
+        refused = self.post(client, {
+            "attestation": base64.b64encode(b"a play integrity token").decode(),
+            "attestation_platform": "android",
+            "attestation_challenge": challenge})
+        assert refused.status_code == 422
+        assert not [w for t, w in store.writes if t == "photos"]
+
+    def test_a_challenge_from_another_record_is_still_the_actors_own(
+            self, app_and_db, monkeypatch):
+        """Scope, stated rather than assumed.
+
+        The nonce binds an actor to a moment, not to a record. A capture is
+        already scoped to its record by `require_record` and the checkpoint
+        lookup, so this passing is correct -- it is written down so that a
+        later reader does not mistake it for a hole, and so that narrowing the
+        binding to a record becomes a deliberate change with a failing test.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client, record_id=RECORD_A)
+        assert self.post(client, fields).status_code == 201
 
 
 class TestThePackage:

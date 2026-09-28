@@ -31,10 +31,26 @@ DEFAULTS = {
     "GPS_TOLERANCE_M":   "500",
     "MIN_CLEAN_JOBS":    "3",
     "SHIELD_FROM_EMAIL": "TradeDeck Shield <onboarding@resend.dev>",
+    # A development attestation says nothing about a production device, so it
+    # is off unless someone turns it on deliberately, per deployment.
+    "APP_ATTEST_ALLOW_DEVELOPMENT": "0",
 }
 
 OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
-            "SHIELD_CANCEL_URL", "BADGE_WEBHOOK_URL", "BADGE_WEBHOOK_SECRET")
+            "SHIELD_CANCEL_URL", "BADGE_WEBHOOK_URL", "BADGE_WEBHOOK_SECRET",
+            # Both of these, or App Attest cannot be checked and every iOS
+            # capture is refused. That is the correct closed state, not an
+            # outage -- but it is silent, so `validate()` warns for it like
+            # any other disabled feature.
+            #
+            # APPLE_APP_ATTEST_ROOT_PEM is the anchor, and it is configuration
+            # rather than a constant on purpose: a root certificate committed
+            # to a repository is either wrong, in which case nothing verifies
+            # and the failure looks like an app bug, or right-looking and not
+            # Apple's, in which case the service validates chains an attacker
+            # minted. Neither is visible by reading the code.
+            "APPLE_APP_ATTEST_ROOT_PEM",
+            "APP_ATTEST_APP_ID")          # "TEAMID.com.bundle.identifier"
 
 
 def get(key, default=None):

@@ -26,8 +26,36 @@ like — neither is a value an uploader can write into a file.
 Closing it properly requires capture-time attestation (Apple App Attest binding
 a photo hash to a Secure Enclave key, or Android Key Attestation with
 `verifiedBootState`), which requires a native app with no library-import code
-path. Not built. The README and the certification both say so rather than
-letting a reader assume otherwise.
+path.
+
+**Status 2026-09-28 — the server half is built, the client half is not.**
+`app_attest.py` verifies an Apple App Attest attestation: CBOR decode, X.509
+chain walked to a root supplied as configuration, the nonce extension checked
+against `SHA256(authData || SHA256(challenge))`, key id, app id, counter and
+attestation environment. `/shield/v2/records/<id>/capture-challenge` issues the
+single-use nonce, and `tenant_api._attestation_for` spends it exactly once per
+attempt. Every check is break-tested: removing any one of the fifteen fails a
+test. So `verified=True` is now reachable, which it was not, and an attested
+iOS capture is recorded while everything else is refused.
+
+What that does **not** yet mean, said plainly because this is the risk the
+register exists for:
+
+* **There is no iOS app**, so nothing produces an attestation today and no
+  photograph in Shield carries one. The gate is verifiable and unreachable.
+* **The chain has never been checked against Apple's real root.** The tests
+  mint their own CA and hand it in through the same parameter, which proves
+  the logic and proves nothing about Apple's certificate profile. The first
+  real attestation is the real test.
+* **Android is still fully open on this axis** — Play Integrity needs a
+  decrypted token and that is not built, so Android capture stays closed.
+* Attestation proves a genuine app on genuine silicon. It says nothing about
+  what was in front of the lens, which is `rebroadcast.py`'s half. AR-1 needs
+  both, and still has neither in production.
+
+So this stays **open**. It narrows when the app ships and verifies against
+Apple's root; it closes when captures in production actually carry hardware
+attestation.
 
 *A new finding here would be: a way to defeat the geofence or the solar check
 specifically, or a place where the product claims more than the above.*
@@ -49,7 +77,7 @@ one exists. "Add rate limiting" is not a finding.*
 ### AR-3 · No integration tests against live services
 **Reviewed 2026-09-14 · next review 2026-11-01**
 
-Storage, database and model calls are unexercised. All 219 tests and 27
+Storage, database and model calls are unexercised. All 458 tests and 54
 invariants are static or in-process. A behaviour that only appears against real
 Supabase, Stripe or Anthropic would not be caught here.
 

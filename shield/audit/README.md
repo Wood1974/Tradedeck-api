@@ -16,8 +16,8 @@ Daily adversarial audit of Shield. Six parts:
 
 ```bash
 cd shield
-python -m pytest tests/ -q      # 219 tests
-python audit/invariants.py      # 36 invariants
+python -m pytest tests/ -q      # 458 tests
+python audit/invariants.py      # 54 invariants
 python audit/invariants.py --json
 ```
 
