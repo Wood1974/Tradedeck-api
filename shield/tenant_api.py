@@ -1,0 +1,643 @@
+"""The product a second business can actually buy.
+
+`routes.py` is the original service: eighteen routes against TradeDeck's own
+tables, through TradeDeck's own identity. It works, and it can never be sold to
+anyone, because a caller has to exist as a row in somebody else's marketplace
+before they can hold a record.
+
+This is the same evidence loop with the coupling removed. A tenant presents an
+API key or a member session, `tenancy.Principal` carries their `tenant_id`, and
+every query is scoped on it before it runs. Parties are opaque strings the
+tenant supplies -- `subject_ref` is whoever they mean by the party being
+documented, `buyer_ref` whoever is paying for the assurance. Shield does not
+resolve either and could not.
+
+Separation by addition, again
+-----------------------------
+This does not edit `routes.py`. PR #7 made the same choice for the schema and
+it was right: a half-ported module speaks two dialects and is worse than either
+one. The legacy blueprint keeps serving what it serves until the last caller
+leaves, and `legacy-auth-not-spreading` fails the build if the dead end grows.
+
+The one rule this file exists to keep
+--------------------------------------
+**Nothing a caller sends is evidence.** The hash is computed here from the
+bytes that arrived. EXIF is read here. The distance from site is measured here
+against coordinates the *record* carries, which the uploader did not write.
+A caller supplies a file and a checkpoint; everything sealed into the chain is
+derived, and `webapp-sends-no-evidence` has a counterpart test for this module
+for the same reason.
+
+The parent's `/shield/analyze-photo` took `comp_url`, `has_exif`, `gps_lat` and
+`original_hash` from the request body and never re-read the row it was about to
+update, so a contractor could upload a real photo and point the analyser at a
+stock image of perfect work. That is the mistake this file is shaped to make
+impossible: no route here accepts a value it could derive.
+"""
+import logging
+import uuid
+from datetime import datetime, timezone
+
+from flask import Blueprint, g, jsonify, request
+
+import config
+import integrity
+import ledger
+import tenancy
+import verdict as verdict_mod
+from auth import require_record, require_tenant
+from db import db
+
+log = logging.getLogger(__name__)
+
+bp = Blueprint("shield_v2", __name__, url_prefix="/shield/v2")
+
+SCHEMA = "shield"
+MAX_CHECKPOINTS = 40
+
+
+def _t(name):
+    return db().schema(SCHEMA).table(name)
+
+
+def _err(message, code):
+    return jsonify({"error": message}), code
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _principal():
+    return g.principal
+
+
+# --------------------------------------------------------------- the chain --
+def chain_in_order(entries, record_id):
+    """Put a record's custody entries in causal order by following the links.
+
+    Sorting on `recorded_at` is the obvious approach and it is wrong. Several
+    entries can be written inside one request -- a retake writes `superseded`
+    and then `uploaded` -- and they can land on the same timestamp, at which
+    point the order is whatever the database felt like. A chain assembled in
+    the wrong order fails to verify, and the failure looks exactly like
+    tampering, which is the worst possible way to be wrong.
+
+    The links already encode the order, so use them: start at the genesis hash
+    and follow `prev_hash` -> `entry_hash`. Anything that does not hang off
+    that walk is returned afterwards, in timestamp order, rather than dropped
+    -- a verifier must be given every row we hold, including the ones that do
+    not fit, because silently omitting an entry would turn a broken chain into
+    a clean one.
+    """
+    by_prev = {}
+    for entry in entries:
+        by_prev.setdefault(entry.get("prev_hash"), []).append(entry)
+
+    ordered, seen = [], set()
+    cursor = ledger.genesis_hash(record_id)
+    while True:
+        candidates = [e for e in by_prev.get(cursor, []) if id(e) not in seen]
+        if not candidates:
+            break
+        # A fork would mean two entries share a predecessor. Take the first and
+        # let the orphan pass below carry the other, so verify_chain reports it
+        # rather than this function hiding it.
+        entry = candidates[0]
+        ordered.append(entry)
+        seen.add(id(entry))
+        cursor = entry.get("entry_hash")
+
+    orphans = [e for e in entries if id(e) not in seen]
+    orphans.sort(key=lambda e: e.get("recorded_at") or "")
+    return ordered + orphans
+
+
+def _head_and_append(record_id, entry):
+    """Seal one entry onto a record's chain and insert it.
+
+    Read-then-append is a race if two writes land together. The unique index
+    on `entry_hash` is what actually protects the chain: two entries computed
+    from the same predecessor produce different hashes only if their content
+    differs, and identical content would be a duplicate anyway. A conflict
+    there means a genuine concurrent write, and failing the request is better
+    than writing a fork and calling it evidence.
+    """
+    principal = _principal()
+    existing = (_t("custody_log")
+                .select("entry_hash,prev_hash,recorded_at")
+                .eq("record_id", record_id).execute()).data or []
+    ordered = chain_in_order(existing, record_id)
+    prev = (ordered[-1].get("entry_hash") if ordered
+            else ledger.genesis_hash(record_id))
+
+    body = {
+        "record_id": record_id,
+        "photo_id": entry.get("photo_id"),
+        "event_type": entry["event_type"],
+        "actor_ref": principal.actor_id,
+        "actor_kind": "api_key" if principal.is_api_key else "member",
+        "event_data": entry.get("event_data"),
+        "gps_lat": entry.get("gps_lat"),
+        "gps_lng": entry.get("gps_lng"),
+        "file_hash": entry.get("file_hash"),
+        "integrity_note": entry.get("integrity_note"),
+        "recorded_at": _now(),
+    }
+    # ledger.seal() normalises event_data and stamps chain_version, so the row
+    # stored is the row that was hashed. See SPEC.md section 7.
+    sealed = ledger.seal(body, prev)
+    sealed["tenant_id"] = principal.tenant_id
+    _t("custody_log").insert(sealed).execute()
+    return sealed["entry_hash"]
+
+
+# ------------------------------------------------------------------ whoami --
+@bp.route("/whoami", methods=["GET"])
+@require_tenant
+def whoami():
+    """What this credential is, so an integrator can check their wiring."""
+    principal = _principal()
+    try:
+        res = (_t("tenants").select("name,slug,status")
+               .eq("id", principal.tenant_id).limit(1).execute())
+        tenant = (res.data or [{}])[0]
+    except Exception:
+        log.exception("Tenant lookup failed")
+        return _err("Could not load the tenant", 500)
+
+    return jsonify({
+        "tenant": {"id": principal.tenant_id, **tenant},
+        "credential": "api_key" if principal.is_api_key else "member",
+        "role": principal.role,
+        "chain_version": ledger.CHAIN_VERSION,
+    })
+
+
+# ----------------------------------------------------------------- records --
+@bp.route("/records", methods=["POST"])
+@require_tenant
+def create_record():
+    """Open a record. `external_ref` is the tenant's own identifier for it."""
+    principal = _principal()
+    if principal.is_member and principal.role == "viewer":
+        return _err("This account has read-only access", 403)
+
+    data = request.get_json(silent=True) or {}
+    external_ref = (data.get("external_ref") or "").strip()
+    if not external_ref:
+        return _err("external_ref is required — it is how you will find this "
+                    "record in your own system", 400)
+
+    lat, lng = data.get("site_lat"), data.get("site_lng")
+    if (lat is None) != (lng is None):
+        return _err("site_lat and site_lng must be given together", 400)
+    try:
+        lat = None if lat is None else float(lat)
+        lng = None if lng is None else float(lng)
+    except (TypeError, ValueError):
+        return _err("site_lat and site_lng must be numbers", 400)
+
+    subject = (data.get("subject_ref") or "").strip() or None
+    buyer = (data.get("buyer_ref") or "").strip() or None
+    if subject and buyer and subject == buyer:
+        return _err("subject_ref and buyer_ref must differ — one party cannot "
+                    "both do the work and attest to it", 400)
+
+    row = {
+        "tenant_id": principal.tenant_id,
+        "external_ref": external_ref,
+        "subject_ref": subject,
+        "buyer_ref": buyer,
+        "trade": (data.get("trade") or "").strip() or None,
+        "site_address": (data.get("site_address") or "").strip() or None,
+        "site_lat": lat,
+        "site_lng": lng,
+    }
+    try:
+        res = _t("records").insert(row).execute()
+    except Exception as exc:
+        # The (tenant_id, external_ref) unique index is deliberate: it is what
+        # lets two tenants use the same reference without colliding, and stops
+        # one tenant opening the same record twice.
+        if "records_tenant_id_external_ref_key" in str(exc) or "duplicate key" in str(exc):
+            return _err(f"You already have a record with external_ref "
+                        f"{external_ref!r}", 409)
+        log.exception("Record insert failed")
+        return _err("Could not create the record", 500)
+
+    record = (res.data or [{}])[0]
+    _head_and_append(record["id"], {
+        "event_type": "created",
+        "event_data": {"external_ref": external_ref, "trade": row["trade"]},
+        "gps_lat": lat, "gps_lng": lng,
+    })
+    return jsonify({"record": record}), 201
+
+
+@bp.route("/records", methods=["GET"])
+@require_tenant
+def list_records():
+    """The tenant's records. Scoped, so there is no other tenant's to leak."""
+    try:
+        query = _t("records").select(
+            "id,external_ref,subject_ref,buyer_ref,trade,site_address,"
+            "status,created_at,completed_at,checkpoints_locked_at")
+        res = (tenancy.scope(query, _principal())
+               .order("created_at", desc=True).limit(200).execute())
+    except Exception:
+        log.exception("Record list failed")
+        return _err("Could not list records", 500)
+    return jsonify({"records": res.data or []})
+
+
+@bp.route("/records/<record_id>", methods=["GET"])
+@require_tenant
+@require_record(writable=False)
+def get_record(record_id):
+    """One record with its checkpoints and the live photo for each."""
+    try:
+        points = (_t("checkpoints").select("*")
+                  .eq("record_id", record_id)
+                  .order("point_number").execute()).data or []
+        photos = (_t("photos").select(
+            "id,checkpoint_id,original_hash,verdict,verdict_confidence,"
+            "verdict_notes,has_exif,gps_lat,gps_lng,site_distance_m,"
+            "integrity_note,attestation_tier,uploaded_at,superseded_by,"
+            "superseded_at")
+            .eq("record_id", record_id).order("uploaded_at").execute()).data or []
+    except Exception:
+        log.exception("Record detail failed for %s", record_id)
+        return _err("Could not load the record", 500)
+
+    live = [p for p in photos if verdict_mod.is_live(p)]
+    by_point = {}
+    for photo in live:
+        by_point[photo["checkpoint_id"]] = photo
+
+    return jsonify({
+        "record": g.record,
+        "checkpoints": [{**p, "live_photo": by_point.get(p["id"])} for p in points],
+        "photos_total": len(photos),
+        "photos_superseded": len(photos) - len(live),
+    })
+
+
+# ------------------------------------------------------------- checkpoints --
+@bp.route("/records/<record_id>/checkpoints", methods=["POST"])
+@require_tenant
+@require_record()
+def set_checkpoints(record_id):
+    """Define the checkpoints, then lock them.
+
+    Locking is the point. A checkpoint list that can be edited after photos
+    start arriving is not a commitment -- the party being documented could drop
+    the checkpoint they failed and the record would still read as complete.
+    Once locked, the set is the set.
+    """
+    if g.record.get("checkpoints_locked_at"):
+        return _err("Checkpoints are locked for this record. They are fixed "
+                    "once set, so a failed checkpoint cannot be removed after "
+                    "the fact.", 409)
+
+    data = request.get_json(silent=True) or {}
+    items = data.get("checkpoints")
+    if not isinstance(items, list) or not items:
+        return _err("checkpoints must be a non-empty list", 400)
+    if len(items) > MAX_CHECKPOINTS:
+        return _err(f"At most {MAX_CHECKPOINTS} checkpoints per record", 400)
+
+    rows = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            return _err(f"Checkpoint {index} must be an object", 400)
+        label = (item.get("label") or "").strip()
+        if not label:
+            return _err(f"Checkpoint {index} needs a label", 400)
+        rows.append({
+            "tenant_id": _principal().tenant_id,
+            "record_id": record_id,
+            "point_number": index,
+            "label": label,
+            "description": (item.get("description") or "").strip() or None,
+            "code_reference": (item.get("code_reference") or "").strip() or None,
+            "must_show": (item.get("must_show") or "").strip() or None,
+        })
+
+    try:
+        res = _t("checkpoints").insert(rows).execute()
+        _t("records").update({"checkpoints_locked_at": _now()}) \
+            .eq("id", record_id).execute()
+    except Exception:
+        log.exception("Checkpoint insert failed for %s", record_id)
+        return _err("Could not set the checkpoints", 500)
+
+    _head_and_append(record_id, {
+        "event_type": "checkpoints_locked",
+        "event_data": {"count": len(rows),
+                       "labels": [r["label"] for r in rows]},
+    })
+    return jsonify({"checkpoints": res.data or [], "locked": True}), 201
+
+
+# ------------------------------------------------------------------ photos --
+@bp.route("/records/<record_id>/photos", methods=["POST"])
+@require_tenant
+@require_record()
+def upload_photo(record_id):
+    """Take a file and a checkpoint. Derive everything else.
+
+    The caller sends `file`, `checkpoint_id`, and optionally the coordinates
+    their device reported. They do not send a hash, a verdict, an EXIF flag or
+    a distance: each is computed here, from the bytes that arrived or from the
+    record's own site, and only the computed values are sealed.
+    """
+    checkpoint_id = (request.form.get("checkpoint_id") or "").strip()
+    if not checkpoint_id:
+        return _err("checkpoint_id is required", 400)
+    upload = request.files.get("file")
+    if not upload:
+        return _err("file is required", 400)
+
+    try:
+        point = (_t("checkpoints").select("id,label,point_number")
+                 .eq("id", checkpoint_id).eq("record_id", record_id)
+                 .limit(1).execute()).data
+    except Exception:
+        log.exception("Checkpoint lookup failed")
+        return _err("Could not load the checkpoint", 500)
+    if not point:
+        return _err("That checkpoint does not belong to this record", 404)
+
+    raw = upload.read()
+    if not raw:
+        return _err("The uploaded file is empty", 400)
+
+    mime = integrity.normalize_mime(upload.mimetype or "")
+    sniffed = integrity.sniff_mime(raw)
+    if sniffed and mime and sniffed != mime:
+        # Trust the bytes, not the header. A caller can set any content type.
+        mime = sniffed
+    mime = sniffed or mime
+    if not mime:
+        return _err("Unsupported image format", 415)
+
+    # The authoritative hash: these bytes, hashed here, before anything else
+    # touches them.
+    original_hash = integrity.sha256(raw)
+
+    app_lat = request.form.get("gps_lat")
+    app_lng = request.form.get("gps_lng")
+    try:
+        app_lat = float(app_lat) if app_lat not in (None, "") else None
+        app_lng = float(app_lng) if app_lng not in (None, "") else None
+    except (TypeError, ValueError):
+        return _err("gps_lat and gps_lng must be numbers", 400)
+
+    assessment = integrity.assess(raw, mime, app_lat, app_lng,
+                                  config.get_int("GPS_TOLERANCE_M"))
+
+    # Distance is measured against the site on the RECORD -- the one reference
+    # point the uploader did not supply. Comparing their EXIF to their own
+    # client reading, which is what `gps_self_consistent` does, is not
+    # corroboration and is not used for this.
+    site_distance = None
+    if g.record.get("site_lat") is not None and app_lat is not None:
+        site_distance = integrity.haversine_m(
+            g.record["site_lat"], g.record["site_lng"], app_lat, app_lng)
+
+    photo_id = str(uuid.uuid4())
+    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(mime, "bin")
+    storage_path = f"{_principal().tenant_id}/{record_id}/{photo_id}.{ext}"
+
+    try:
+        db().storage.from_(config.get("SHIELD_BUCKET")).upload(
+            storage_path, raw, {"content-type": mime, "upsert": "false"})
+    except Exception:
+        log.exception("Storage write failed for %s", photo_id)
+        return _err("Could not store the photograph", 502)
+
+    row = {
+        "id": photo_id,
+        "tenant_id": _principal().tenant_id,
+        "record_id": record_id,
+        "checkpoint_id": checkpoint_id,
+        "uploaded_by_ref": (request.form.get("uploaded_by_ref") or "").strip() or None,
+        "storage_path": storage_path,
+        "original_hash": original_hash,
+        "original_size_bytes": len(raw),
+        "has_exif": assessment.get("has_exif"),
+        "gps_lat": app_lat,
+        "gps_lng": app_lng,
+        "site_distance_m": site_distance,
+        "integrity_note": assessment.get("integrity_note"),
+        # Every web upload is unattested and says so. See AR-1: App Attest and
+        # Play Integrity both need a native app, so this is the honest default
+        # rather than a finding against anyone.
+        "attestation_tier": "unattested",
+        "received_at": _now(),
+    }
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    if ip:
+        row["upload_ip_hash"] = integrity.hash_ip(ip.split(",")[0].strip(),
+                                                  config.get("IP_HASH_SALT"))
+
+    try:
+        res = _t("photos").insert(row).execute()
+    except Exception:
+        log.exception("Photo insert failed for %s", photo_id)
+        return _err("Could not record the photograph", 500)
+
+    # A retake supersedes the previous live photo for this checkpoint rather
+    # than replacing it. The failed attempt stays in the record and in the
+    # published statistics; deleting it would make every corrected failure
+    # disappear from our own numbers.
+    try:
+        previous = (_t("photos").select("id")
+                    .eq("checkpoint_id", checkpoint_id)
+                    .is_("superseded_at", "null")
+                    .neq("id", photo_id).execute()).data or []
+        for old in previous:
+            _t("photos").update({"superseded_by": photo_id,
+                                 "superseded_at": _now()}) \
+                .eq("id", old["id"]).execute()
+            _head_and_append(record_id, {
+                "event_type": "superseded", "photo_id": old["id"],
+                "event_data": {"superseded_by": photo_id},
+            })
+    except Exception:
+        log.exception("Supersede pass failed for checkpoint %s", checkpoint_id)
+
+    _head_and_append(record_id, {
+        "event_type": "uploaded",
+        "photo_id": photo_id,
+        "file_hash": original_hash,
+        "gps_lat": app_lat, "gps_lng": app_lng,
+        "integrity_note": assessment.get("integrity_note"),
+        "event_data": {
+            "checkpoint": point[0]["label"],
+            "point_number": point[0]["point_number"],
+            "bytes": len(raw),
+            "mime": mime,
+            "has_exif": bool(assessment.get("has_exif")),
+            "site_distance_m": site_distance,
+            "attestation_tier": "unattested",
+        },
+    })
+    return jsonify({"photo": (res.data or [{}])[0]}), 201
+
+
+# ------------------------------------------------------------------ custody --
+@bp.route("/records/<record_id>/custody", methods=["GET"])
+@require_tenant
+@require_record(writable=False)
+def custody(record_id):
+    """The chain, verified on the way out.
+
+    Verifying here is a convenience, not the guarantee. The guarantee is that
+    a recipient can run the same check themselves with `verifier/` or the
+    browser client, against the package below, without trusting this response.
+    """
+    try:
+        entries = (_t("custody_log").select("*")
+                   .eq("record_id", record_id)
+                   .order("recorded_at").execute()).data or []
+    except Exception:
+        log.exception("Custody read failed for %s", record_id)
+        return _err("Could not load the custody chain", 500)
+
+    ordered = chain_in_order(entries, record_id)
+    result = ledger.verify_chain(ordered, record_id)
+    return jsonify({"custody": ordered, "verification": result})
+
+
+@bp.route("/records/<record_id>/package", methods=["GET"])
+@require_tenant
+@require_record(writable=False)
+def package(record_id):
+    """The evidence package, in the shape the published verifier reads.
+
+    This is the deliverable: the thing a tenant hands to their customer, their
+    insurer or their lawyer, who checks it with software we do not control.
+    `head_hash` is the single value that commits to the whole history -- hold a
+    copy of it and a later rewrite becomes detectable. It is also the only
+    thing that detects truncation, because a chain with entries removed from
+    the end verifies perfectly otherwise (AR-8).
+    """
+    try:
+        entries = (_t("custody_log").select("*")
+                   .eq("record_id", record_id)
+                   .order("recorded_at").execute()).data or []
+        points = (_t("checkpoints").select("*")
+                  .eq("record_id", record_id).order("point_number")
+                  .execute()).data or []
+        photos = (_t("photos").select("*")
+                  .eq("record_id", record_id).order("uploaded_at")
+                  .execute()).data or []
+    except Exception:
+        log.exception("Package build failed for %s", record_id)
+        return _err("Could not build the package", 500)
+
+    _head_and_append(record_id, {
+        "event_type": "exported",
+        "event_data": {"entries": len(entries), "photos": len(photos)},
+    })
+
+    # Storage paths are ours, not the recipient's, and a signed URL in an
+    # export would expire and look like tampering. The hash is what travels.
+    safe_photos = [{k: v for k, v in p.items() if k != "storage_path"}
+                   for p in photos]
+
+    return jsonify({
+        "schema": "tradedeck.shield.package.v2",
+        "chain_version": ledger.CHAIN_VERSION,
+        "generated_at": _now(),
+        "record": {k: v for k, v in g.record.items() if k != "tenant_id"},
+        "checkpoints": points,
+        "photos": safe_photos,
+        "custody": chain_in_order(entries, record_id),
+        "head_hash": ledger.head_of(chain_in_order(entries, record_id), record_id),
+        "verify_with": "https://github.com/Wood1974/Tradedeck-api "
+                       "(shield/verifier/shield_verify.py, or "
+                       "shield/webapp/shield.html in a browser)",
+    })
+
+
+def _live_for(checkpoint_id, photos):
+    """The live photo for a checkpoint, in the shape verdict.grade() reads.
+
+    `verdict.is_live()` decides what counts, so a retaken photo does not grade
+    the checkpoint it was replaced on. The rename is the only adaptation.
+    """
+    for photo in photos:
+        if photo.get("checkpoint_id") != checkpoint_id:
+            continue
+        if verdict_mod.is_live(photo):
+            return {**photo, "ai_verdict": photo.get("verdict")}
+    return None
+
+
+# ---------------------------------------------------------------- close out --
+@bp.route("/records/<record_id>/complete", methods=["POST"])
+@require_tenant
+@require_record()
+def complete(record_id):
+    """Close the record and seal the outcome.
+
+    The grade is computed here from the rows, not taken from the request. The
+    parent service built its completion report out of the request body and
+    ignored the hash it computed, which meant the close-out of a record said
+    whatever the party closing it wanted it to say.
+    """
+    if g.record.get("status") == "complete":
+        return _err("This record is already complete", 409)
+
+    try:
+        points = (_t("checkpoints").select("id,label,point_number,status")
+                  .eq("record_id", record_id).order("point_number")
+                  .execute()).data or []
+        photos = (_t("photos").select(
+            "id,checkpoint_id,verdict,superseded_by,superseded_at")
+            .eq("record_id", record_id).execute()).data or []
+    except Exception:
+        log.exception("Completion read failed for %s", record_id)
+        return _err("Could not load the record", 500)
+
+    if not points:
+        return _err("This record has no checkpoints, so there is nothing to "
+                    "attest to", 409)
+
+    # verdict.grade() reads one `photo` per point and calls the field
+    # `ai_verdict`; this schema stores many photos per checkpoint and calls it
+    # `verdict`. Translate here rather than bending either side: the grader is
+    # shared with the legacy service and its rules -- incomplete outranks every
+    # verdict, superseded photos are not live -- are the part worth reusing.
+    graded = verdict_mod.grade([
+        {**point, "photo": _live_for(point["id"], photos)} for point in points
+    ])
+
+    try:
+        _t("records").update({"status": "complete", "completed_at": _now()}) \
+            .eq("id", record_id).execute()
+    except Exception:
+        log.exception("Completion write failed for %s", record_id)
+        return _err("Could not complete the record", 500)
+
+    head = _head_and_append(record_id, {
+        "event_type": "completed",
+        "event_data": {
+            "overall_verdict": graded.get("verdict"),
+            "score": graded.get("score"),
+            "checkpoints": len(points),
+            "verified": graded.get("verified"),
+        },
+    })
+
+    return jsonify({
+        "record_id": record_id,
+        "grade": graded,
+        "head_hash": head,
+        "keep_this": "Store head_hash outside Shield. It is the only thing "
+                     "that lets you detect a later rewrite, or entries removed "
+                     "from the end of the chain.",
+    })

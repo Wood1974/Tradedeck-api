@@ -1396,6 +1396,60 @@ def inv_nested_floats_carry_their_type():
     return True, f"chain_version {ledger.CHAIN_VERSION}; nested floats carry their type"
 
 
+def inv_tenant_api_derives_its_evidence():
+    """The sellable API may not take a derivable value from the caller.
+
+    This is the fraud chain that produced "EXIF is not evidence", generalised
+    into a build failure. The parent's /shield/analyze-photo accepted
+    `comp_url`, `has_exif`, `gps_lat` and `original_hash` from the request body
+    and never re-read the row it was about to update, so a contractor could
+    upload a genuine photo and aim the analyser at a stock image of perfect
+    work: the pass landed on the real photo's row and the caller's own hash
+    went into the custody log as the evidence.
+
+    `tenant_api.py` is the version a second business buys, which makes the same
+    mistake worse -- their customers would be relying on it. So the hash, the
+    EXIF flag, the distance from site, the verdict and the attestation tier are
+    all computed server-side, and a request field named after any of them is a
+    regression whatever the surrounding code does with it.
+
+    `gps_lat` and `gps_lng` ARE read from the request, deliberately. They are
+    the device's claimed position, used as one input to integrity.assess() and
+    measured against the site coordinates on the RECORD -- the one reference
+    point the uploader did not supply. That asymmetry is the whole design, so
+    the check allows them by name rather than by accident.
+    """
+    path = SHIELD / "tenant_api.py"
+    if not path.exists():
+        return True, "tenant_api.py is not present"
+
+    src = path.read_text()
+    src = re.sub(r'"""[\s\S]*?"""', "", src)
+    src = re.sub(r"#[^\n]*", "", src)
+
+    derivable = ("original_hash", "file_hash", "has_exif", "site_distance_m",
+                 "comp_url", "entry_hash", "attestation_tier",
+                 "verdict_confidence")
+    taken = []
+    for field in derivable:
+        # request.form.get("x"), request.json["x"], data.get("x") -- any read
+        # of a request-shaped mapping keyed by a derivable name.
+        if re.search(r"(request\.(form|json|args|values)[^\n]{0,40}|data)"
+                     r"[\.\[]\s*g?e?t?\(?\s*[\"']" + field + r"[\"']", src):
+            taken.append(field)
+
+    if taken:
+        return False, (f"tenant_api reads {', '.join(taken)} from the request; "
+                       f"every one of those is derived from the bytes or the "
+                       f"record")
+
+    # And the positive half: the hash must actually be computed there.
+    if "integrity.sha256(raw)" not in src:
+        return False, ("tenant_api no longer hashes the uploaded bytes itself; "
+                       "if the hash comes from anywhere else it is not evidence")
+    return True, "every sealed value is derived, not accepted"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1448,6 +1502,7 @@ INVARIANTS = (
     ("no-corroboration-overclaim", "Ship a field named for a corroboration the code does not perform", inv_no_corroboration_overclaim),
     ("subject-time-not-signed", "Seal a timestamp the subject wrote, or aim solar geometry at one", inv_subject_time_is_not_signed),
     ("nested-floats-carry-their-type", "Ship a package only Python can verify", inv_nested_floats_carry_their_type),
+    ("tenant-api-derives-evidence", "Let a paying tenant hand the service its own hash or verdict", inv_tenant_api_derives_its_evidence),
 )
 
 

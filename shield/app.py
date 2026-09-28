@@ -7,13 +7,14 @@ import logging
 import os
 
 import stripe
-from flask import Flask, g, jsonify
+from flask import Flask, g, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import config
 from db import client
 from routes import bp
+from tenant_api import bp as tenant_bp
 
 log = logging.getLogger(__name__)
 
@@ -60,11 +61,35 @@ def create_app():
         log.exception("Unhandled error", exc_info=exc)
         return jsonify({"error": "Internal error"}), 500
 
+    # The legacy blueprint, on TradeDeck's tables through TradeDeck's identity.
+    # It keeps serving until its last caller leaves.
     app.register_blueprint(bp)
+    # The sellable one: tenant-scoped, on Shield's own schema. Separate
+    # blueprint rather than a port in place, so neither speaks two dialects.
+    app.register_blueprint(tenant_bp)
 
     @app.route("/")
     def index():
         return jsonify({"service": "tradedeck-shield", "status": "ok"})
+
+    # The trailing slash is load-bearing. Without it the browser resolves
+    # `console.css` against the site root, both assets 404, and the page
+    # renders its own markup and then does nothing -- which looks like a
+    # working console until you click something. Flask redirects /console to
+    # /console/ for a rule written this way. Caught by the browser test.
+    @app.route("/console/")
+    @app.route("/console/<path:asset>")
+    def console(asset="index.html"):
+        """The tenant console.
+
+        Served from the API origin on purpose: the page's connect-src is
+        'self', so it can only ever talk back to the service that served it.
+        A console hosted elsewhere would need a wider policy and a CORS
+        allowance, and both are things an attacker would rather we had.
+        """
+        return send_from_directory(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "console"),
+            asset)
 
     @app.route("/health")
     def health():
