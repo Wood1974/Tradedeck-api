@@ -19,6 +19,7 @@ import Foundation
 
 enum ClientError: LocalizedError {
     case badURL
+    case notConnected
     case http(Int, String)
     case transport(String)
 
@@ -26,6 +27,11 @@ enum ClientError: LocalizedError {
         switch self {
         case .badURL:
             return "That is not a valid Shield address."
+        case .notConnected:
+            // Distinct from badURL on purpose. This one surfaces over the
+            // viewfinder, and "that is not a valid Shield address" sends
+            // somebody to re-type a URL that was never the problem.
+            return "You are signed out of Shield. Connect again to record this capture."
         case .http(_, let message):
             // The server's refusals are written to be read by a person —
             // "This capture was not accepted: …" — so they are surfaced as

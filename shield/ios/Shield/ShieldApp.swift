@@ -39,20 +39,34 @@ final class AppState: ObservableObject {
 
     // MARK: - session
 
+    /// One place where an address becomes a base URL, used by both entry
+    /// points.
+    ///
+    /// It was two, and they disagreed. `connect` appended a trailing slash
+    /// and stored the address without one; `resume` used the stored form as
+    /// the base directly. Relative resolution against a base with no trailing
+    /// slash drops its last path component, so a service at
+    /// `https://host/api` was reached at `https://host/api/shield/v2/...`
+    /// when you signed in and `https://host/shield/v2/...` after a relaunch.
+    /// The app would work, then quietly talk to a different place — visible
+    /// only on a path-prefixed deployment, and only after the first restart.
+    static func baseURL(from address: String) -> URL? {
+        let text = address.hasPrefix("http") ? address : "https://\(address)"
+        return URL(string: text.hasSuffix("/") ? text : text + "/")
+    }
+
     func resume() async {
-        guard client == nil,
-              let saved = Keychain.read(),
-              let url = URL(string: saved.address) else { return }
+        guard client == nil, let saved = Keychain.read(),
+              let url = Self.baseURL(from: saved.address) else { return }
         await connect(saved.address, saved.token, base: url, quiet: true)
     }
 
     func connect(_ address: String, _ token: String) async {
-        let text = address.hasPrefix("http") ? address : "https://\(address)"
-        guard let url = URL(string: text.hasSuffix("/") ? text : text + "/") else {
+        guard let url = Self.baseURL(from: address) else {
             problem = ClientError.badURL.errorDescription
             return
         }
-        await connect(text, token, base: url, quiet: false)
+        await connect(address, token, base: url, quiet: false)
     }
 
     private func connect(_ address: String, _ token: String,
@@ -70,7 +84,15 @@ final class AppState: ObservableObject {
             // show the connect form, not an error the person did nothing to
             // cause.
             if !quiet { problem = error.localizedDescription }
-            Keychain.clear()
+
+            // Only a credential the server actually rejected is discarded.
+            // Clearing on any failure means opening the app somewhere with no
+            // signal wipes the stored key — and re-entering an API key on a
+            // phone, on a roof, is the moment somebody stops photographing.
+            if case ClientError.http(let code, _) = error,
+               code == 401 || code == 403 {
+                Keychain.clear()
+            }
         }
     }
 
@@ -106,7 +128,7 @@ final class AppState: ObservableObject {
 
     func upload(photo: Data, record: String, checkpoint: String,
                 location: (lat: Double, lng: Double)?) async throws -> StoredPhoto {
-        guard let client else { throw ClientError.badURL }
+        guard let client else { throw ClientError.notConnected }
         return try await client.upload(photo: photo, to: record,
                                        checkpoint: checkpoint,
                                        location: location)

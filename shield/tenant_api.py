@@ -370,9 +370,20 @@ def _b64(value):
         return None
     text = value.strip()
     text += "=" * (-len(text) % 4)
-    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+    # validate=True is load-bearing, not tidiness. Without it `b64decode`
+    # *discards* characters outside the standard alphabet instead of
+    # raising, so a URL-safe string decodes to short, silently wrong bytes
+    # and the urlsafe branch below is never reached. A 32-byte key id
+    # arrives as 26 and the capture is refused with "the attested key does
+    # not match the key id presented" -- which names the wrong cause, and a
+    # refusal that misdiagnoses itself is how a real problem gets chased in
+    # the wrong direction.
+    # `urlsafe_b64decode` takes no validate flag, so the alternative alphabet
+    # is passed to b64decode as altchars instead -- same result, and both
+    # attempts then reject rather than discard.
+    for altchars in (None, b"-_"):
         try:
-            return decoder(text)
+            return base64.b64decode(text, altchars=altchars, validate=True)
         except (binascii.Error, ValueError):
             continue
     return None

@@ -607,6 +607,33 @@ class TestCaptureWithARealAttestation:
         assert got.status_code == 422, (
             "the caller's own payload digest was used instead of the bytes")
 
+    def test_a_url_safe_encoding_is_accepted_not_quietly_mangled(
+            self, app_and_db, monkeypatch):
+        """Both base64 alphabets decode, or the refusal names the wrong cause.
+
+        `base64.b64decode` *discards* characters outside the standard alphabet
+        rather than raising, so without validate=True a URL-safe string comes
+        back short and wrong instead of falling through to the URL-safe
+        branch. A 32-byte key id arrives as 26 and the capture is refused with
+        "the attested key does not match the key id presented" — which is
+        true of the bytes and false about what went wrong. A refusal that
+        misdiagnoses itself sends someone hunting the App Attest capability
+        when the bug is an encoding choice.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = self.attest(monkeypatch, client)
+
+        raw_blob = base64.b64decode(fields["attestation"])
+        raw_key = base64.b64decode(fields["attestation_key_id"])
+        fields["attestation"] = (base64.urlsafe_b64encode(raw_blob)
+                                 .decode().rstrip("="))
+        fields["attestation_key_id"] = (base64.urlsafe_b64encode(raw_key)
+                                        .decode().rstrip("="))
+
+        assert self.post(client, fields).status_code == 201, (
+            "a URL-safe base64 attestation was not decoded")
+
     def test_a_challenge_is_spent_once(self, app_and_db, monkeypatch):
         """The replay: same device, same attestation, a second photograph."""
         flask_app, store, keys, tenant_api = app_and_db
