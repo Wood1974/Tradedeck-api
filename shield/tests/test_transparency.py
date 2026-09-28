@@ -183,3 +183,43 @@ class TestNothingIdentifyingLeaks:
     def test_generated_at_is_present_and_utc(self):
         rep = tr.report([], [], [])
         assert rep["generated_at"].endswith("+00:00") or rep["generated_at"].endswith("Z")
+
+
+class TestAnUnreadSourceIsNamed:
+    """A source that could not be read must not read as "nothing happened".
+
+    Shield's outcomes live in two schemas during the migration. If the tenant
+    schema is unreachable it contributes zero rows, and a zero that means "we
+    did not look" is indistinguishable, in the payload, from a zero that means
+    "no failures occurred". That is the fourth way a self-published statistic
+    flatters its author, and it is the one that arrived by accident rather
+    than by design.
+    """
+
+    def test_a_missing_source_adds_a_limit_line(self):
+        payload = tr.report(
+            [], [], [], sources={"public.shield_*": "counted",
+                                 "shield schema": "unavailable"})
+        joined = " ".join(payload["limits"])
+        assert "INCOMPLETE" in joined
+        assert "shield schema" in joined
+        assert "lower bound" in joined
+
+    def test_all_sources_counted_adds_no_caveat(self):
+        clean = tr.report(
+            [], [], [], sources={"public.shield_*": "counted",
+                                 "shield schema": "counted"})
+        assert not any("INCOMPLETE" in line for line in clean["limits"])
+
+    def test_the_sources_travel_in_the_payload(self):
+        payload = tr.report(
+            [], [], [], sources={"shield schema": "unavailable"})
+        assert payload["sources"] == {"shield schema": "unavailable"}
+
+    def test_an_incomplete_verdict_gets_its_own_category(self):
+        """Not bucketed as unrecognised, which reads like a data problem."""
+        payload = tr.report(
+            [{"overall_verdict": "incomplete"}, {"overall_verdict": "pass"}],
+            [], [])
+        assert payload["job_verdicts"]["incomplete"] == 1
+        assert payload["job_verdicts"]["unrecognised"] == 0

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shield Capture — Info.plist.
+
+  The important thing about this file is what is NOT in it.
+
+  There is no NSPhotoLibraryUsageDescription and there must never be one. A
+  photograph chosen from storage cannot be attested, so the server refuses it;
+  a library path in this app would be a control that looks available and always
+  fails, which reads as a bug rather than as the decision it is. Without the
+  key, iOS itself will not hand this app a library image, so the guarantee does
+  not depend on anybody remembering it.
+
+  NSCameraUsageDescription is required — AVCapturePhotoOutput is the only thing
+  in the app that produces bytes.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Shield</string>
+  <key>CFBundleDisplayName</key>
+  <string>Shield Capture</string>
+
+  <key>NSCameraUsageDescription</key>
+  <string>Shield photographs work at the moments it stops being inspectable. A picture chosen from your library cannot prove where it came from, so the camera is the only way in.</string>
+
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Your position is recorded with each photograph and measured against the site the record names. It is treated as a claim by this device, not as proof.</string>
+
+  <!-- DO NOT ADD NSPhotoLibraryUsageDescription. See the comment above. -->
+</dict>
+</plist>

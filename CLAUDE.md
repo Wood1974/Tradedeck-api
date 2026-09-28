@@ -32,11 +32,7 @@ had drifted significantly from what's actually here.
   ZipRecruiter API, filtered/tagged by a `TRADE_KEYWORDS` map (Framing,
   Concrete, Roofing, Electrical, Plumbing, HVAC, Excavation, Flooring,
   Siding, Painting, Finish Carpentry, General) and a `UTAH_CITIES` list.
-  **This overlaps in purpose with the KSL Jobs scraper** built separately
-  this session (see the tradedeck repo notes) — that scraper writes
-  directly to Supabase, this aggregator writes to this service's own
-  SQLite DB, and neither currently knows about the other. Worth deciding
-  whether to consolidate before building more lead sources.
+  Writes to this service's own SQLite DB.
 - **GC leads**: `GET /api/gc-leads`, `POST /api/gc-leads/refresh` — building
   permit data from a PermitStack API, similarly filtered by trade.
 - **Chat**: `POST /api/chat` — a thin proxy to the Anthropic Messages API
@@ -89,9 +85,6 @@ had drifted significantly from what's actually here.
 
 - Hosted on Render: `tradedeck-api.onrender.com`, via `Procfile`
   (`gunicorn app:app`) and `render.yaml`.
-- Intentionally untouched by the KSL scraper and any Windows-hub
-  automation — that writes straight to Supabase, bypassing this API. Keep
-  that separation; it was a deliberate design choice.
 
 ## Conventions / working notes
 
@@ -100,6 +93,4 @@ had drifted significantly from what's actually here.
   actually committed here. Verify against `app.py` directly before
   building on top of a feature.
 - Before adding new functionality, resolve (or at least flag to the
-  project owner) the two structural issues above: the dual/disconnected
-  auth systems, and the dual/overlapping lead-aggregation systems
-  (this service's live-leads vs. the standalone KSL scraper).
+  project owner) the dual/disconnected auth systems.

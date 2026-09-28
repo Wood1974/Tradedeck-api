@@ -57,7 +57,12 @@ the adversary controls only ever catches lazy fraud.
 ```
 shield/
 ├── app.py           Flask factory, CORS, ProxyFix, size limits, health
-├── routes.py        HTTP surface — the trust boundary
+├── routes.py        HTTP surface — the trust boundary (TradeDeck's own identity)
+├── tenant_api.py    /shield/v2 — the same loop any business can buy into
+├── console/         the tenant's web console (no capture path, on purpose)
+├── ios/             the capture app — the only thing that can produce an attestation
+├── attestation.py   what a capture device can prove about itself, and what it cannot
+├── app_attest.py    Apple App Attest verification — the only source of `verified=True`
 ├── integrity.py     hashing, EXIF, haversine, compression
 ├── corroborate.py   solar geometry — a signal the uploader cannot edit
 ├── ledger.py        hash-chained custody, and its verifier
@@ -70,8 +75,8 @@ shield/
 ├── pricing.py       server-side price tiers
 ├── auth.py          Supabase JWT + shield-job authorization
 ├── config.py        env validation, fails fast
-├── audit/           daily red-team: 36 invariants, protocol, accepted-risk ledger
-└── tests/           219 tests
+├── audit/           daily red-team: 56 invariants, protocol, accepted-risk ledger
+└── tests/           464 tests
 ```
 
 **`codes.py` is the domain asset** — 45 checkpoints with real citations
@@ -170,7 +175,7 @@ Defects found by adversarial review and closed here:
 ```bash
 cp shield/.env.example shield/.env      # six values are mandatory
 pip install -r shield/requirements.txt
-python -m pytest shield/tests -q        # 219 tests
+python -m pytest shield/tests -q        # 464 tests
 gunicorn --chdir shield --bind 0.0.0.0:$PORT app:app
 ```
 
@@ -183,6 +188,18 @@ from code.
 
 `IP_HASH_SALT` has no default and the service refuses to boot without it.
 Generate once: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+
+Two more are optional in the sense that the service boots without them, and
+mandatory in the sense that iOS capture is closed until both are set:
+
+| Variable | What happens without it |
+|---|---|
+| `APPLE_APP_ATTEST_ROOT_PEM` | No chain can be trusted, so every attestation is refused. The Apple App Attest Root CA, as PEM — fetch it from Apple and pin it. It is **configuration, never a constant**: a root committed to this repo is either wrong (nothing verifies, and it looks like an app bug) or right-looking and not Apple's (the service validates chains an attacker minted). Neither is visible by reading the code. |
+| `APP_ATTEST_APP_ID` | `TEAMID.com.bundle.identifier`. Without it no attestation matches the app, so all are refused. |
+
+`APP_ATTEST_ALLOW_DEVELOPMENT=1` accepts development attestations. It is off by
+default because a development attestation says nothing about a production
+device; turn it on per deployment, never in production.
 
 ---
 
@@ -228,6 +245,42 @@ and `pricing-and-results-public`, each verified by breaking it.
 | `POST /shield/jobs/<id>/complete` | Close out. Requires every checkpoint documented. |
 | `POST /shield/subscribe` | Contractor subscription checkout |
 | `POST /shield/webhook` | Stripe events |
+
+### `/shield/v2` — the tenant API
+
+The same evidence loop without the coupling to TradeDeck's own tables: a tenant
+presents an API key or a member session and parties are opaque strings they
+supply. `whoami`, `records`, `checkpoints`, `photos`, `custody`, `package`,
+`complete` — plus the one that makes capture possible at all:
+
+| Route | Purpose |
+|---|---|
+| `POST /shield/v2/records/<id>/capture-challenge` | A single-use nonce for one capture by one actor. The client photographs first, then calls `DCAppAttestService.attestKey` with `clientDataHash = SHA256(challenge_utf8 ‖ SHA256(photo bytes))`. |
+
+**Photographs are only recorded if the device attested to the capture.** The
+upload takes `attestation`, `attestation_key_id` (both base64),
+`attestation_challenge` and `attestation_platform=ios`; `app_attest.verify`
+walks the chain to the configured Apple root itself and refuses anything else.
+Both halves of that hash are load-bearing. Without the nonce an attestation
+proves the device was genuine at *some* moment, so one would cover every upload
+forever — it is spent once per attempt, pass or fail. Without the photo digest
+the attestation says a real app on real silicon was running when the nonce was
+issued, and nothing about the file in the same request: an attacker buys an
+iPhone, runs the real app, attests honestly, and uploads a stock photograph of
+somebody else's finished roof. The server derives that digest from the bytes
+that arrived and never accepts one.
+
+A file chosen from storage cannot be attested, so there is no browser capture
+path and the console does not offer one. Android is closed: Play Integrity
+needs a decrypted token, which is not built.
+
+The iOS client is in **[`ios/`](ios/)**, and it **has never been compiled** —
+there is no Swift toolchain here, so every line of it is unverified against a
+compiler, a device, or Apple's real App Attest service. It is a specification
+you can build, not a shipped app, and its own README says so first. The one
+property that *is* checked from source, by the `capture-app-has-no-library-path`
+invariant, is that the app has no path to a file it did not photograph. Nothing
+in production carries an attestation today — see AR-1.
 
 Only the assigned contractor uploads; either participant reads; a
 non-participant gets `404`, not `403`, so ids cannot be probed.

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shield Console</title>
+<!-- Served by the service over http, so the script can be a separate file and
+     the policy can stay strict without a build step. The verifier is a single
+     file for a different reason: it is handed to a stranger who opens it from
+     disk. connect-src is 'self' because this page only ever talks to the
+     service that served it. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self';
+               img-src 'self' data: blob:; connect-src 'self';
+               base-uri 'none'; form-action 'none'">
+<!-- Inline, so the browser never issues a favicon request. A 404 in the
+     console is noise that hides a real one. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M12%202%204%205.5v6c0%205%203.4%209.3%208%2010.5%204.6-1.2%208-5.5%208-10.5v-6z%22%20fill%3D%22%232f5d50%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="console.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path d="M12 2 4 5.5v6c0 5 3.4 9.3 8 10.5 4.6-1.2 8-5.5 8-10.5v-6z"
+              fill="currentColor"/>
+      </svg>
+      <h1>Shield</h1>
+    </div>
+    <div class="who" id="who" hidden>
+      <span class="tenant" id="whoTenant"></span>
+      <span class="cred" id="whoCred"></span>
+      <button class="link" id="signOut">Sign out</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ─── connect ─────────────────────────────────────────────────────── -->
+  <section id="connect" class="panel">
+    <h2>Connect</h2>
+    <p class="lede">Point the console at a Shield service and present a
+    credential. Nothing is stored on a server: the token stays in this
+    browser.</p>
+
+    <label class="field">
+      <span>Service address</span>
+      <input id="baseUrl" type="url" spellcheck="false" autocomplete="off"
+             placeholder="https://shield.example.com">
+      <small>Leave blank to use the service that served this page.</small>
+    </label>
+
+    <label class="field">
+      <span>Credential</span>
+      <input id="token" type="password" spellcheck="false" autocomplete="off"
+             placeholder="shld_… or a session token">
+      <small>An API key for a system, or a session token for a person. Either
+      resolves to the same tenant.</small>
+    </label>
+
+    <button class="primary" id="connectBtn">Connect</button>
+    <p class="err" id="connectErr" hidden></p>
+  </section>
+
+  <!-- ─── records ─────────────────────────────────────────────────────── -->
+  <section id="records" class="panel" hidden>
+    <div class="row-between">
+      <h2>Records</h2>
+      <button class="primary" id="newRecordBtn">New record</button>
+    </div>
+
+    <form id="newRecord" class="card" hidden>
+      <h3>Open a record</h3>
+      <label class="field">
+        <span>Your reference <b>*</b></span>
+        <input name="external_ref" required placeholder="JOB-2026-114">
+        <small>However you identify this job in your own system. Shield never
+        resolves it.</small>
+      </label>
+      <div class="grid2">
+        <label class="field">
+          <span>Party being documented</span>
+          <input name="subject_ref" placeholder="crew-12">
+        </label>
+        <label class="field">
+          <span>Party relying on it</span>
+          <input name="buyer_ref" placeholder="owner-3">
+        </label>
+      </div>
+      <div class="grid2">
+        <label class="field"><span>Trade</span>
+          <input name="trade" placeholder="Roofing"></label>
+        <label class="field"><span>Site address</span>
+          <input name="site_address" placeholder="120 Main St"></label>
+      </div>
+      <div class="grid2">
+        <label class="field"><span>Site latitude</span>
+          <input name="site_lat" inputmode="decimal" placeholder="40.76056"></label>
+        <label class="field"><span>Site longitude</span>
+          <input name="site_lng" inputmode="decimal" placeholder="-111.89083"></label>
+      </div>
+      <p class="note">The site coordinates are the one reference point the
+      party being documented does not supply. Every photograph is measured
+      against them.</p>
+      <div class="row">
+        <button class="primary" type="submit">Open record</button>
+        <button class="ghost" type="button" id="cancelRecord">Cancel</button>
+      </div>
+      <p class="err" id="recordErr" hidden></p>
+    </form>
+
+    <div id="recordList" class="list"></div>
+  </section>
+
+  <!-- ─── one record ──────────────────────────────────────────────────── -->
+  <section id="detail" class="panel" hidden>
+    <button class="link back" id="backToList">&larr; All records</button>
+    <div class="row-between">
+      <div>
+        <h2 id="detailRef"></h2>
+        <p class="sub" id="detailSub"></p>
+      </div>
+      <span class="pill" id="detailStatus"></span>
+    </div>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="work" aria-selected="true">Checkpoints</button>
+      <button role="tab" data-tab="chain" aria-selected="false">Custody chain</button>
+      <button role="tab" data-tab="close" aria-selected="false">Close out</button>
+    </nav>
+
+    <div id="work" class="tab on">
+      <form id="setPoints" class="card" hidden>
+        <h3>Define the checkpoints</h3>
+        <p>The moments that stop being inspectable once the next trade covers
+        them. <b>They lock once saved</b> — a list that can be edited later is
+        not a commitment, because the checkpoint that failed could simply be
+        removed.</p>
+        <div id="pointRows"></div>
+        <div class="row">
+          <button class="ghost" type="button" id="addPoint">Add checkpoint</button>
+          <button class="primary" type="submit">Save and lock</button>
+        </div>
+        <p class="err" id="pointsErr" hidden></p>
+      </form>
+      <div id="pointList" class="list"></div>
+    </div>
+
+    <div id="chain" class="tab">
+      <div id="chainVerdict"></div>
+      <div id="chainList" class="list"></div>
+      <div class="row">
+        <button class="ghost" id="downloadPackage">Download evidence package</button>
+      </div>
+      <p class="note">The package is what you hand to whoever needs to believe
+      it. They check it with the published verifier, which we do not control.
+      <b>Keep the head hash somewhere outside Shield</b> — it is the only thing
+      that detects entries removed from the end of the chain.</p>
+    </div>
+
+    <div id="close" class="tab">
+      <div class="card">
+        <h3>Close the record</h3>
+        <p>The outcome is computed from the checkpoints and their live
+        photographs. You cannot declare it.</p>
+        <button class="primary" id="completeBtn">Close and seal</button>
+        <div id="closeResult"></div>
+        <p class="err" id="closeErr" hidden></p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="console.js"></script>
+</body>
+</html>

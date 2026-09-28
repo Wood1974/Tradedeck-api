@@ -214,23 +214,54 @@ def public_results():
     if _results_cache["payload"] and now - _results_cache["at"] < _PUBLIC_TTL:
         return _public(_results_cache["payload"], max_age=_PUBLIC_TTL)
 
+    # Outcomes live in two places during the migration: the original
+    # public.shield_* tables and the tenant-scoped `shield` schema the sellable
+    # API writes to. Counting only the first would have made every record
+    # created through the new service invisible to the published failure rate
+    # -- a report that structurally cannot include our failures, which is worse
+    # than publishing none.
+    sources, reports, photos, events = {}, [], [], []
+
     try:
-        reports = (db().table("shield_completion_reports")
-                   .select("overall_verdict").execute().data or [])
-        photos = (db().table("shield_photos")
-                  .select("ai_verdict,has_exif,superseded_by,superseded_at")
-                  .execute().data or [])
-        events = (db().table("shield_custody_log")
-                  .select("event_type").execute().data or [])
+        reports += (db().table("shield_completion_reports")
+                    .select("overall_verdict").execute().data or [])
+        photos += (db().table("shield_photos")
+                   .select("ai_verdict,has_exif,superseded_by,superseded_at")
+                   .execute().data or [])
+        events += (db().table("shield_custody_log")
+                   .select("event_type").execute().data or [])
+        sources["public.shield_*"] = "counted"
     except Exception:
-        log.exception("Public results query failed")
+        log.exception("Public results query failed on the legacy tables")
         # Serving a stale report beats serving nothing; serving a zeroed one
         # would be a false statement about our outcomes.
         if _results_cache["payload"]:
             return _public(_results_cache["payload"], max_age=60)
         return _err("Outcome report temporarily unavailable", 503)
 
-    payload = transparency.report(reports, photos, events)
+    try:
+        shield = db().schema("shield")
+        reports += (shield.table("completion_reports")
+                    .select("overall_verdict").execute().data or [])
+        # The tenant schema calls it `verdict`; transparency reads
+        # `ai_verdict`. Rename on the way in rather than teaching the report
+        # two spellings for one thing.
+        photos += [{**row, "ai_verdict": row.get("verdict")}
+                   for row in (shield.table("photos")
+                               .select("verdict,has_exif,superseded_by,"
+                                       "superseded_at").execute().data or [])]
+        events += (shield.table("custody_log")
+                   .select("event_type").execute().data or [])
+        sources["shield schema"] = "counted"
+    except Exception:
+        # Expected until the migration is applied: the schema does not exist
+        # yet. Recorded as unread rather than swallowed, so the payload says
+        # the numbers are a lower bound instead of implying nothing happened.
+        log.warning("Public results could not read the shield schema",
+                    exc_info=True)
+        sources["shield schema"] = "unavailable"
+
+    payload = transparency.report(reports, photos, events, sources=sources)
     _results_cache.update(at=now, payload=payload)
     return _public(payload, max_age=_PUBLIC_TTL)
 
