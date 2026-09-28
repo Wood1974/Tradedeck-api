@@ -292,51 +292,78 @@ class TestTenantIsolation:
 
 
 # -------------------------------------------------------------- derivation --
-class TestNothingTheCallerSendsIsEvidence:
-    def test_a_client_supplied_hash_is_ignored(self, app_and_db):
-        """The hash sealed into the chain is of the bytes that arrived."""
-        import hashlib
+class TestCaptureMustAttest:
+    """A capture that cannot prove it came from a camera is not recorded.
+
+    The owner's rule, 2026-09-28. It reverses attestation.py's own argument
+    that a labelled capture beats no capture -- which holds for documenting
+    work, and does not hold for a product whose claim is that the photograph
+    is real. An `unattested` row is still hashed, chained and exported inside
+    something marked "evidence", and the chain is what makes a reader believe
+    it.
+
+    Nothing can pass this gate today, and that is the point: granting trust
+    needs a signature chain to Apple's or Google's root, which needs the
+    native app AR-1 describes. Capture is closed until it exists.
+    """
+
+    def test_an_upload_with_no_attestation_is_refused(self, app_and_db):
         flask_app, store, keys, tenant_api = app_and_db
         client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
-
-        raw = b"\xff\xd8\xff\xe0" + b"not really a jpeg but it has a header" * 4
         got = client.post(
             f"/shield/v2/records/{RECORD_A}/photos",
-            data={
-                "checkpoint_id": "cp-1",
-                "file": (io.BytesIO(raw), "x.jpg"),
-                # Everything below is a lie the caller would like believed.
-                "original_hash": "0" * 64,
-                "has_exif": "true",
-                "verdict": "pass",
-                "site_distance_m": "0",
-            },
+            data={"checkpoint_id": "cp-1",
+                  "file": (io.BytesIO(b"\xff\xd8\xff\xe0" + b"x" * 300), "x.jpg")},
             content_type="multipart/form-data")
-        assert got.status_code == 201, got.get_json()
+        assert got.status_code == 422
+        assert "camera" in got.get_json()["error"].lower()
 
-        photo = got.get_json()["photo"]
-        assert photo["original_hash"] == hashlib.sha256(raw).hexdigest()
-        assert photo["original_hash"] != "0" * 64
-        assert photo.get("verdict") is None, (
-            "a caller set their own verdict and the service stored it")
+    def test_a_refused_capture_writes_nothing(self, app_and_db):
+        """Not the row, not the storage object, not the custody entry.
 
-    def test_the_custody_entry_seals_the_derived_hash(self, app_and_db):
-        import hashlib
+        A refusal that still leaves a photo row behind would put an
+        unattested capture in the record by another door.
+        """
         flask_app, store, keys, tenant_api = app_and_db
         client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
-        raw = b"\xff\xd8\xff\xe0" + b"bytes" * 40
         client.post(f"/shield/v2/records/{RECORD_A}/photos",
                     data={"checkpoint_id": "cp-1",
-                          "file": (io.BytesIO(raw), "x.jpg"),
-                          "original_hash": "f" * 64},
+                          "file": (io.BytesIO(b"\xff\xd8\xff\xe0" + b"x" * 300), "x.jpg")},
                     content_type="multipart/form-data")
+        assert not [w for t, w in store.writes if t == "photos"]
+        assert not store.uploads
+        assert not [w for t, w in store.writes if t == "custody_log"]
 
-        uploaded = [w for t, w in store.writes if t == "custody_log"
-                    for w in (w if isinstance(w, list) else [w])
-                    if w.get("event_type") == "uploaded"]
-        assert uploaded, "no custody entry was written for the upload"
-        assert uploaded[0]["file_hash"] == hashlib.sha256(raw).hexdigest()
+    def test_claiming_an_attestation_does_not_make_one(self, app_and_db):
+        """The caller may assert anything; assertion is not verification."""
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        for platform in ("ios", "android"):
+            got = client.post(
+                f"/shield/v2/records/{RECORD_A}/photos",
+                data={"checkpoint_id": "cp-1",
+                      "file": (io.BytesIO(b"\xff\xd8\xff\xe0" + b"x" * 300), "x.jpg"),
+                      "attestation": "whatever-the-client-likes",
+                      "attestation_platform": platform,
+                      "attestation_tier": "hardware_attested"},
+                content_type="multipart/form-data")
+            assert got.status_code == 422, (
+                f"a self-declared {platform} attestation was accepted")
 
+    def test_an_unknown_platform_is_refused_not_guessed(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        got = client.post(
+            f"/shield/v2/records/{RECORD_A}/photos",
+            data={"checkpoint_id": "cp-1",
+                  "file": (io.BytesIO(b"\xff\xd8\xff\xe0" + b"x" * 300), "x.jpg"),
+                  "attestation": "t", "attestation_platform": "windows-phone"},
+            content_type="multipart/form-data")
+        assert got.status_code == 422
+        assert "not one this service can check" in got.get_json()["error"]
+
+
+class TestNothingTheCallerSendsIsEvidence:
     def test_every_custody_entry_carries_the_tenant(self, app_and_db):
         flask_app, store, keys, tenant_api = app_and_db
         client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
@@ -407,6 +434,7 @@ class TestTheRecordLifecycle:
         assert got.status_code == 403
 
     def test_a_photo_needs_a_checkpoint_on_this_record(self, app_and_db):
+        """Checked before attestation, so the 404 is still reachable."""
         flask_app, store, keys, tenant_api = app_and_db
         client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
         got = client.post(f"/shield/v2/records/{RECORD_A}/photos",

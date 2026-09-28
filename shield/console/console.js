@@ -216,14 +216,14 @@ function renderPoints(data) {
         <span class="pill ${esc(photo?.verdict || point.status)}">${esc(photo?.verdict || point.status)}</span>
       </header>
       ${photo ? evidenceHtml(photo) : `
-      <div class="drop">
-        <input type="file" accept="image/*" capture="environment" id="f-${point.id}">
-        <label for="f-${point.id}">Choose a photograph</label> for this checkpoint
+      <div class="drop closed">
+        <b>Capture in the Shield app.</b>
+        A browser cannot prove a photograph came from a camera — a file chosen
+        from storage looks identical to one taken on site. Shield records only
+        captures a device attests to, so there is no upload here.
       </div>`}
     `;
     list.appendChild(node);
-    const input = node.querySelector("input[type=file]");
-    if (input) input.addEventListener("change", () => uploadFor(point, input));
   }
 }
 
@@ -243,42 +243,19 @@ function evidenceHtml(photo) {
   </div>`;
 }
 
-async function uploadFor(point, input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-  const form = new FormData();
-  form.append("file", file);
-  form.append("checkpoint_id", point.id);
-
-  // The device's own reading, sent as a claim and labelled as one. The server
-  // measures it against the site on the record; it is never treated as
-  // corroboration of itself.
-  const position = await currentPosition();
-  if (position) {
-    form.append("gps_lat", String(position.lat));
-    form.append("gps_lng", String(position.lng));
-  }
-
-  toast(`Uploading for “${point.label}”…`);
-  try {
-    await api(`/records/${encodeURIComponent(state.record.record.id)}/photos`,
-              { method: "POST", form });
-    toast("Recorded and sealed");
-    await openRecord(state.record.record.id);
-  } catch (err) {
-    toast(err.message);
-  }
-}
-
-function currentPosition() {
-  return new Promise((resolve) => {
-    if (!navigator.geolocation) return resolve(null);
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
-      () => resolve(null),            // refused or unavailable: send nothing
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
-  });
-}
+/* Photo capture deliberately has no browser path.
+ *
+ * There was one here: a file input, a multipart POST, and the server
+ * recording the result as `unattested`. It was removed on 2026-09-28 because
+ * the tier was a label nobody downstream re-read, and a file-picker upload
+ * that has been hashed, chained and exported in a package marked "evidence"
+ * is more dangerous than no photograph at all — the chain is what makes a
+ * reader believe it.
+ *
+ * Capture belongs in a native app that can bind the image to a Secure Enclave
+ * or Play Integrity key. Until that exists, this console manages records,
+ * checkpoints, custody and export, and takes no photographs.
+ */
 
 /* ----------------------------------------------------------- checkpoints -- */
 function addPointRow() {

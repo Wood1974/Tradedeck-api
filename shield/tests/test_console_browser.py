@@ -99,19 +99,25 @@ def page(service):
         browser.close()
 
 
-def connect(page_bundle):
-    """Connect from a clean slate.
+def fresh(pg, base):
+    """Get to the connect form, whoever was signed in a moment ago.
 
-    The console resumes a session from sessionStorage, which is the right
-    behaviour and makes these tests order-dependent: a later one would find
-    itself already signed in and the connect form hidden. Clear it first so
-    each test starts where a new visitor does.
+    Clearing sessionStorage and reloading is not enough on its own: the
+    console resumes a session on load, and that resume is async, so an
+    in-flight connect() from the previous page can finish and re-save the
+    token after the clear. Use the app's own sign-out, which is synchronous
+    and is what a person would do.
     """
-    pg, base, token, _store = page_bundle
     pg.goto(f"{base}/console/")
-    pg.evaluate("() => sessionStorage.clear()")
-    pg.reload()
-    pg.wait_for_selector("#connectBtn", timeout=6000)
+    pg.wait_for_selector("#connectBtn, #signOut", timeout=6000)
+    if pg.is_visible("#signOut"):
+        pg.click("#signOut")
+    pg.wait_for_selector("#connectBtn:visible", timeout=6000)
+
+
+def connect(page_bundle):
+    pg, base, token, _store = page_bundle
+    fresh(pg, base)
     pg.fill("#baseUrl", base)
     pg.fill("#token", token)
     pg.click("#connectBtn")
@@ -122,10 +128,7 @@ class TestTheConsole:
     def test_it_loads_without_a_policy_violation(self, page):
         """A CSP mistake shows up as a page that renders and does nothing."""
         pg, base, _token, _store = page
-        pg.goto(f"{base}/console/")
-        pg.evaluate("() => sessionStorage.clear()")
-        pg.reload()
-        pg.wait_for_selector("#connectBtn", timeout=6000)
+        fresh(pg, base)
         refusals = [p for p in pg.problems
                     if "Content Security Policy" in p or "Refused to" in p]
         assert not refusals, refusals[:3]
@@ -133,9 +136,7 @@ class TestTheConsole:
 
     def test_a_bad_credential_is_reported_not_swallowed(self, page):
         pg, base, _token, _store = page
-        pg.goto(f"{base}/console/")
-        pg.evaluate("() => sessionStorage.clear()")
-        pg.reload()
+        fresh(pg, base)
         pg.fill("#baseUrl", base)
         pg.fill("#token", "shld_deadbeef_notarealsecretatallbutwellformed")
         pg.click("#connectBtn")
@@ -174,28 +175,19 @@ class TestTheConsole:
         pg.wait_for_selector("#pointList .point", timeout=6000)
         assert "Underlayment" in pg.inner_text("#pointList")
 
-        # A photograph for that checkpoint. A real JPEG header so the server's
-        # sniffing accepts it.
-        pg.set_input_files(
-            "#pointList input[type=file]",
-            {"name": "roof.jpg", "mimeType": "image/jpeg",
-             "buffer": b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01" + b"\x00" * 300})
-        pg.wait_for_selector("#pointList .evidence", timeout=8000)
-        evidence = pg.inner_text("#pointList .evidence")
-        assert "unattested" in evidence, (
-            "a web upload must be labelled unattested — see AR-1")
-
-        # The hash on screen is the one the SERVER derived.
-        import hashlib
-        expected = hashlib.sha256(
-            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01" + b"\x00" * 300).hexdigest()
-        assert expected in evidence
+        # There is no capture path in the browser, on purpose. The box says
+        # so rather than showing a disabled control, because a greyed-out
+        # button reads as a bug and this is a decision.
+        assert not pg.query_selector("#pointList input[type=file]"), (
+            "the console offers a browser upload — a file chosen from storage "
+            "cannot be attested and must not be recordable")
+        assert "Shield app" in pg.inner_text("#pointList .drop")
 
         # The chain.
         pg.click('nav.tabs button[data-tab="chain"]')
         pg.wait_for_selector("#chainList .entry", timeout=6000)
         kinds = pg.inner_text("#chainList")
-        assert "created" in kinds and "uploaded" in kinds
+        assert "created" in kinds and "checkpoints_locked" in kinds
         assert "verifies" in pg.inner_text("#chainVerdict").lower()
 
         # Close out.
@@ -223,8 +215,21 @@ class TestTheConsole:
         src = re.sub(r"/\*[\s\S]*?\*/", "", src)
         src = re.sub(r"//[^\n]*", "", src)
 
-        for forbidden in ("crypto.subtle", "sha256", "original_hash",
-                          "has_exif", "verdict:"):
-            assert forbidden not in src, (
-                f"console.js mentions {forbidden!r} in code — the browser must "
-                f"send a file and a checkpoint, and derive nothing")
+        # Computing evidence is forbidden. DISPLAYING what the server derived
+        # is the point -- evidenceHtml() renders photo.original_hash, and that
+        # read is exactly what makes the page honest. So the check is about
+        # producing and sending, not mentioning.
+        for primitive in ("crypto.subtle", "digest(", "SHA-256", "sha256("):
+            assert primitive not in src, (
+                f"console.js uses {primitive!r} — a hash computed in the "
+                f"browser is indistinguishable on screen from one the server "
+                f"derived, which is the confusion the parent service shipped")
+
+        for field in ("original_hash", "has_exif", "verdict",
+                      "attestation_tier", "site_distance_m"):
+            assert f'append("{field}"' not in src, (
+                f"console.js sends {field!r} to the service — every one of "
+                f"those is derived server-side")
+
+        assert 'type="file"' not in src and "input[type=file]" not in src, (
+            "console.js still has a browser capture path")

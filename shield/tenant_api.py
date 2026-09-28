@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, g, jsonify, request
 
 import config
+import attestation
 import integrity
 import ledger
 import tenancy
@@ -340,6 +341,37 @@ def set_checkpoints(record_id):
     return jsonify({"checkpoints": res.data or [], "locked": True}), 201
 
 
+def _attestation_for(req):
+    """Decide whether one capture may be recorded at all.
+
+    Returns attestation.assess()'s verdict. The only tiers that count are the
+    two in `attestation.TRUSTED_TIERS`; absence, ambiguity and refusal are all
+    the same answer here, which is no.
+
+    `verified` is never set True by this function and cannot be. Granting
+    hardware trust means verifying a signature chain to Apple's or Google's
+    root, and this service has neither dependency. A parameter that let a
+    caller assert its own verification would be the whole defect in one line.
+    """
+    platform = (req.form.get("attestation_platform") or "").strip().lower()
+    token = (req.form.get("attestation") or "").strip()
+    if not token:
+        return {"trusted": False, "tier": attestation.TIER_UNATTESTED,
+                "reason": "no device attestation was presented."}
+
+    if platform == "android":
+        verdict = attestation.interpret_play_integrity({}, verified=False)
+    elif platform == "ios":
+        verdict = attestation.interpret_app_attest(verified=False)
+    else:
+        return {"trusted": False, "tier": attestation.TIER_UNVERIFIABLE,
+                "reason": f"attestation_platform {platform!r} is not one this "
+                          f"service can check."}
+
+    return attestation.assess(platform=platform, verdict=verdict,
+                              challenge_ok=None)
+
+
 # ------------------------------------------------------------------ photos --
 @bp.route("/records/<record_id>/photos", methods=["POST"])
 @require_tenant
@@ -372,6 +404,36 @@ def upload_photo(record_id):
     raw = upload.read()
     if not raw:
         return _err("The uploaded file is empty", 400)
+
+    # ---- attest, or be refused -------------------------------------------
+    # The owner's rule, 2026-09-28: a capture that cannot prove it came from a
+    # camera is not recorded at all.
+    #
+    # This reverses what attestation.py argues in its own docstring -- that a
+    # blocked capture produces no record, and a labelled one is strictly more
+    # evidence. That reasoning holds for a system whose job is to document
+    # work. It does not hold for one whose entire claim is that the photograph
+    # is real: a file-picker upload recorded as `unattested` is indexed,
+    # hashed, sealed into a custody chain and exported in a package that says
+    # "evidence" on it, and no reader downstream reliably re-reads the tier.
+    # A forgeable record dressed in a hash chain is worse than no record,
+    # because it is the hash chain that makes people believe it.
+    #
+    # Consequence, stated plainly rather than discovered later: nothing can
+    # pass this gate today. Granting trust requires `verified=True`, which
+    # requires CBOR-decoding an App Attest blob and walking the X.509 chain to
+    # Apple's root, or decrypting a Play Integrity token -- neither is built,
+    # and neither can be built without the native app AR-1 describes. So photo
+    # capture is CLOSED until that app exists. That is the honest state of the
+    # product, not an outage.
+    attested = _attestation_for(request)
+    if not attested["trusted"]:
+        return _err(
+            f"This capture was not accepted: {attested['reason']} "
+            f"Shield records photographs that can prove they came from a "
+            f"camera on a genuine device. Capture from the Shield app; a "
+            f"file chosen from storage cannot be attested and is not "
+            f"recorded.", 422)
 
     mime = integrity.normalize_mime(upload.mimetype or "")
     sniffed = integrity.sniff_mime(raw)
@@ -431,10 +493,9 @@ def upload_photo(record_id):
         "gps_lng": app_lng,
         "site_distance_m": site_distance,
         "integrity_note": assessment.get("integrity_note"),
-        # Every web upload is unattested and says so. See AR-1: App Attest and
-        # Play Integrity both need a native app, so this is the honest default
-        # rather than a finding against anyone.
-        "attestation_tier": "unattested",
+        # Only a trusted tier reaches this line; the gate above refuses
+        # everything else, so no unattested row is ever written.
+        "attestation_tier": attested["tier"],
         "received_at": _now(),
     }
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
@@ -481,7 +542,7 @@ def upload_photo(record_id):
             "mime": mime,
             "has_exif": bool(assessment.get("has_exif")),
             "site_distance_m": site_distance,
-            "attestation_tier": "unattested",
+            "attestation_tier": attested["tier"],
         },
     })
     return jsonify({"photo": (res.data or [{}])[0]}), 201

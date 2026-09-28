@@ -85,11 +85,14 @@ LIMITS = (
 )
 
 ATTESTATION_NOTE = (
-    "Zero, and not because captures are failing attestation. Apple App Attest "
-    "and Google Play Integrity both require a native app; both TradeDeck "
-    "front ends are web pages, so every upload is recorded as unattested. "
-    "This line reports zero rather than being omitted so it cannot be read as "
-    "attestation quietly working."
+    "Zero, and since 2026-09-28 that is because nothing else is accepted. A "
+    "capture that cannot prove it came from a camera on a genuine device is "
+    "refused rather than recorded at a lower tier -- so there are no "
+    "unattested photographs, and there are no attested ones either, because "
+    "Apple App Attest and Google Play Integrity both require a native app and "
+    "no such app exists yet. Read plainly: the new tenant API records no "
+    "photographs at all today. This line reports zero rather than being "
+    "omitted so it cannot be read as attestation quietly working."
 )
 
 

@@ -1450,6 +1450,67 @@ def inv_tenant_api_derives_its_evidence():
     return True, "every sealed value is derived, not accepted"
 
 
+def inv_no_unattested_capture_is_recorded():
+    """A photograph that cannot prove it came from a camera is not recorded.
+
+    The owner's rule, 2026-09-28. It reverses attestation.py's own argument --
+    that blocking a capture produces no record while labelling one produces
+    evidence plus an honest caveat. That reasoning is sound for a system whose
+    job is to document work. It fails for one whose claim is that the
+    photograph is real, because an `unattested` row is still hashed, chained
+    and exported inside a package marked "evidence", and no reader downstream
+    reliably re-reads the tier. The hash chain is what makes a stranger
+    believe the file; wrapping a file-picker upload in one is worse than
+    refusing it.
+
+    Two things must stay true:
+
+      * the upload route refuses anything attestation.assess() does not call
+        trusted -- and TRUSTED_TIERS is two entries long, so absence,
+        ambiguity and refusal all mean no;
+      * no literal tier is written into a row. The first version of the
+        upload path hardcoded "unattested", which is exactly the row this
+        rule exists to stop existing.
+
+    Nothing passes this gate today, by construction: trust needs
+    `verified=True`, which needs a signature chain to Apple's or Google's
+    root, which needs the native app AR-1 describes. Capture is closed until
+    it ships, and that is the honest state rather than an outage.
+    """
+    path = SHIELD / "tenant_api.py"
+    if not path.exists():
+        return True, "tenant_api.py is not present"
+
+    src = path.read_text()
+    code = re.sub(r'"""[\s\S]*?"""', "", src)
+    code = re.sub(r"#[^\n]*", "", code)
+
+    if 'attestation_tier": "' in code:
+        return False, ("tenant_api writes a literal attestation tier into a "
+                       "row; the tier must come from attestation.assess()")
+
+    if "attested[\"trusted\"]" not in code and "attested['trusted']" not in code:
+        return False, ("the upload path no longer gates on "
+                       "attestation.assess()[...]['trusted']")
+
+    console = SHIELD / "console" / "console.js"
+    if console.exists():
+        c = re.sub(r"/\*[\s\S]*?\*/", "", console.read_text())
+        c = re.sub(r"//[^\n]*", "", c)
+        if 'type="file"' in c or "input[type=file]" in c:
+            return False, ("the console has a browser capture path again; a "
+                           "file chosen from storage cannot be attested")
+
+    import importlib
+    import sys
+    sys.path.insert(0, str(SHIELD))
+    attestation = importlib.import_module("attestation")
+    if len(attestation.TRUSTED_TIERS) != 2:
+        return False, (f"TRUSTED_TIERS has {len(attestation.TRUSTED_TIERS)} "
+                       f"entries; widening it widens what counts as proof")
+    return True, "capture is refused unless a device vouched for it"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1503,6 +1564,7 @@ INVARIANTS = (
     ("subject-time-not-signed", "Seal a timestamp the subject wrote, or aim solar geometry at one", inv_subject_time_is_not_signed),
     ("nested-floats-carry-their-type", "Ship a package only Python can verify", inv_nested_floats_carry_their_type),
     ("tenant-api-derives-evidence", "Let a paying tenant hand the service its own hash or verdict", inv_tenant_api_derives_its_evidence),
+    ("no-unattested-capture", "Record a photograph that cannot prove it came from a camera", inv_no_unattested_capture_is_recorded),
 )
 
 

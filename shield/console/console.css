@@ -172,3 +172,11 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: 
   border-radius: 99px; font-size: 0.87rem; z-index: 50; max-width: 90vw;
 }
 .empty { color: var(--soft); padding: 22px 0; }
+
+/* Capture has no browser path. The box explains why rather than looking like
+   a control that is merely disabled — a greyed-out upload button reads as a
+   bug, and this is a decision. */
+.point .drop.closed {
+  border-style: solid; text-align: left; line-height: 1.5;
+}
+.point .drop.closed b { color: var(--ink); display: block; margin-bottom: 3px; }
