@@ -1618,6 +1618,77 @@ def inv_attestation_covers_the_bytes():
                        "which hands the attacker the other half of the binding")
     return True, "an attestation is bound to the exact bytes it arrived with"
 
+
+def inv_capture_app_has_no_library_path():
+    """The iOS client cannot be handed a photograph it did not take.
+
+    The client is the one part of Shield that cannot be tested here — there is
+    no Swift toolchain, so nothing about it is verified against a compiler or
+    a device. This is the single property that *can* be checked from the
+    source, and it is the one that matters most, so it is checked.
+
+    A file chosen from storage cannot be attested, and the server refuses an
+    unattested capture. A library button in the app would therefore be a
+    control that looks available and always fails, which reads as a bug rather
+    than as the decision it is. So the path does not exist: no PHPicker, no
+    UIImagePickerController, no document picker — and, the part that does not
+    depend on anyone remembering, no NSPhotoLibraryUsageDescription in
+    Info.plist, which means iOS itself will not hand the app a library image.
+
+    Also checked here because the client half of it lives nowhere else: the
+    attestation's client data must fold in the photograph's digest. Hashing
+    only the challenge produces something genuine that proves a real app was
+    running and says nothing about the file — see
+    `attestation-covers-the-bytes` for the server half of the same binding.
+
+    Comments are stripped before matching. Every forbidden name below appears
+    in prose in these very files explaining why it is absent, and a check that
+    matched the explanation instead of the thing would fail the moment it was
+    documented — which has happened five times in this file already.
+    """
+    ios = SHIELD / "ios" / "Shield"
+    if not ios.exists():
+        return True, "the capture app is not present"
+
+    def strip(text):
+        text = re.sub(r"/\*[\s\S]*?\*/", "", text)
+        return re.sub(r"//[^\n]*", "", text)
+
+    forbidden = ("PHPicker", "PHPhotoLibrary", "UIImagePickerController",
+                 "photoLibrary", "savedPhotosAlbum",
+                 "UIDocumentPickerViewController", "fileImporter",
+                 "PhotosPicker", "import Photos", "import PhotosUI")
+    for path in sorted(ios.glob("*.swift")):
+        code = strip(path.read_text())
+        for name in forbidden:
+            if name in code:
+                return False, (f"{path.name} reaches the photo library via "
+                               f"{name}; a file from storage cannot be "
+                               f"attested and must not be recordable")
+
+    plist = ios / "Info.plist.template"
+    if plist.exists():
+        body = re.sub(r"<!--[\s\S]*?-->", "", plist.read_text())
+        if "NSPhotoLibraryUsageDescription" in body:
+            return False, ("Info.plist declares photo library access, so iOS "
+                           "will hand the app a library image")
+        if "NSCameraUsageDescription" not in body:
+            return False, ("Info.plist has no camera usage description, so "
+                           "the only capture path cannot run")
+
+    attestor = ios / "Attestor.swift"
+    if attestor.exists():
+        code = strip(attestor.read_text())
+        if not re.search(r"clientData\s*=\s*Data\(challenge", code):
+            return False, ("the capture app no longer binds the attestation "
+                           "to the server's challenge")
+        if not re.search(r"clientData\.append\([^)]*SHA256\.hash\(data:\s*photo",
+                         code):
+            return False, ("the capture app no longer folds the photograph's "
+                           "digest into the attestation, so its attestations "
+                           "would prove a moment and not a file")
+    return True, "the capture app has no path to a file it did not photograph"
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1674,6 +1745,7 @@ INVARIANTS = (
     ("no-unattested-capture", "Record a photograph that cannot prove it came from a camera", inv_no_unattested_capture_is_recorded),
     ("attestation-anchor-is-configuration", "Verify a forged attestation against a root an attacker chose", inv_attestation_anchor_is_configuration),
     ("attestation-covers-the-bytes", "Attest honestly on a real device and upload somebody else's photograph", inv_attestation_covers_the_bytes),
+    ("capture-app-has-no-library-path", "Record a photograph the device never took, via the photo library", inv_capture_app_has_no_library_path),
 )
 
 

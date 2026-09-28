@@ -60,6 +60,7 @@ shield/
 ├── routes.py        HTTP surface — the trust boundary (TradeDeck's own identity)
 ├── tenant_api.py    /shield/v2 — the same loop any business can buy into
 ├── console/         the tenant's web console (no capture path, on purpose)
+├── ios/             the capture app — the only thing that can produce an attestation
 ├── attestation.py   what a capture device can prove about itself, and what it cannot
 ├── app_attest.py    Apple App Attest verification — the only source of `verified=True`
 ├── integrity.py     hashing, EXIF, haversine, compression
@@ -74,7 +75,7 @@ shield/
 ├── pricing.py       server-side price tiers
 ├── auth.py          Supabase JWT + shield-job authorization
 ├── config.py        env validation, fails fast
-├── audit/           daily red-team: 55 invariants, protocol, accepted-risk ledger
+├── audit/           daily red-team: 56 invariants, protocol, accepted-risk ledger
 └── tests/           463 tests
 ```
 
@@ -271,8 +272,15 @@ that arrived and never accepts one.
 
 A file chosen from storage cannot be attested, so there is no browser capture
 path and the console does not offer one. Android is closed: Play Integrity
-needs a decrypted token, which is not built. And **no iOS client exists yet**,
-so nothing in production carries an attestation today — see AR-1.
+needs a decrypted token, which is not built.
+
+The iOS client is in **[`ios/`](ios/)**, and it **has never been compiled** —
+there is no Swift toolchain here, so every line of it is unverified against a
+compiler, a device, or Apple's real App Attest service. It is a specification
+you can build, not a shipped app, and its own README says so first. The one
+property that *is* checked from source, by the `capture-app-has-no-library-path`
+invariant, is that the app has no path to a file it did not photograph. Nothing
+in production carries an attestation today — see AR-1.
 
 Only the assigned contractor uploads; either participant reads; a
 non-participant gets `404`, not `403`, so ids cannot be probed.

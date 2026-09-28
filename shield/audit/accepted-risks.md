@@ -43,8 +43,13 @@ iOS capture is recorded while everything else is refused.
 What that does **not** yet mean, said plainly because this is the risk the
 register exists for:
 
-* **There is no iOS app**, so nothing produces an attestation today and no
-  photograph in Shield carries one. The gate is verifiable and unreachable.
+* **The iOS client is written but has never been compiled** — `shield/ios/`,
+  no Swift toolchain in the environment that wrote it. Nothing produces an
+  attestation today and no photograph in Shield carries one. The gate is
+  verifiable and unreachable until somebody builds that app on a real device.
+  The one property checked from its source is that it has no photo-library
+  path (`capture-app-has-no-library-path`); everything else about it is
+  unverified.
 * **The chain has never been checked against Apple's real root.** The tests
   mint their own CA and hand it in through the same parameter, which proves
   the logic and proves nothing about Apple's certificate profile. The first
@@ -79,7 +84,7 @@ one exists. "Add rate limiting" is not a finding.*
 ### AR-3 · No integration tests against live services
 **Reviewed 2026-09-14 · next review 2026-11-01**
 
-Storage, database and model calls are unexercised. All 463 tests and 55
+Storage, database and model calls are unexercised. All 463 tests and 56
 invariants are static or in-process. A behaviour that only appears against real
 Supabase, Stripe or Anthropic would not be caught here.
 
