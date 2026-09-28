@@ -68,13 +68,23 @@ job payment workflows.
   service's SQLite schema** (defined inline in `app.py`'s `init_db()`).
   Reconciling the two schemas is unresolved.
 
-## Draw/Escrow Removal (Sep 2026)
+## Architecture (Sep 2026)
+
+**Shield and TradeDeck are completely standalone applications** sharing the 
+tradedeckapp.com domain but operating independently:
+
+- **Shield**: Standalone evidence verification system with photo analysis, 
+  integrity verification, and contractor scoring. No integration with jobs.
+- **TradeDeck**: Simple job marketplace. Post fixed-price job → apply → hire → pay.
+  No draws/milestones, no escrow, no multi-stage payments.
 
 Draw/milestone/escrow functionality was **intentionally removed** to align 
-with Shield's architecture as a standalone evidence verification system. 
-Draw/escrow concepts belong to job-workflow payment splits, which are 
-independent of Shield's evidence collection and integrity verification. 
-Stripe payment processing is retained for Shield Pro subscription billing.
+with Shield's architecture. Draw/escrow concepts belong to job-workflow 
+payment splits; Shield handles evidence collection independently. Stripe 
+payment processing is retained for fixed-price job payments and Shield Pro 
+subscription billing only.
+
+Files deleted: `escrow.py` (complete payment state machine, no longer used).
 
 ## Environment variables (see `render.yaml` / set in Render dashboard — never commit real values)
 
