@@ -460,3 +460,167 @@ def test_every_refusal_has_the_same_shape():
         assert out["verified"] is False
         assert out["receipt_ok"] is False
         assert out["token_nonce"] is None
+
+
+# ------------------------------------------------------------- assertions --
+# Same discipline as above: every test starts from an assertion that verifies,
+# changes exactly one thing, and asserts the refusal.
+DEVICE_KEY = ec.generate_private_key(ec.SECP256R1())
+DEVICE_PUB = DEVICE_KEY.public_key().public_bytes(
+    Encoding.X962, PublicFormat.UncompressedPoint)
+
+
+def build_assertion(*, key=DEVICE_KEY, challenge=CHALLENGE,
+                    payload_sha256=PHOTO_SHA, app_id=APP_ID, counter=1,
+                    extensions=None, raw_extensions=None, sign_over=None,
+                    omit_signature=False, truncate=False):
+    flags = 0x80 if (extensions is not None or raw_extensions) else 0x00
+    auth_data = (hashlib.sha256(app_id.encode()).digest()
+                 + bytes([flags]) + counter.to_bytes(4, "big"))
+    if extensions is not None:
+        auth_data += cbor2.dumps(extensions)
+    elif raw_extensions:
+        auth_data += raw_extensions
+    if truncate:
+        auth_data = auth_data[:30]
+    client_data = challenge.encode() + payload_sha256
+    nonce = hashlib.sha256(
+        auth_data + hashlib.sha256(client_data).digest()).digest()
+    signature = key.sign(sign_over or nonce, ec.ECDSA(hashes.SHA256()))
+    body = {"authenticatorData": auth_data}
+    if not omit_signature:
+        body["signature"] = signature
+    return cbor2.dumps(body)
+
+
+def run_assertion(blob=None, *, public_key=DEVICE_PUB, previous_counter=0,
+                  challenge=CHALLENGE, payload_sha256=PHOTO_SHA, app_id=APP_ID,
+                  environment="production", allow_development=False, **kw):
+    blob = blob if blob is not None else build_assertion(**kw)
+    return app_attest.verify_assertion(
+        blob, challenge=challenge, payload_sha256=payload_sha256,
+        app_id=app_id, public_key=public_key,
+        previous_counter=previous_counter, environment=environment,
+        allow_development=allow_development)
+
+
+class TestAssertion:
+    def test_a_correct_assertion_verifies(self):
+        """If this fails, every refusal below proves nothing."""
+        out = run_assertion()
+        assert out["verified"] is True, out["reason"]
+        assert out["counter"] == 1
+        assert out["token_nonce"] == CHALLENGE
+
+    def test_a_verified_assertion_reaches_hardware_trust(self):
+        out = run_assertion()
+        verdict = attestation.interpret_app_attest(
+            verified=out["verified"], receipt_ok=out["receipt_ok"],
+            token_nonce=out["token_nonce"], expect_nonce=CHALLENGE)
+        assert verdict["tier"] == attestation.TIER_HARDWARE
+        assert verdict["bound"] is True
+
+    def test_an_attestation_returns_the_key_an_assertion_needs(self):
+        """The two halves must meet: the key `verify` hands back is the one
+        `verify_assertion` checks against."""
+        blob, key_id, root_pem = build()
+        out = app_attest.verify(blob, challenge=CHALLENGE,
+                                payload_sha256=PHOTO_SHA, app_id=APP_ID,
+                                key_id=key_id, root_pem=root_pem, now=NOW)
+        assert out["verified"] is True, out["reason"]
+        assert hashlib.sha256(out["public_key"]).digest() == key_id
+        assert out["environment"] == "production"
+        assert out["receipt"] == b"receipt"
+
+    def test_a_different_photograph_is_refused(self):
+        out = run_assertion(payload_sha256=hashlib.sha256(b"stock roof").digest())
+        assert out["verified"] is False
+        assert "signature" in out["reason"]
+
+    def test_a_different_challenge_is_refused(self):
+        assert run_assertion(challenge="some-other-challenge")["verified"] is False
+
+    def test_a_signature_over_the_wrong_message_is_refused(self):
+        assert run_assertion(sign_over=b"not the nonce")["verified"] is False
+
+    def test_a_different_key_is_refused(self):
+        other = ec.generate_private_key(ec.SECP256R1())
+        assert run_assertion(key=other)["verified"] is False
+
+    def test_another_apps_assertion_is_refused(self):
+        out = run_assertion(app_id="ZZZZZ99999.com.someone.else")
+        assert out["verified"] is False
+        assert "different app" in out["reason"]
+
+    def test_a_counter_that_does_not_advance_is_refused(self):
+        out = run_assertion(counter=5, previous_counter=5)
+        assert out["verified"] is False
+        assert "counter" in out["reason"]
+
+    def test_a_counter_that_goes_backwards_is_refused(self):
+        assert run_assertion(counter=3, previous_counter=7)["verified"] is False
+
+    def test_zero_is_not_a_first_assertion(self):
+        """Apple: greater than 0 on the first assertion."""
+        assert run_assertion(counter=0, previous_counter=0)["verified"] is False
+
+    def test_no_key_on_file_is_refused(self):
+        assert run_assertion(public_key=None)["verified"] is False
+
+    def test_a_garbage_key_on_file_is_refused(self):
+        assert run_assertion(public_key=b"\x04" + b"\x00" * 64)["verified"] is False
+
+    def test_a_development_key_is_refused_in_production(self):
+        out = run_assertion(environment="development")
+        assert out["verified"] is False
+        assert "development" in out["reason"]
+
+    def test_a_development_key_is_accepted_when_asked_for(self):
+        out = run_assertion(environment="development", allow_development=True)
+        assert out["verified"] is True, out["reason"]
+
+    @pytest.mark.parametrize("blob", [b"", b"\xff\xff", cbor2.dumps([1, 2]),
+                                      cbor2.dumps({"signature": "text"})])
+    def test_malformed_input_is_refused_not_raised(self, blob):
+        assert run_assertion(blob)["verified"] is False
+
+    def test_a_missing_signature_is_refused(self):
+        assert run_assertion(omit_signature=True)["verified"] is False
+
+    def test_truncated_authenticator_data_is_refused(self):
+        assert run_assertion(truncate=True)["verified"] is False
+
+    def test_no_challenge_or_digest_is_refused(self):
+        assert run_assertion(challenge="")["verified"] is False
+        assert run_assertion(payload_sha256=b"")["verified"] is False
+
+    @pytest.mark.parametrize("category", [2, 4])
+    def test_distributed_builds_are_accepted(self, category):
+        out = run_assertion(
+            extensions={"apple_validation_category_01": category})
+        assert out["verified"] is True, out["reason"]
+        assert out["validation_category"] == category
+
+    @pytest.mark.parametrize("category", [0, 1, 5, 6, 7, 8, 9, 10])
+    def test_other_builds_are_refused(self, category):
+        out = run_assertion(
+            extensions={"apple_validation_category_01": category})
+        assert out["verified"] is False
+        assert "validation category" in out["reason"]
+
+    def test_a_development_build_needs_development_allowed(self):
+        ext = {"apple_validation_category_01": 3}
+        assert run_assertion(extensions=ext)["verified"] is False
+        assert run_assertion(extensions=ext,
+                             allow_development=True)["verified"] is True
+
+    def test_unreadable_extensions_are_refused(self):
+        """Signed by the Secure Enclave, so never accidental."""
+        out = run_assertion(raw_extensions=b"\xff\x00garbage")
+        assert out["verified"] is False
+
+    def test_absent_extensions_are_not_a_refusal(self):
+        """Older OS versions do not send the dictionary at all."""
+        out = run_assertion()
+        assert out["verified"] is True
+        assert out["validation_category"] is None

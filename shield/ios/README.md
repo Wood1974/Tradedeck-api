@@ -6,16 +6,18 @@ the only thing that can produce that proof.
 
 ## What you are getting, and what you are not
 
-**This code has never been compiled.** There is no Swift toolchain and no Xcode
-in the environment it was written in, so every line here is unverified against
-a compiler, a device, or Apple's real App Attest service. That is not a
+**This code has never run on a device.** It was written somewhere with no
+Swift toolchain and no Xcode. Since the `Shield iOS build` workflow was added,
+CI compiles it for the iPhone SDK on every change under `shield/ios/`, so
+"does it compile" now has an answer. "Does it work" does not: nothing here has
+been checked against a device or Apple's real App Attest service. That is not a
 disclaimer bolted on at the end — it is the reason the server half was built
 and break-tested first. On the server, `app_attest.py` has sixteen checks and a
 test that fails for each one removed. Here there is nothing of the kind, and
 saying otherwise would be the exact drift this project's CLAUDE.md warns about.
 
-Treat it as a specification you can build, not as a shipped app. Expect to fix
-compile errors. The first real device run is the first real test.
+Treat it as a specification you can build, not as a shipped app. The first
+real device run is the first real test.
 
 Specifically unverified: the exact `DCAppAttestService` error cases, the CBOR
 shape Apple returns (the server parses it, so a mismatch shows up as a refusal
@@ -40,68 +42,107 @@ directly and nothing else ever produces bytes.
 ## The capture sequence
 
 Order matters, and it is not the obvious one — the photograph comes *before*
-the attestation, because the attestation has to commit to the bytes.
+the proof, because the proof has to commit to the bytes.
 
 1. `POST /shield/v2/records/<id>/capture-challenge` → a single-use nonce.
 2. Take the photograph. `AVCapturePhotoOutput`, in-process, bytes never
    written to a shared container.
 3. `clientDataHash = SHA256( challenge_utf8 ‖ SHA256(photo bytes) )`.
-4. `DCAppAttestService.generateKey` then `attestKey(keyId, clientDataHash:)`.
+4. Prove it:
+   - **First capture on this install** (no key on file):
+     `DCAppAttestService.generateKey`, then `attestKey(keyId, clientDataHash:)`.
+   - **Every capture after that:** `generateAssertion(keyId, clientDataHash:)`
+     with the key the server stored.
 5. `POST /shield/v2/records/<id>/photos` — multipart: the file, the
-   `checkpoint_id`, the base64 attestation, the base64 `keyId`, the challenge
-   verbatim, `attestation_platform=ios`.
+   `checkpoint_id`, the base64 `keyId`, the challenge verbatim,
+   `attestation_platform=ios`, and **one** of `attestation` (step 4, first
+   case) or `assertion` (second case).
 
 Both halves of step 3 are load-bearing and neither is optional. Without the
-challenge, one attestation covers every upload forever. Without the photo
-digest, the attestation says a real app on real silicon was running when the
-nonce was issued and nothing whatever about the file in the same request — buy
-an iPhone, run this app, attest honestly, upload a stock photograph of
-somebody else's finished roof.
+challenge, one proof covers every upload forever. Without the photo digest,
+the proof says a real app on real silicon was running when the nonce was
+issued and nothing whatever about the file in the same request — buy an
+iPhone, run this app, attest honestly, upload a stock photograph of somebody
+else's finished roof.
 
 The app sends **no hash, no verdict, no EXIF flag, no distance**. Every one of
 those is derived on the server from the bytes that arrived. The client's job is
 to produce bytes and prove where they came from.
 
-## Attestation cost — an open question, not a footnote
+## Attest once, assert after
 
-`attestKey` may be called **once per key**, and it makes a network round trip to
-Apple, which rate-limits it. This client generates a fresh key per capture,
-which is correct and works, and which will run into that limit for a crew
-shooting fifty photographs in an afternoon. The scaling path is Apple's
-intended one: attest a key once, then sign each later capture with
-`generateAssertion` and verify the assertion server-side against the stored
-public key and a monotonic counter.
+`attestKey` may be called **once per key**, makes a network round trip to Apple,
+and is rate-limited. So it is used once: the first capture on an install
+attests a key, the server verifies the chain to Apple's root and stores the
+key's public half in `shield.attested_keys`, and the response says
+`attestation_key_registered: true`. Only then does the app keep the key id.
 
-**Assertion verification is not built** — `app_attest.py` verifies attestations
-only. Until it is, treat the rate limit as a real constraint on volume and find
-out where it bites before promising anyone otherwise.
+Every later capture is a `generateAssertion` signature — Secure Enclave only,
+no call to Apple. The server checks it against the stored key, requires the
+counter to go up, and advances the stored counter with a compare-and-set, so
+two uploads racing on one assertion cannot both be recorded. A key is bound to
+the tenant and credential that attested it.
+
+When the server does not recognise the key (unknown, revoked, or attested
+under a different sign-in) it refuses with `reattest: true`. The app forgets
+the key and tries once more with a fresh challenge and a freshly attested key.
+Any other refusal is final. Signing out forgets the key too.
+
+Unverified until a device run: that Apple's assertion signature is over
+`nonce` exactly as `app_attest.verify_assertion` checks it (it follows Apple's
+documentation and `node-app-attest`), and how Apple encodes the newer
+`validationCategory` in the assertion's extensions. The server enforces the
+category when it can read one and does not require it, because older iOS
+versions do not send it.
 
 ## Building it
 
-Xcode 15+, iOS 17+. A real device: `DCAppAttestService.isSupported` is false on
-the simulator, and this app deliberately has no fallback for that — it shows
-why capture is unavailable instead.
+The Xcode project is generated from `project.yml` by
+[XcodeGen](https://github.com/yonaskolb/XcodeGen), rather than committed as a
+`.pbxproj` nobody has opened. On a Mac with Xcode 16 or newer:
 
-1. New iOS App target, bundle id matching the server's `APP_ATTEST_APP_ID`
-   (which is `TEAMID.your.bundle.id`).
-2. Add the **App Attest** capability. Without it `generateKey` fails.
-3. Add these sources, and `Info.plist` from `Info.plist.template`.
-4. `NSCameraUsageDescription` is required. **`NSPhotoLibraryUsageDescription`
-   must stay absent** — see above.
+1. `brew install xcodegen`
+2. Create `shield/ios/Local.xcconfig` (gitignored) with your team and bundle id:
 
-On the server: `APPLE_APP_ATTEST_ROOT_PEM` and `APP_ATTEST_APP_ID` must both be
-set, or every capture is refused. Use `APP_ATTEST_ALLOW_DEVELOPMENT=1` while
-building against a development provisioning profile, and never in production —
-a development attestation says nothing about a production device.
+       DEVELOPMENT_TEAM = ABCDE12345
+       PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.shield
+
+3. In your Apple Developer account, enable **App Attest** for that bundle id.
+4. `cd shield/ios && xcodegen generate && open Shield.xcodeproj`
+5. Pick a real iPhone as the destination. `DCAppAttestService.isSupported` is
+   false on the Simulator, and this app deliberately has no fallback for that —
+   it shows why capture is unavailable instead.
+
+Debug builds attest in Apple's **development** environment
+(`Shield-Development.entitlements`), Release builds in **production**
+(`Shield.entitlements`).
+
+On the server:
+
+- `APP_ATTEST_APP_ID` = `<TEAM_ID>.<bundle id>`, the same values as step 2.
+- `APPLE_APP_ATTEST_ROOT_PEM` = Apple's App Attest root CA, fetched from Apple
+  and pinned. With either missing, every capture is refused.
+- `APP_ATTEST_ALLOW_DEVELOPMENT=1` only on a deployment you test Debug builds
+  against, and never in production — a development attestation says nothing
+  about a production device.
+- Apply `supabase/migrations/20260929000000_shield_attested_keys.sql`, or every
+  first capture's key fails to register and the app attests on every shot.
+
+`Info.plist.template` is used as-is, merged with the keys Xcode generates.
+`NSCameraUsageDescription` is required. **`NSPhotoLibraryUsageDescription`
+must stay absent** — see above.
 
 ## Files
 
 | File | What it does |
 |---|---|
 | `ShieldApp.swift` | Entry point and navigation |
-| `Attestor.swift` | `DCAppAttestService` — the only source of proof |
+| `Attestor.swift` | `DCAppAttestService` — attests a key once, then asserts; the only source of proof |
 | `ShieldClient.swift` | The API. Sends bytes and attestations, derives nothing |
 | `Capture.swift` | `AVCapturePhotoOutput`. The only thing that produces bytes |
 | `Models.swift` | What the API returns |
 | `Screens.swift` | Connect, records, checkpoints, capture, result |
 | `Info.plist.template` | Camera yes, photo library deliberately absent |
+| `Shield*.entitlements` | App Attest environment: development (Debug), production (Release) |
+| `../project.yml` | XcodeGen spec for the Xcode project |
+| `../Config.xcconfig` | Bundle id and team; override in `Local.xcconfig` |

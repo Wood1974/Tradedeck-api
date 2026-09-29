@@ -63,6 +63,20 @@ def test_northern_noon_sun_bears_south(name, lat, lng):
     assert solar_position(lat, lng, t)["azimuth_deg"] == pytest.approx(180, abs=2)
 
 
+def test_azimuth_never_rounds_up_to_360():
+    """Regression: nightly fuzz seed 847353490. The bearing was wrapped with
+    % 360 before rounding, so 359.995 came back as 360.0 — due north, one step
+    outside [0, 360). The shadow bearing takes the same path."""
+    pos = solar_position(32.62267985303639, 14.994310040552818,
+                         utc(2026, 6, 12, 23))
+    assert 0 <= pos["azimuth_deg"] < 360
+    s = shadow_expectation(32.62267985303639, 14.994310040552818,
+                           utc(2026, 6, 12, 23))
+    assert 0 <= s["azimuth_deg"] < 360
+    if s.get("shadow_azimuth_deg") is not None:
+        assert 0 <= s["shadow_azimuth_deg"] < 360
+
+
 def test_southern_noon_sun_bears_north():
     t = solar_noon(-33.8688, 151.2093, utc(2026, 6, 21))
     az = solar_position(-33.8688, 151.2093, t)["azimuth_deg"]

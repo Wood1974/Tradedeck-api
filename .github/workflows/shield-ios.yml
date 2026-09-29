@@ -1,0 +1,45 @@
+name: Shield iOS build
+
+# The first compiler the iOS client has ever met. Until this job existed, every
+# line under shield/ios had been written somewhere with no Swift toolchain and
+# never compiled.
+#
+# What this proves: the sources compile for a real iPhone SDK (arm64,
+# iphoneos). What it does not: that the app runs, that App Attest works on a
+# device, or that the server accepts what the device sends. Code signing is
+# off because there is no team here to sign with, and the Simulator is not a
+# target because App Attest does not run on it. The first device run is still
+# the first real test.
+
+on:
+  push:
+    paths: ['shield/ios/**', '.github/workflows/shield-ios.yml']
+  pull_request:
+    paths: ['shield/ios/**', '.github/workflows/shield-ios.yml']
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        working-directory: shield/ios
+        run: xcodegen generate
+
+      - name: Compile for iPhone (unsigned)
+        working-directory: shield/ios
+        run: |
+          xcodebuild -version
+          xcodebuild build \
+            -project Shield.xcodeproj \
+            -target Shield \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO

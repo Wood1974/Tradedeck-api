@@ -34,6 +34,9 @@ DEFAULTS = {
     # A development attestation says nothing about a production device, so it
     # is off unless someone turns it on deliberately, per deployment.
     "APP_ATTEST_ALLOW_DEVELOPMENT": "0",
+    # Google's revocation list for attestation certificates.
+    "ANDROID_ATTESTATION_STATUS_URL":
+        "https://android.googleapis.com/attestation/status",
 }
 
 OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
@@ -50,7 +53,16 @@ OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
             # Apple's, in which case the service validates chains an attacker
             # minted. Neither is visible by reading the code.
             "APPLE_APP_ATTEST_ROOT_PEM",
-            "APP_ATTEST_APP_ID")          # "TEAMID.com.bundle.identifier"
+            "APP_ATTEST_APP_ID",          # "TEAMID.com.bundle.identifier"
+            # Android Key Attestation, the same shape: Google's attestation
+            # roots as a PEM bundle (configuration, never a constant), and the
+            # app a key must have been made by -- its package name and the
+            # SHA-256 of its signing certificate (hex, comma-separated to
+            # allow a rotation). Any of the three missing, and every Android
+            # capture is refused.
+            "ANDROID_ATTESTATION_ROOTS_PEM",
+            "ANDROID_PACKAGE_NAME",
+            "ANDROID_SIGNING_CERT_SHA256")
 
 
 def get(key, default=None):
@@ -62,6 +74,25 @@ def get_int(key):
         return int(get(key))
     except (TypeError, ValueError):
         return int(DEFAULTS[key])
+
+
+def android_signing_digests():
+    """ANDROID_SIGNING_CERT_SHA256 as a set of 32-byte digests.
+
+    Accepts hex with or without colons (keytool prints them with). A malformed
+    entry is dropped rather than raising, and an empty set refuses every
+    Android capture, which is the closed state.
+    """
+    out = set()
+    for part in (get("ANDROID_SIGNING_CERT_SHA256") or "").split(","):
+        text = part.strip().replace(":", "")
+        try:
+            raw = bytes.fromhex(text)
+        except ValueError:
+            continue
+        if len(raw) == 32:
+            out.add(raw)
+    return out
 
 
 def allowed_origins():

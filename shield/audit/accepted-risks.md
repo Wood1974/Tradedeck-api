@@ -43,19 +43,41 @@ iOS capture is recorded while everything else is refused.
 What that does **not** yet mean, said plainly because this is the risk the
 register exists for:
 
-* **The iOS client is written but has never been compiled** — `shield/ios/`,
-  no Swift toolchain in the environment that wrote it. Nothing produces an
-  attestation today and no photograph in Shield carries one. The gate is
-  verifiable and unreachable until somebody builds that app on a real device.
-  The one property checked from its source is that it has no photo-library
-  path (`capture-app-has-no-library-path`); everything else about it is
-  unverified.
+* **The iOS client compiles but has never run on a device** — `shield/ios/`.
+  Since 2026-09-29 the `Shield iOS build` workflow compiles it for the iPhone
+  SDK (unsigned) on every change; before that it had never met a compiler.
+  Nothing produces an attestation today and no photograph in Shield carries
+  one. The gate is verifiable and unreachable until somebody runs that app on
+  a real device. Beyond compiling, the one property checked from its source is
+  that it has no photo-library path (`capture-app-has-no-library-path`);
+  everything else about its behaviour is unverified.
+* **Assertions have never been checked against a real device.** A key is
+  attested once and each later capture is a `generateAssertion` signature
+  (`app_attest.verify_assertion`). The tests sign with their own P-256 key,
+  which proves the counter, binding and ownership logic. It does not prove
+  Apple's exact signing convention (a signature over `nonce`, per Apple's docs
+  and `node-app-attest`) or how Apple encodes `validationCategory` in the
+  assertion's extensions — the server enforces a category only when it can
+  read one. If the convention is wrong, every assertion is refused and the app
+  falls back to nothing: `reattest` is only sent for key-state refusals, so a
+  signature mismatch would surface as refused captures, not silent trust.
 * **The chain has never been checked against Apple's real root.** The tests
   mint their own CA and hand it in through the same parameter, which proves
   the logic and proves nothing about Apple's certificate profile. The first
   real attestation is the real test.
-* **Android is still fully open on this axis** — Play Integrity needs a
-  decrypted token and that is not built, so Android capture stays closed.
+* **Android is verified server-side but has no app** — since 2026-09-29
+  `android_attest.py` checks Key Attestation chains to Google's roots
+  (configured, never committed), Google's revocation list, secure hardware,
+  locked verified boot, and Shield's package and signing certificate. Its
+  tests mint their own root and hand-encode the KeyDescription extension,
+  which proves the logic and nothing about a real device's certificate. There
+  is no Android app yet, so no Android capture exists. Android keys have no
+  signature counter; later captures are protected from replay only by the
+  single-use challenge, which is per-process (AR-9) until it moves to a
+  shared store.
+* **The revocation list is fetched from Google.** If it cannot be fetched and
+  no copy under a day old is held, every Android capture is refused. That is
+  fail-closed, and it is also an availability dependency on Google.
 * Attestation proves a genuine app on genuine silicon. It says nothing about
   what was in front of the lens, which is `rebroadcast.py`'s half. AR-1 needs
   both, and still has neither in production.

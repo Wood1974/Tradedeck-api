@@ -1,0 +1,17 @@
+// Shield Capture — signing and identity.
+//
+// DEVELOPMENT_TEAM is empty on purpose: a made-up team id does not sign, and
+// the bundle id must match the server's APP_ATTEST_APP_ID, which is
+// "<TEAM_ID>.<bundle id>". Put your own values in Local.xcconfig (gitignored)
+// rather than editing this file:
+//
+//     DEVELOPMENT_TEAM = ABCDE12345
+//     PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.shield
+//
+// and set the server's APP_ATTEST_APP_ID to ABCDE12345.com.yourcompany.shield.
+
+PRODUCT_BUNDLE_IDENTIFIER = com.tradedeck.shield
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Automatic
+
+#include? "Local.xcconfig"

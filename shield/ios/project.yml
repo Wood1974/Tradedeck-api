@@ -1,0 +1,61 @@
+# Shield Capture — the Xcode project, as a spec.
+#
+# `xcodegen generate` in this directory writes Shield.xcodeproj. The generated
+# project is not committed: a .pbxproj written by hand, somewhere without Xcode,
+# is a file nobody has opened, and this one is regenerated identically from the
+# lines below. See README.md, "Building it".
+name: Shield
+
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+
+targets:
+  Shield:
+    type: application
+    platform: iOS
+    # iPhone and iPad hardware only. The Simulator has no Secure Enclave for
+    # App Attest, and the app has no fallback for that on purpose.
+    supportedDestinations: [iOS]
+    sources:
+      - path: Shield
+        excludes:
+          - "Info.plist.template"
+          - "*.entitlements"
+    resources:
+      - path: Assets.xcassets
+      - path: Shield/PrivacyInfo.xcprivacy
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTED_PLATFORMS: iphoneos
+        SUPPORTS_MACCATALYST: NO
+        # Info.plist.template is the one the audit reads for the absence of a
+        # photo-library key, so it is used as-is and merged with what Xcode
+        # generates (bundle id, version, launch screen) rather than copied.
+        INFOPLIST_FILE: Shield/Info.plist.template
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIRequiredDeviceCapabilities: arm64
+        # Portrait only, full screen. The capture path does not handle
+        # rotation (photo orientation is unverified on hardware), so the app
+        # does not offer it rather than record sideways evidence.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UIRequiresFullScreen: YES
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.0"
+      configs:
+        # App Attest environment. A development attestation says nothing about
+        # a production device, and the server refuses one unless
+        # APP_ATTEST_ALLOW_DEVELOPMENT=1.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: Shield/Shield-Development.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: Shield/Shield.entitlements
