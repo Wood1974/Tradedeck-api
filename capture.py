@@ -78,7 +78,7 @@ class Challenges:
         return True
 
 
-def seal(
+def _compute_seal_hash(
     photo_bytes: bytes,
     note: str,
     checkpoint_pack: dict,
@@ -89,21 +89,7 @@ def seal(
     timestamp: int
 ) -> str:
     """
-    Bind photo+note+checkpoint+nonce+account+GPS into immutable SHA256 chain link.
-
-    Creates an HMAC-SHA256 hash of all capture data, binding the photo, note,
-    checkpoint configuration, nonce, account ID, GPS coordinates, and timestamp
-    into a single immutable hash that can later be verified offline.
-
-    Args:
-        photo_bytes: Raw photo data (bytes)
-        note: Text note accompanying the photo
-        checkpoint_pack: Checkpoint configuration dict
-        nonce: Single-use nonce (64-char hex string)
-        account_id: User account ID
-        gps_lat: GPS latitude
-        gps_lon: GPS longitude
-        timestamp: Unix timestamp (seconds)
+    Internal helper to compute the SHA256 hash of capture data.
 
     Returns:
         64-character hex SHA256 hash
@@ -135,11 +121,68 @@ def seal(
     # 7. Timestamp (as string for reproducibility)
     data_to_seal += str(timestamp).encode('utf-8')
 
-    # Compute HMAC-SHA256
-    # Use empty key for public verification (not secret)
+    # Compute SHA256
     seal_hash = hashlib.sha256(data_to_seal).hexdigest()
 
     return seal_hash
+
+
+def seal(
+    photo_bytes: bytes,
+    note: str,
+    checkpoint_pack: dict,
+    nonce: str,
+    account_id: str,
+    gps_lat: float,
+    gps_lon: float,
+    timestamp: int,
+    device_bind_hash: Optional[str] = None
+) -> dict:
+    """
+    Bind photo+note+checkpoint+nonce+account+GPS into immutable SHA256 chain link.
+
+    Creates a SHA256 hash of all capture data, binding the photo, note,
+    checkpoint configuration, nonce, account ID, GPS coordinates, and timestamp
+    into a single immutable hash that can later be verified offline.
+
+    If device_bind_hash is provided (native app), verifies device consistency.
+
+    Args:
+        photo_bytes: Raw photo data (bytes)
+        note: Text note accompanying the photo
+        checkpoint_pack: Checkpoint configuration dict
+        nonce: Single-use nonce (64-char hex string)
+        account_id: User account ID
+        gps_lat: GPS latitude
+        gps_lon: GPS longitude
+        timestamp: Unix timestamp (seconds)
+        device_bind_hash: Optional device digest hash from native app (case-insensitive)
+
+    Returns:
+        dict with:
+            bind_hash: 64-character hex SHA256 hash
+            bind_ok: None (no device hash, web capture), True (match), False (mismatch)
+    """
+    # Compute the seal hash
+    bind_hash = _compute_seal_hash(
+        photo_bytes=photo_bytes,
+        note=note,
+        checkpoint_pack=checkpoint_pack,
+        nonce=nonce,
+        account_id=account_id,
+        gps_lat=gps_lat,
+        gps_lon=gps_lon,
+        timestamp=timestamp
+    )
+
+    # Compare device digest if provided (case-insensitive, whitespace-trimmed)
+    posted = (device_bind_hash or "").strip().lower() or None
+    bind_ok = None if posted is None else posted == bind_hash
+
+    return {
+        "bind_hash": bind_hash,
+        "bind_ok": bind_ok
+    }
 
 
 def verify_capture(
@@ -175,8 +218,8 @@ def verify_capture(
     Returns:
         True if seal matches, False otherwise
     """
-    # Recompute the seal from provided data
-    computed_seal = seal(
+    # Compute the seal hash directly (without device_bind_hash)
+    computed_seal = _compute_seal_hash(
         photo_bytes=photo_bytes,
         note=note,
         checkpoint_pack=checkpoint_pack,
