@@ -34,6 +34,8 @@ import attestation  # noqa: E402
 # that tests the accept path is exactly the one that must not.
 attest_fixtures = pytest.importorskip(
     "test_app_attest", reason="cbor2/cryptography are not installed")
+android_fixtures = pytest.importorskip(
+    "test_android_attest", reason="cryptography is not installed")
 
 CI_ENV = {
     "SUPABASE_URL": "https://ci.invalid",
@@ -1119,3 +1121,205 @@ class TestCaptureWithAnAssertion:
         got = self.post(client, fields)
         assert got.status_code == 422
         assert "exactly one" in got.get_json()["error"]
+
+
+class TestAndroidCapture:
+    """Android through the real route: attest a key, then sign with it.
+
+    The chain is minted by `test_android_attest` and handed to the service the
+    way Google's roots would be, through ANDROID_ATTESTATION_ROOTS_PEM. The
+    revocation fetch is the only thing replaced -- it is a network call.
+    """
+
+    KEY_ID = hashlib.sha256(android_fixtures.DEVICE_PUB).digest()
+
+    @pytest.fixture(autouse=True)
+    def configured(self, monkeypatch):
+        import android_attest
+        monkeypatch.setattr(android_attest, "revoked_serials",
+                            lambda *_a, **_k: frozenset())
+        monkeypatch.setenv("ANDROID_PACKAGE_NAME", android_fixtures.PACKAGE)
+        monkeypatch.setenv("ANDROID_SIGNING_CERT_SHA256",
+                           android_fixtures.SIGNING_DIGEST.hex())
+
+    def challenge(self, client):
+        got = client.post(f"/shield/v2/records/{RECORD_A}/capture-challenge")
+        assert got.status_code == 201, got.get_json()
+        return got.get_json()["challenge"]
+
+    def attest(self, monkeypatch, client, *, payload=JPEG, **kw):
+        challenge = self.challenge(client)
+        client_data_hash = hashlib.sha256(
+            challenge.encode() + hashlib.sha256(payload).digest()).digest()
+        chain, roots = android_fixtures.build(challenge=client_data_hash, **kw)
+        monkeypatch.setenv("ANDROID_ATTESTATION_ROOTS_PEM", roots)
+        return {
+            "attestation": ",".join(base64.b64encode(c).decode()
+                                    for c in chain),
+            "attestation_challenge": challenge,
+            "attestation_platform": "android",
+        }
+
+    def signed(self, client, *, payload=JPEG, challenge=None):
+        challenge = challenge or self.challenge(client)
+        sig = android_fixtures.sign(
+            challenge.encode() + hashlib.sha256(payload).digest())
+        return {
+            "assertion": base64.b64encode(sig).decode(),
+            "attestation_key_id": base64.b64encode(self.KEY_ID).decode(),
+            "attestation_challenge": challenge,
+            "attestation_platform": "android",
+        }
+
+    def seed_key(self, store, *, platform="android", actor=None,
+                 security_level="TrustedEnvironment"):
+        store.rows.setdefault("attested_keys", []).append({
+            "key_id": base64.b64encode(self.KEY_ID).decode(),
+            "tenant_id": TENANT_A, "actor_id": actor or "key-" + TENANT_A[:4],
+            "platform": platform, "security_level": security_level,
+            "public_key": base64.b64encode(android_fixtures.DEVICE_PUB).decode(),
+            "environment": "production", "sign_count": 0, "revoked_at": None,
+        })
+
+    def post(self, client, fields, jpeg=JPEG):
+        data = {"checkpoint_id": "cp-1", "file": (io.BytesIO(jpeg), "shot.jpg")}
+        data.update(fields)
+        return client.post(f"/shield/v2/records/{RECORD_A}/photos",
+                           data=data, content_type="multipart/form-data")
+
+    def photo_rows(self, store):
+        """Inserted photo rows only. Inserts are written as lists; the retake
+        pass's supersede updates, also on `photos`, are written as dicts."""
+        return [row for t, w in store.writes
+                if t == "photos" and isinstance(w, list) for row in w]
+
+    # ---- the first capture: attestation --------------------------------------
+    def test_a_genuine_android_capture_is_recorded(self, app_and_db,
+                                                   monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        got = self.post(client, self.attest(monkeypatch, client))
+        assert got.status_code == 201, got.get_json()
+        assert got.get_json()["attestation_key_registered"] is True
+        assert attestation.TIER_DEVICE in json.dumps(self.photo_rows(store)[0])
+
+        row = store.rows["attested_keys"][0]
+        assert row["platform"] == "android"
+        assert row["security_level"] == "TrustedEnvironment"
+        assert row["key_id"] == base64.b64encode(self.KEY_ID).decode()
+
+    def test_strongbox_is_recorded_at_the_hardware_tier(self, app_and_db,
+                                                        monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        got = self.post(client, self.attest(monkeypatch, client,
+                                            att_level=2, km_level=2))
+        assert got.status_code == 201, got.get_json()
+        assert attestation.TIER_HARDWARE in json.dumps(self.photo_rows(store)[0])
+
+    def test_with_no_roots_configured_it_is_refused(self, app_and_db,
+                                                    monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields = self.attest(monkeypatch, client)
+        monkeypatch.delenv("ANDROID_ATTESTATION_ROOTS_PEM")
+        assert self.post(client, fields).status_code == 422
+        assert not self.photo_rows(store)
+
+    def test_an_unknown_revocation_state_is_refused(self, app_and_db,
+                                                    monkeypatch):
+        import android_attest
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        monkeypatch.setattr(android_attest, "revoked_serials",
+                            lambda *_a, **_k: None)
+        assert self.post(client, self.attest(monkeypatch, client)
+                         ).status_code == 422
+
+    def test_a_repackaged_build_is_refused(self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        monkeypatch.setenv("ANDROID_SIGNING_CERT_SHA256", "ab" * 32)
+        assert self.post(client, self.attest(monkeypatch, client)
+                         ).status_code == 422
+        assert not store.rows.get("attested_keys")
+
+    def test_an_attestation_does_not_carry_over_to_another_file(
+            self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields = self.attest(monkeypatch, client, payload=b"some other file")
+        assert self.post(client, fields).status_code == 422
+
+    def test_a_malformed_chain_is_refused_not_raised(self, app_and_db,
+                                                     monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields = self.attest(monkeypatch, client)
+        fields["attestation"] = "not base64!,also not"
+        assert self.post(client, fields).status_code == 422
+
+    # ---- every capture after: a signature ------------------------------------
+    def test_a_signed_capture_is_recorded(self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+        got = self.post(client, self.signed(client))
+        assert got.status_code == 201, got.get_json()
+        assert got.get_json()["attestation_key_registered"] is False
+        assert attestation.TIER_DEVICE in json.dumps(self.photo_rows(store)[0])
+
+    def test_a_signed_strongbox_capture_keeps_its_tier(self, app_and_db,
+                                                       monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store, security_level="StrongBox")
+        assert self.post(client, self.signed(client)).status_code == 201
+        assert attestation.TIER_HARDWARE in json.dumps(self.photo_rows(store)[0])
+
+    def test_a_replayed_signature_is_refused(self, app_and_db, monkeypatch):
+        """No counter on Android: the spent challenge is the whole defence."""
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+        fields = self.signed(client)
+        assert self.post(client, fields).status_code == 201
+        assert self.post(client, fields).status_code == 422
+        assert len(self.photo_rows(store)) == 1
+
+    def test_a_signature_does_not_carry_over_to_another_file(
+            self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+        fields = self.signed(client, payload=b"some other file")
+        assert self.post(client, fields).status_code == 422
+
+    def test_an_ios_key_is_not_an_android_key(self, app_and_db, monkeypatch):
+        """Same key id, other platform: unknown, so the app re-attests."""
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store, platform="ios")
+        got = self.post(client, self.signed(client))
+        assert got.status_code == 422
+        assert got.get_json()["reattest"] is True
+
+    def test_another_actors_key_asks_for_a_fresh_attestation(
+            self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store, actor="member-admin")
+        got = self.post(client, self.signed(client))
+        assert got.status_code == 422
+        assert got.get_json()["reattest"] is True
+
+    def test_attest_then_sign_end_to_end(self, app_and_db, monkeypatch):
+        """No seeded row: the second capture uses the key the first stored."""
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        assert self.post(client, self.attest(monkeypatch, client)
+                         ).status_code == 201
+        for _ in range(3):
+            got = self.post(client, self.signed(client))
+            assert got.status_code == 201, got.get_json()
+        assert len(self.photo_rows(store)) == 4

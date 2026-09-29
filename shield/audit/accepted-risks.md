@@ -65,8 +65,19 @@ register exists for:
   mint their own CA and hand it in through the same parameter, which proves
   the logic and proves nothing about Apple's certificate profile. The first
   real attestation is the real test.
-* **Android is still fully open on this axis** — Play Integrity needs a
-  decrypted token and that is not built, so Android capture stays closed.
+* **Android is verified server-side but has no app** — since 2026-09-29
+  `android_attest.py` checks Key Attestation chains to Google's roots
+  (configured, never committed), Google's revocation list, secure hardware,
+  locked verified boot, and Shield's package and signing certificate. Its
+  tests mint their own root and hand-encode the KeyDescription extension,
+  which proves the logic and nothing about a real device's certificate. There
+  is no Android app yet, so no Android capture exists. Android keys have no
+  signature counter; later captures are protected from replay only by the
+  single-use challenge, which is per-process (AR-9) until it moves to a
+  shared store.
+* **The revocation list is fetched from Google.** If it cannot be fetched and
+  no copy under a day old is held, every Android capture is refused. That is
+  fail-closed, and it is also an availability dependency on Google.
 * Attestation proves a genuine app on genuine silicon. It says nothing about
   what was in front of the lens, which is `rebroadcast.py`'s half. AR-1 needs
   both, and still has neither in production.

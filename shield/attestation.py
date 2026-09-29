@@ -330,6 +330,48 @@ def interpret_app_attest(verified=False, receipt_ok=True, token_nonce=None,
                    bound=expect_nonce is not None)
 
 
+def interpret_key_attestation(verified=False, receipt_ok=True, token_nonce=None,
+                              expect_nonce=None, security_level=None):
+    """Map an Android Key Attestation outcome onto a tier.
+
+    What this is allowed to mean: a key generated in this device's secure
+    hardware, on a device whose bootloader is locked and whose boot was
+    verified, by the Shield app signed with Shield's certificate. Unlike App
+    Attest, the boot state is reported, so a pass is a statement about the OS
+    as well as the app -- `android_attest.verify` refuses an unlocked or
+    unverified device outright rather than labelling it.
+
+    StrongBox is a separate secure chip; a TEE is an isolated area of the main
+    processor. Both are secure hardware and both are trusted. StrongBox is the
+    stronger of the two, so it alone reaches TIER_HARDWARE, the same way
+    Play Integrity reserves it for MEETS_STRONG_INTEGRITY.
+    """
+    if verified is not True:
+        return _result(TIER_UNVERIFIABLE, "platform",
+                       "the key attestation was not cryptographically verified")
+    if not receipt_ok:
+        return _result(TIER_FAILED, "platform",
+                       "the key attestation was verified but rejected")
+    if expect_nonce is not None and not hmac.compare_digest(
+            str(token_nonce or ""), str(expect_nonce)):
+        return _result(TIER_UNVERIFIABLE, "platform",
+                       "the attestation is not bound to this capture's "
+                       "single-use challenge, so it attests some other moment")
+    bound = expect_nonce is not None
+    if security_level == "StrongBox":
+        return _result(TIER_HARDWARE, "platform",
+                       "key held in a StrongBox secure chip on a locked, "
+                       "verified-boot device, made by the genuine app",
+                       bound=bound)
+    if security_level == "TrustedEnvironment":
+        return _result(TIER_DEVICE, "platform",
+                       "key held in the device's trusted execution "
+                       "environment on a locked, verified-boot device, made by "
+                       "the genuine app", bound=bound)
+    return _result(TIER_UNVERIFIABLE, "platform",
+                   f"unrecognised key security level {security_level!r}")
+
+
 def _nonce_matches(payload, expect_nonce):
     """Did this token commit to the challenge this capture spent?
 

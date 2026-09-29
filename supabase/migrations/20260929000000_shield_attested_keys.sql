@@ -1,4 +1,10 @@
--- Shield: App Attest keys, so a device attests once and asserts after that.
+-- Shield: attested device keys, so a device attests once and signs after that.
+--
+-- Two platforms share this table. iOS: an App Attest key, attested to Apple's
+-- root, each later capture an App Attest assertion with a counter. Android: a
+-- Key Attestation key, attested to Google's root, each later capture a plain
+-- ECDSA signature over the same client data (Android keys have no counter;
+-- the single-use challenge the signature covers is what stops a replay).
 --
 -- WHY
 --
@@ -30,9 +36,12 @@ create table if not exists shield.attested_keys (
     key_id        text primary key,          -- base64 SHA256 of the public key
     tenant_id     uuid not null references shield.tenants(id) on delete cascade,
     actor_id      text not null,
+    platform      text not null check (platform in ('ios', 'android')),
+    -- Android only: 'TrustedEnvironment' or 'StrongBox', as attested.
+    security_level text check (security_level in ('TrustedEnvironment', 'StrongBox')),
     public_key    text not null,             -- base64 uncompressed P-256 point
     environment   text not null check (environment in ('production', 'development')),
-    sign_count    bigint not null default 0 check (sign_count >= 0),
+    sign_count    bigint not null default 0 check (sign_count >= 0),  -- iOS only
     receipt       text,                      -- base64; for Apple's fraud metric later
     attested_at   timestamptz not null default now(),
     last_used_at  timestamptz,
@@ -43,9 +52,10 @@ create index if not exists shield_attested_keys_actor_idx
     on shield.attested_keys (tenant_id, actor_id) where revoked_at is null;
 
 comment on table shield.attested_keys is
-  'App Attest public keys this service verified to the Apple root. Written '
-  'only after a verified attestation; each later capture from the key is an '
-  'assertion checked against it, with sign_count advanced by compare-and-set.';
+  'Device keys this service verified to the Apple (ios) or Google (android) '
+  'attestation root. Written only after a verified attestation; each later '
+  'capture from the key is checked against it. iOS advances sign_count by '
+  'compare-and-set; Android has no counter and relies on the spent challenge.';
 
 -- Deny by default, like every other table in this schema. Only the service
 -- role, which bypasses RLS, reaches it.

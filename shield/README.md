@@ -271,8 +271,11 @@ somebody else's finished roof. The server derives that digest from the bytes
 that arrived and never accepts one.
 
 A file chosen from storage cannot be attested, so there is no browser capture
-path and the console does not offer one. Android is closed: Play Integrity
-needs a decrypted token, which is not built.
+path and the console does not offer one. Android is verified server-side by
+Key Attestation (`android_attest.py`): a key made in the phone's secure
+hardware, on a locked, verified-boot device, by the Shield app, chained to
+Google's configured roots and bound to the challenge and the photo. The
+Android app itself is not written yet, so no Android capture exists.
 
 The iOS client is in **[`ios/`](ios/)**. It **compiles** — the `Shield iOS
 build` workflow builds it for the iPhone SDK on every change — and it **has

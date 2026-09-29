@@ -1474,9 +1474,11 @@ def inv_no_unattested_capture_is_recorded():
 
     What passes it, as of 2026-09-28, is exactly one thing: an App Attest
     attestation that `app_attest.verify` walked to the configured Apple root
-    itself, bound to a single-use challenge this service issued. Android is
-    still closed (Play Integrity needs a decrypted token, which is not built)
-    and the web console has no capture path at all, by design. The iOS client
+    itself, bound to a single-use challenge this service issued. Since
+    2026-09-29 an Android Key Attestation chain that `android_attest.verify`
+    walked to the configured Google roots passes it the same way, and a later
+    capture signed by a key either one stored. The web console has no capture
+    path at all, by design. The iOS client
     does not exist yet either, so the gate is verifiable but not yet reachable
     in practice — which is the honest state of the product, not an outage.
     """

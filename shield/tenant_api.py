@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, g, jsonify, request
 
 import config
+import android_attest
 import app_attest
 import attestation
 import integrity
@@ -465,19 +466,24 @@ def _attestation_for(req, principal, payload_sha256):
     allow_dev = config.get("APP_ATTEST_ALLOW_DEVELOPMENT") == "1"
     app_id = config.get("APP_ATTEST_APP_ID") or ""
     extra = {}
-    if platform == "ios" and assertion:
+    checked = key_row = None
+    if platform in ("ios", "android") and assertion:
         checked, key_row, extra = _check_assertion(
             assertion, req.form.get("attestation_key_id"), principal,
-            challenge=nonce, payload_sha256=payload_sha256, app_id=app_id,
+            platform=platform, challenge=nonce,
+            payload_sha256=payload_sha256, app_id=app_id,
             allow_development=allow_dev)
-        verdict = attestation.interpret_app_attest(
+        interpret = (attestation.interpret_app_attest if platform == "ios"
+                     else attestation.interpret_key_attestation)
+        kw = ({} if platform == "ios"
+              else {"security_level": (key_row or {}).get("security_level")})
+        verdict = interpret(
             verified=checked["verified"],
             receipt_ok=checked["receipt_ok"],
             token_nonce=checked["token_nonce"],
-            expect_nonce=nonce or None)
+            expect_nonce=nonce or None, **kw)
     elif platform == "ios":
         blob = _b64(token)
-        checked = None
         if blob is None:
             verdict = attestation.interpret_app_attest(verified=False)
         else:
@@ -497,11 +503,32 @@ def _attestation_for(req, principal, payload_sha256):
                 token_nonce=checked["token_nonce"],
                 expect_nonce=nonce or None)
     elif platform == "android":
-        # Play Integrity needs a decrypted token, which means either Google's
-        # API or the JWE keys. Neither is built, so this stays closed rather
-        # than being waved through -- an unverified verdict cannot reach a
-        # trusted tier, by construction.
-        verdict = attestation.interpret_play_integrity({}, verified=False)
+        # Key Attestation: a certificate chain, leaf first, as comma-separated
+        # base64 DER. Checked here against the configured Google roots; Play
+        # Integrity is not used, because its tokens can only be decoded by a
+        # call to Google on every capture.
+        chain = [_b64(part) for part in token.split(",")]
+        if not chain or any(c is None for c in chain):
+            verdict = attestation.interpret_key_attestation(verified=False)
+        else:
+            checked = android_attest.verify(
+                chain,
+                challenge=nonce,
+                payload_sha256=payload_sha256,
+                package_name=config.get("ANDROID_PACKAGE_NAME") or "",
+                signing_digests=config.android_signing_digests(),
+                roots_pem=config.get("ANDROID_ATTESTATION_ROOTS_PEM"),
+                revoked=android_attest.revoked_serials(
+                    config.get("ANDROID_ATTESTATION_STATUS_URL")))
+            if not checked["verified"]:
+                log.info("Key attestation refused for record: %s",
+                         checked["reason"])
+            verdict = attestation.interpret_key_attestation(
+                verified=checked["verified"],
+                receipt_ok=checked["receipt_ok"],
+                token_nonce=checked["token_nonce"],
+                expect_nonce=nonce or None,
+                security_level=checked.get("security_level"))
     else:
         return {"trusted": False, "tier": attestation.TIER_UNVERIFIABLE,
                 "reason": f"attestation_platform {platform!r} is not one this "
@@ -510,10 +537,10 @@ def _attestation_for(req, principal, payload_sha256):
     result = attestation.assess(platform=platform, verdict=verdict,
                                 challenge_ok=challenge_ok if nonce else None)
     result.update(extra)
-    if not result["trusted"] or platform != "ios":
+    if not result["trusted"]:
         return result
 
-    if assertion:
+    if assertion and platform == "ios":
         # The compare-and-set is what makes the counter check hold across
         # requests. `verify_assertion` compared against the value it was
         # handed; this refuses if another upload advanced it in between.
@@ -521,12 +548,16 @@ def _attestation_for(req, principal, payload_sha256):
             return {"trusted": False, "tier": attestation.TIER_UNVERIFIABLE,
                     "reason": "this assertion was already used for another "
                               "capture."}
+    elif assertion:
+        # Android keys carry no counter. The single-use challenge the
+        # signature covers was spent above, which is what stops a replay.
+        _touch_key(key_row["key_id"])
     else:
-        result["key_registered"] = _register_key(checked, principal)
+        result["key_registered"] = _register_key(checked, principal, platform)
     return result
 
 
-def _check_assertion(assertion, key_id_field, principal, **kw):
+def _check_assertion(assertion, key_id_field, principal, *, platform, **kw):
     """Look the key up, then verify. Returns (checked, key_row, extra).
 
     `extra` carries `reattest: True` when the refusal is about the key rather
@@ -534,8 +565,11 @@ def _check_assertion(assertion, key_id_field, principal, **kw):
     credential. The app answers that by attesting a fresh key, which is the
     one recovery it has, so saying so saves it guessing from the prose.
 
-    The three key refusals share one message on purpose. "This key belongs to
+    The key refusals share one message on purpose. "This key belongs to
     somebody else" would confirm to a caller that a key id they hold is live.
+    A key attested on one platform is unknown on the other: an iOS key is
+    checked as an App Attest assertion, an Android key as a plain signature,
+    and the two must not be confusable.
     """
     unknown = ({**app_attest._no("this device's key is not on file for this "
                                  "credential, so the capture must be attested "
@@ -556,14 +590,21 @@ def _check_assertion(assertion, key_id_field, principal, **kw):
                  "counter": None}, None, {})
     row = rows[0] if rows else None
     if (row is None or row.get("revoked_at")
+            or (row.get("platform") or "ios") != platform
             or str(row.get("tenant_id")) != str(principal.tenant_id)
             or str(row.get("actor_id")) != str(principal.actor_id)):
         return unknown
 
-    checked = app_attest.verify_assertion(
-        blob, public_key=_b64(row.get("public_key")),
-        previous_counter=row.get("sign_count") or 0,
-        environment=row.get("environment") or "production", **kw)
+    if platform == "ios":
+        checked = app_attest.verify_assertion(
+            blob, public_key=_b64(row.get("public_key")),
+            previous_counter=row.get("sign_count") or 0,
+            environment=row.get("environment") or "production", **kw)
+    else:
+        checked = android_attest.verify_signature(
+            blob, challenge=kw["challenge"],
+            payload_sha256=kw["payload_sha256"],
+            public_key=_b64(row.get("public_key")))
     if not checked["verified"]:
         log.info("App Attest assertion refused: %s", checked["reason"])
     return checked, row, {}
@@ -581,7 +622,16 @@ def _advance_counter(key_id, counter):
     return bool(res.data)
 
 
-def _register_key(checked, principal):
+def _touch_key(key_id):
+    """Record that a counterless key was used. Best effort; never refuses."""
+    try:
+        _t("attested_keys").update({"last_used_at": _now()}) \
+            .eq("key_id", key_id).execute()
+    except Exception:
+        log.exception("Could not record use of an attested key")
+
+
+def _register_key(checked, principal, platform):
     """Keep a verified attestation's public key for the captures after it.
 
     A failure here does not unrecord the capture -- that photograph was
@@ -594,6 +644,8 @@ def _register_key(checked, principal):
             "tenant_id": principal.tenant_id,
             "actor_id": str(principal.actor_id),
             "public_key": base64.b64encode(checked["public_key"]).decode(),
+            "platform": platform,
+            "security_level": checked.get("security_level"),
             "environment": checked["environment"],
             "receipt": (base64.b64encode(checked["receipt"]).decode()
                         if checked.get("receipt") else None),
@@ -661,13 +713,20 @@ def upload_photo(record_id):
     # missing, verification refuses rather than skipping the chain check, and
     # iOS capture is closed on that deployment.
     #
-    # Android: still closed. Play Integrity needs a decrypted token, which is
-    # not built. Web: closed permanently and by design -- a file chosen from
+    # Android, since 2026-09-29: `android_attest.verify` walks the Key
+    # Attestation chain to the configured Google roots, checks Google's
+    # revocation list, and requires secure hardware, a locked verified-boot
+    # device, Shield's package and signing certificate, and the same nonce
+    # binding. That requires ANDROID_ATTESTATION_ROOTS_PEM,
+    # ANDROID_PACKAGE_NAME and ANDROID_SIGNING_CERT_SHA256; with any missing,
+    # Android capture is closed on that deployment. Play Integrity is not
+    # used. Web: closed permanently and by design -- a file chosen from
     # storage cannot be attested, so the console offers no capture path at all.
     #
-    # And the client does not exist yet. Until the iOS app ships, this gate is
-    # verifiable but unreachable in practice, which is the honest state of the
-    # product rather than an outage.
+    # And the clients have not run on a device yet. The iOS app compiles; the
+    # Android app is not written. Until one ships, this gate is verifiable but
+    # unreachable in practice, which is the honest state of the product
+    # rather than an outage.
     attested = _attestation_for(request, _principal(),
                                 hashlib.sha256(raw).digest())
     if not attested["trusted"]:
