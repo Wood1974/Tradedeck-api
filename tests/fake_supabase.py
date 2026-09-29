@@ -4,9 +4,14 @@ In-memory mock Supabase client for testing.
 
 
 class FakeSupabaseClient:
-    """Mock Supabase client that stores data in memory."""
+    """Mock Supabase client for testing. Stores tables in-memory.
+
+    Note: Very limited mock. Filters are not applied.
+    Use only for basic insert operations.
+    """
 
     def __init__(self):
+        """Initialize with empty table store."""
         self._tables = {}
 
     def table(self, table_name):
@@ -28,10 +33,11 @@ class FakeTableQuery:
         return self
 
     def insert(self, record):
-        """Insert a record."""
-        # Simulate insert
+        """Insert a record (returns self for chaining)."""
+        # Simulate insert and store for later retrieval in execute()
         self._data[record.get('id')] = record
-        return FakeQueryResult([record])
+        self._inserted_record = record
+        return self
 
     def eq(self, column, value):
         """Filter by equality."""
@@ -40,6 +46,9 @@ class FakeTableQuery:
 
     def execute(self):
         """Execute the query."""
+        # Return inserted record if available, otherwise empty result
+        if hasattr(self, '_inserted_record'):
+            return FakeQueryResult([self._inserted_record])
         # For testing purposes, return empty result
         return FakeQueryResult([])
 

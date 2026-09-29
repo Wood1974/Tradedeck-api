@@ -16,6 +16,9 @@ import secrets
 import time
 from typing import Dict, Optional
 
+# Constants
+NONCE_BYTES = 32  # 32 bytes = 64-character hex string
+
 
 class Challenges:
     """
@@ -41,8 +44,8 @@ class Challenges:
         Returns:
             Random 64-character hex string (32 bytes)
         """
-        # Generate random 32 bytes and convert to hex
-        nonce = secrets.token_hex(32)
+        # Generate random bytes and convert to hex
+        nonce = secrets.token_hex(NONCE_BYTES)
 
         # Store nonce with current timestamp for TTL tracking
         self._challenges[nonce] = time.time()
@@ -115,6 +118,7 @@ def _compute_seal_hash(
     data_to_seal += account_id.encode('utf-8')
 
     # 6. GPS coordinates (as formatted string for reproducibility)
+    # GPS: fixed 10 decimal places (~1.1mm precision) for reproducible serialization
     gps_str = f"{gps_lat:.10f},{gps_lon:.10f}"
     data_to_seal += gps_str.encode('utf-8')
 
@@ -162,7 +166,16 @@ def seal(
         dict with:
             bind_hash: 64-character hex SHA256 hash
             bind_ok: None (no device hash, web capture), True (match), False (mismatch)
+
+    Raises:
+        ValueError: If photo_bytes is empty or account_id is missing
     """
+    # Input validation
+    if not photo_bytes:
+        raise ValueError("photo_bytes cannot be empty")
+    if not account_id:
+        raise ValueError("account_id is required")
+
     # Compute the seal hash
     bind_hash = _compute_seal_hash(
         photo_bytes=photo_bytes,
@@ -217,7 +230,16 @@ def verify_capture(
 
     Returns:
         True if seal matches, False otherwise
+
+    Raises:
+        ValueError: If photo_bytes is empty or account_id is missing
     """
+    # Input validation
+    if not photo_bytes:
+        raise ValueError("photo_bytes cannot be empty")
+    if not account_id:
+        raise ValueError("account_id is required")
+
     # Compute the seal hash directly (without device_bind_hash)
     computed_seal = _compute_seal_hash(
         photo_bytes=photo_bytes,

@@ -6,13 +6,23 @@ Tests single-use nonce management, seal binding, offline verification, and devic
 import pytest
 import time
 from unittest.mock import Mock, patch
-import sys
-import os
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from capture import Challenges, seal, verify_capture
+
+
+@pytest.fixture
+def capture_data():
+    """Common test data for capture operations."""
+    return {
+        "photo_bytes": b"test-photo",
+        "note": "test note",
+        "checkpoint_pack": {"id": "1"},
+        "nonce": "a" * 64,
+        "account_id": "user-123",
+        "gps_lat": 40.7128,
+        "gps_lon": -74.0060,
+        "timestamp": 1630000000,
+    }
 
 
 class TestChallengesNonceGeneration:
@@ -95,7 +105,7 @@ class TestChallengesNonceConsumption:
 class TestChallengesNonceExpiry:
     """Test nonce TTL enforcement (120 seconds)."""
 
-    @patch('time.time')
+    @patch('capture.time.time')
     def test_nonce_expiry(self, mock_time):
         """Nonce expires after 120 seconds."""
         challenges = Challenges()
@@ -117,7 +127,7 @@ class TestChallengesNonceExpiry:
         # Consumption should fail (expired)
         assert challenges.consume(nonce2) is False
 
-    @patch('time.time')
+    @patch('capture.time.time')
     def test_nonce_not_expired_before_ttl(self, mock_time):
         """Nonce works within TTL window."""
         challenges = Challenges()
@@ -132,7 +142,7 @@ class TestChallengesNonceExpiry:
         # Should still be consumable
         assert challenges.consume(nonce) is True
 
-    @patch('time.time')
+    @patch('capture.time.time')
     def test_nonce_expires_at_boundary(self, mock_time):
         """Nonce expires at exactly 120 seconds."""
         challenges = Challenges()
@@ -151,66 +161,18 @@ class TestChallengesNonceExpiry:
 class TestSealBinding:
     """Test seal binding of photo + note + checkpoint + nonce + account + GPS."""
 
-    def test_seal_roundtrip(self):
+    def test_seal_roundtrip(self, capture_data):
         """seal() and verify_capture() roundtrip correctly."""
-        # Test data
-        photo_bytes = b"test-photo-data-123"
-        note = "This is a test note"
-        checkpoint_pack = {"checkpoint_id": "123", "location": "site"}
-        nonce = "a" * 64  # 32-byte hex nonce
-        account_id = "user-123"
-        gps_lat = 40.7128
-        gps_lon = -74.0060
-        timestamp = 1630000000
-
         # Seal the data
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
-
+        result = seal(**capture_data)
         seal_hash = result["bind_hash"]
 
         # Verify should return True
-        assert verify_capture(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            expected_seal=seal_hash
-        ) is True
+        assert verify_capture(**capture_data, expected_seal=seal_hash) is True
 
-    def test_seal_format(self):
+    def test_seal_format(self, capture_data):
         """seal() returns dict with bind_hash and bind_ok."""
-        photo_bytes = b"test-photo"
-        note = "test note"
-        checkpoint_pack = {"id": "1"}
-        nonce = "b" * 64
-        account_id = "user-456"
-        gps_lat = 51.5074
-        gps_lon = -0.1278
-        timestamp = 1630000001
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
+        result = seal(**capture_data)
 
         # Should return dict
         assert isinstance(result, dict)
@@ -231,189 +193,24 @@ class TestSealBinding:
         # bind_ok should be None (no device_bind_hash provided)
         assert result["bind_ok"] is None
 
-    def test_seal_deterministic(self):
+    def test_seal_deterministic(self, capture_data):
         """seal() is deterministic - same input gives same output."""
-        photo_bytes = b"test-photo"
-        note = "test note"
-        checkpoint_pack = {"id": "1"}
-        nonce = "c" * 64
-        account_id = "user-789"
-        gps_lat = 35.6762
-        gps_lon = 139.6503
-        timestamp = 1630000002
-
-        result1 = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
-
-        result2 = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
+        result1 = seal(**capture_data)
+        result2 = seal(**capture_data)
 
         assert result1["bind_hash"] == result2["bind_hash"]
 
-    def test_verify_fails_on_tampered_photo(self):
-        """Verification fails if photo is tampered."""
-        photo_bytes = b"original-photo"
-        note = "test note"
-        checkpoint_pack = {"id": "1"}
-        nonce = "d" * 64
-        account_id = "user-123"
-        gps_lat = 40.7128
-        gps_lon = -74.0060
-        timestamp = 1630000000
-
-        # Seal original
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
-
-        seal_hash = result["bind_hash"]
-
-        # Verify fails with tampered photo
-        assert verify_capture(
-            photo_bytes=b"tampered-photo",
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            expected_seal=seal_hash
-        ) is False
-
-    def test_verify_fails_on_tampered_note(self):
-        """Verification fails if note is tampered."""
-        photo_bytes = b"photo"
-        note = "original note"
-        checkpoint_pack = {"id": "1"}
-        nonce = "e" * 64
-        account_id = "user-123"
-        gps_lat = 40.7128
-        gps_lon = -74.0060
-        timestamp = 1630000000
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
-
-        seal_hash = result["bind_hash"]
-
-        # Verify fails with tampered note
-        assert verify_capture(
-            photo_bytes=photo_bytes,
-            note="tampered note",
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            expected_seal=seal_hash
-        ) is False
-
-    def test_verify_fails_on_tampered_gps(self):
-        """Verification fails if GPS is tampered."""
-        photo_bytes = b"photo"
-        note = "note"
-        checkpoint_pack = {"id": "1"}
-        nonce = "f" * 64
-        account_id = "user-123"
-        gps_lat = 40.7128
-        gps_lon = -74.0060
-        timestamp = 1630000000
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
-
-        seal_hash = result["bind_hash"]
-
-        # Verify fails with tampered GPS
-        assert verify_capture(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=50.0,  # Different latitude
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            expected_seal=seal_hash
-        ) is False
-
-    def test_verify_fails_on_tampered_timestamp(self):
-        """Verification fails if timestamp is tampered."""
-        photo_bytes = b"photo"
-        note = "note"
-        checkpoint_pack = {"id": "1"}
-        nonce = "0" * 64
-        account_id = "user-123"
-        gps_lat = 40.7128
-        gps_lon = -74.0060
-        timestamp = 1630000000
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
-
-        seal_hash = result["bind_hash"]
-
-        # Verify fails with tampered timestamp
-        assert verify_capture(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=1630000001,  # Different timestamp
-            expected_seal=seal_hash
-        ) is False
+    @pytest.mark.parametrize("field,tamper_fn", [
+        ("photo_bytes", lambda d: {**d, "photo_bytes": b"tampered"}),
+        ("note", lambda d: {**d, "note": "tampered"}),
+        ("gps_lat", lambda d: {**d, "gps_lat": 50.0}),
+        ("timestamp", lambda d: {**d, "timestamp": d["timestamp"] + 1}),
+    ])
+    def test_verify_fails_on_tampered(self, capture_data, field, tamper_fn):
+        """Verification fails if data is tampered."""
+        result = seal(**capture_data)
+        tampered = tamper_fn(capture_data)
+        assert verify_capture(**tampered, expected_seal=result["bind_hash"]) is False
 
 
 class TestOfflineVerification:
@@ -460,44 +257,14 @@ class TestOfflineVerification:
 
         assert verify_result is True
 
-    def test_verify_constant_time(self):
+    def test_verify_constant_time(self, capture_data):
         """Verification uses constant-time comparison."""
-        # This test ensures we're not vulnerable to timing attacks
-        photo_bytes = b"photo"
-        note = "note"
-        checkpoint_pack = {"id": "1"}
-        nonce = "2" * 64
-        account_id = "user-123"
-        gps_lat = 40.7128
-        gps_lon = -74.0060
-        timestamp = 1630000000
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
-
+        result = seal(**capture_data)
         seal_hash = result["bind_hash"]
 
         # Wrong seal should fail
         wrong_seal = "0" * 63 + "1"  # Off by one at end
-        verify_result = verify_capture(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            expected_seal=wrong_seal
-        )
+        verify_result = verify_capture(**capture_data, expected_seal=wrong_seal)
 
         assert verify_result is False
 
@@ -505,176 +272,72 @@ class TestOfflineVerification:
 class TestDeviceDigest:
     """Test device digest verification."""
 
-    def test_device_digest_none_on_web_capture(self):
+    def test_device_digest_none_on_web_capture(self, capture_data):
         """No device_bind_hash (web capture) -> bind_ok=None."""
-        photo_bytes = b"web-capture-photo"
-        note = "Web capture note"
-        checkpoint_pack = {"type": "web"}
-        nonce = "3" * 64
-        account_id = "web-user"
-        gps_lat = 48.8566
-        gps_lon = 2.3522
-        timestamp = 1630000004
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            device_bind_hash=None  # No device hash
-        )
-
+        result = seal(**capture_data, device_bind_hash=None)
         assert result["bind_ok"] is None
 
-    def test_device_digest_match(self):
+    def test_device_digest_match(self, capture_data):
         """device_bind_hash matches bind_hash -> bind_ok=True."""
-        photo_bytes = b"device-capture-photo"
-        note = "Device capture note"
-        checkpoint_pack = {"type": "native"}
-        nonce = "4" * 64
-        account_id = "mobile-user"
-        gps_lat = 37.7749
-        gps_lon = -122.4194
-        timestamp = 1630000005
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
+        result = seal(**capture_data)
 
         # Provide matching device digest
-        result_with_device = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            device_bind_hash=result["bind_hash"]  # Matching hash
-        )
+        result_with_device = seal(**capture_data, device_bind_hash=result["bind_hash"])
 
         assert result_with_device["bind_ok"] is True
 
-    def test_device_digest_mismatch(self):
+    def test_device_digest_mismatch(self, capture_data):
         """device_bind_hash differs -> bind_ok=False."""
-        photo_bytes = b"device-capture-photo"
-        note = "Device capture note"
-        checkpoint_pack = {"type": "native"}
-        nonce = "5" * 64
-        account_id = "mobile-user"
-        gps_lat = 37.7749
-        gps_lon = -122.4194
-        timestamp = 1630000005
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
-
         # Provide mismatched device digest
         wrong_hash = "0" * 64  # Completely different hash
-        result_with_device = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            device_bind_hash=wrong_hash
-        )
+        result_with_device = seal(**capture_data, device_bind_hash=wrong_hash)
 
         assert result_with_device["bind_ok"] is False
 
-    def test_device_digest_case_insensitive(self):
+    def test_device_digest_case_insensitive(self, capture_data):
         """Device digest comparison is case-insensitive."""
-        photo_bytes = b"device-photo"
-        note = "Device note"
-        checkpoint_pack = {"type": "native"}
-        nonce = "6" * 64
-        account_id = "mobile-user"
-        gps_lat = 35.0895
-        gps_lon = 139.0966
-        timestamp = 1630000006
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
+        result = seal(**capture_data)
 
         # Provide uppercase version of hash
-        result_with_device = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            device_bind_hash=result["bind_hash"].upper()  # Uppercase
-        )
+        result_with_device = seal(**capture_data, device_bind_hash=result["bind_hash"].upper())
 
         assert result_with_device["bind_ok"] is True
 
-    def test_device_digest_whitespace_trimmed(self):
+    def test_device_digest_whitespace_trimmed(self, capture_data):
         """Whitespace is stripped before device digest comparison."""
-        photo_bytes = b"device-photo"
-        note = "Device note"
-        checkpoint_pack = {"type": "native"}
-        nonce = "7" * 64
-        account_id = "mobile-user"
-        gps_lat = 51.5074
-        gps_lon = -0.1278
-        timestamp = 1630000007
-
-        result = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp
-        )
+        result = seal(**capture_data)
 
         # Provide hash with surrounding whitespace
-        result_with_device = seal(
-            photo_bytes=photo_bytes,
-            note=note,
-            checkpoint_pack=checkpoint_pack,
-            nonce=nonce,
-            account_id=account_id,
-            gps_lat=gps_lat,
-            gps_lon=gps_lon,
-            timestamp=timestamp,
-            device_bind_hash="  " + result["bind_hash"] + "  "  # With whitespace
-        )
+        result_with_device = seal(**capture_data, device_bind_hash="  " + result["bind_hash"] + "  ")
 
         assert result_with_device["bind_ok"] is True
+
+
+class TestInputValidation:
+    """Test input validation for seal and verify_capture."""
+
+    def test_seal_rejects_empty_photo_bytes(self, capture_data):
+        """seal() raises ValueError if photo_bytes is empty."""
+        data = {**capture_data, "photo_bytes": b""}
+        with pytest.raises(ValueError, match="photo_bytes cannot be empty"):
+            seal(**data)
+
+    def test_seal_rejects_missing_account_id(self, capture_data):
+        """seal() raises ValueError if account_id is missing."""
+        data = {**capture_data, "account_id": ""}
+        with pytest.raises(ValueError, match="account_id is required"):
+            seal(**data)
+
+    def test_verify_rejects_empty_photo_bytes(self, capture_data):
+        """verify_capture() raises ValueError if photo_bytes is empty."""
+        result = seal(**capture_data)
+        data = {**capture_data, "photo_bytes": b"", "expected_seal": result["bind_hash"]}
+        with pytest.raises(ValueError, match="photo_bytes cannot be empty"):
+            verify_capture(**data)
+
+    def test_verify_rejects_missing_account_id(self, capture_data):
+        """verify_capture() raises ValueError if account_id is missing."""
+        result = seal(**capture_data)
+        data = {**capture_data, "account_id": "", "expected_seal": result["bind_hash"]}
+        with pytest.raises(ValueError, match="account_id is required"):
+            verify_capture(**data)
