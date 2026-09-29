@@ -16,6 +16,7 @@ from auth import (
     get_job, is_job_owner, require_auth, utc_now_iso,
 )
 from config import get_env, jobs_page_size, max_image_bytes
+from capture import Challenges, seal, verify_capture
 try:
     from shield_api import shield_bp
 except Exception as _shield_import_err:
