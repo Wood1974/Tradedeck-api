@@ -96,7 +96,8 @@ def _issue_capture_token(record_id):
 
     Returns the nonce, or None if storage fails. Falls back to in-memory store.
     """
-    nonce = CHALLENGES.issue(_principal().actor_id)
+    principal = _principal()
+    nonce = CHALLENGES.issue(principal.actor_id)
     CHALLENGES.purge()
 
     # Store in database for multi-worker persistence.
@@ -106,7 +107,8 @@ def _issue_capture_token(record_id):
                           seconds=attestation.CHALLENGE_TTL_S))
         _t("capture_tokens").insert({
             "token": nonce,
-            "tenant_id": str(_principal().tenant_id),
+            "tenant_id": str(principal.tenant_id),
+            "actor_id": principal.actor_id,
             "record_id": record_id,
             "expires_at": expires_at.isoformat(),
         }).execute()
@@ -132,11 +134,14 @@ def _consume_capture_token(nonce, principal=None):
     # Try database first.
     try:
         result = (_t("capture_tokens")
-                  .select("token, used_at, expires_at")
+                  .select("token, actor_id, used_at, expires_at")
                   .eq("token", nonce)
                   .limit(1).execute()).data
         if result:
             row = result[0]
+            # Check actor matches (single-use token tied to the actor it was issued to).
+            if row.get("actor_id") != principal.actor_id:
+                return False  # Wrong actor.
             # Check if already used or expired.
             if row.get("used_at"):
                 return False  # Already spent.

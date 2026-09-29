@@ -12,6 +12,7 @@
 create table if not exists shield.capture_tokens (
     token         text primary key,             -- base64 challenge nonce
     tenant_id     uuid not null references shield.tenants(id) on delete cascade,
+    actor_id      text not null,                -- who this challenge was issued to
     record_id     text not null,
     used_at       timestamptz,                  -- when the token was used
     expires_at    timestamptz not null,         -- after which it is stale
