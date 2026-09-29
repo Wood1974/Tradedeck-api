@@ -133,14 +133,23 @@ def solar_position(lat: float, lng: float, when: datetime) -> dict:
         cos_az = max(-1.0, min(1.0, cos_az))
         acos_az = math.degrees(math.acos(cos_az))
         azimuth = (acos_az + 180) if hour_angle > 0 else (540 - acos_az)
-    azimuth %= 360
 
     return {
-        "azimuth_deg":     round(azimuth, 2),
+        "azimuth_deg":     _bearing(azimuth),
         "elevation_deg":   round(elevation, 2),
         "declination_deg": round(decl, 4),
         "is_daylight":     elevation > SUNRISE_ELEVATION,
     }
+
+
+def _bearing(deg: float) -> float:
+    """A compass bearing in [0, 360), rounded to two decimals.
+
+    Wrapping has to happen after rounding too: 359.995 wraps to itself and
+    then rounds to 360.00, which is due north reported one step out of range.
+    """
+    b = round(deg % 360, 2)
+    return 0.0 if b >= 360 else b
 
 
 def _compass(azimuth: float) -> str:
@@ -176,7 +185,7 @@ def shadow_expectation(lat, lng, when) -> dict:
                     f"Shadows fall nearly straight down and carry no usable "
                     f"direction — judge this frame on content alone.")}
 
-    shadow_azimuth = (azi + 180) % 360
+    shadow_azimuth = _bearing(azi + 180)
     ratio = 1 / math.tan(math.radians(elev)) if elev > 0.5 else None
 
     if elev < 10:
@@ -194,7 +203,7 @@ def shadow_expectation(lat, lng, when) -> dict:
     return {
         **sun,
         "shadow_direction": _compass(shadow_azimuth),
-        "shadow_azimuth_deg": round(shadow_azimuth, 2),
+        "shadow_azimuth_deg": shadow_azimuth,
         "shadow_ratio": round(ratio, 2) if ratio else None,
         "expectation": (
             f"Sun at {elev:.1f}deg elevation, bearing {azi:.0f}deg "
