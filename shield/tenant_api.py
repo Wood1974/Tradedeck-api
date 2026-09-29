@@ -91,6 +91,75 @@ def _principal():
     return g.principal
 
 
+def _issue_capture_token(record_id):
+    """Generate and store a single-use capture challenge.
+
+    Returns the nonce, or None if storage fails. Falls back to in-memory store.
+    """
+    nonce = CHALLENGES.issue(_principal().actor_id)
+    CHALLENGES.purge()
+
+    # Store in database for multi-worker persistence.
+    try:
+        expires_at = (datetime.now(timezone.utc) +
+                      __import__('datetime').timedelta(
+                          seconds=attestation.CHALLENGE_TTL_S))
+        _t("capture_tokens").insert({
+            "token": nonce,
+            "tenant_id": str(_principal().tenant_id),
+            "record_id": record_id,
+            "expires_at": expires_at.isoformat(),
+        }).execute()
+    except Exception:
+        log.exception("Failed to store capture token")
+        # In-memory store is still available as fallback.
+
+    return nonce
+
+
+def _consume_capture_token(nonce, principal=None):
+    """Spend a single-use capture challenge.
+
+    Checks both database and in-memory store. Returns True only for a live,
+    unspent, non-expired nonce of the specified actor (or current principal).
+    """
+    if not nonce:
+        return False
+
+    if principal is None:
+        principal = _principal()
+
+    # Try database first.
+    try:
+        result = (_t("capture_tokens")
+                  .select("token, used_at, expires_at")
+                  .eq("token", nonce)
+                  .limit(1).execute()).data
+        if result:
+            row = result[0]
+            # Check if already used or expired.
+            if row.get("used_at"):
+                return False  # Already spent.
+            expires_at = row.get("expires_at")
+            if expires_at:
+                exp_time = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                if datetime.now(timezone.utc) > exp_time:
+                    return False  # Expired.
+            # Mark as used.
+            try:
+                _t("capture_tokens").update(
+                    {"used_at": _now()}
+                ).eq("token", nonce).execute()
+            except Exception:
+                log.exception("Failed to mark capture token as used")
+            return True
+    except Exception:
+        log.exception("Failed to check capture token in database")
+
+    # Fall back to in-memory store.
+    return CHALLENGES.consume(nonce, principal.actor_id)
+
+
 # --------------------------------------------------------------- the chain --
 def chain_in_order(entries, record_id):
     """Put a record's custody entries in causal order by following the links.
@@ -404,8 +473,8 @@ def capture_challenge(record_id):
     It is issued to the calling actor and spent by them, so one party cannot
     have their challenge answered by another party's device.
     """
-    nonce = CHALLENGES.issue(_principal().actor_id)
-    CHALLENGES.purge()
+    nonce = _issue_capture_token(record_id)
+
     return jsonify({
         "challenge": nonce,
         "expires_in_s": attestation.CHALLENGE_TTL_S,
@@ -456,7 +525,7 @@ def _attestation_for(req, principal, payload_sha256):
         return {"trusted": False, "tier": attestation.TIER_UNATTESTED,
                 "reason": "no device attestation was presented."}
 
-    challenge_ok = CHALLENGES.consume(nonce, principal.actor_id)
+    challenge_ok = _consume_capture_token(nonce, principal)
 
     if token and assertion:
         return {"trusted": False, "tier": attestation.TIER_UNVERIFIABLE,

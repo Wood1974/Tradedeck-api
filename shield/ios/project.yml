@@ -27,6 +27,9 @@ targets:
         excludes:
           - "Info.plist.template"
           - "*.entitlements"
+    resources:
+      - path: Assets.xcassets
+      - path: Shield/PrivacyInfo.xcprivacy
     settings:
       base:
         SWIFT_VERSION: "5.0"
