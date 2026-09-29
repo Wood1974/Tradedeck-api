@@ -41,6 +41,11 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIRequiredDeviceCapabilities: arm64
+        # Portrait only, full screen. The capture path does not handle
+        # rotation (photo orientation is unverified on hardware), so the app
+        # does not offer it rather than record sideways evidence.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UIRequiresFullScreen: YES
         CURRENT_PROJECT_VERSION: "1"
         MARKETING_VERSION: "0.1.0"
       configs:

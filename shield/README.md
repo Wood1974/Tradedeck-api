@@ -274,10 +274,12 @@ A file chosen from storage cannot be attested, so there is no browser capture
 path and the console does not offer one. Android is closed: Play Integrity
 needs a decrypted token, which is not built.
 
-The iOS client is in **[`ios/`](ios/)**, and it **has never been compiled** —
-there is no Swift toolchain here, so every line of it is unverified against a
-compiler, a device, or Apple's real App Attest service. It is a specification
-you can build, not a shipped app, and its own README says so first. The one
+The iOS client is in **[`ios/`](ios/)**. It **compiles** — the `Shield iOS
+build` workflow builds it for the iPhone SDK on every change — and it **has
+never run on a device**, so nothing about it is verified against real hardware
+or Apple's real App Attest service. It attests a key on its first capture and
+signs every later one with `generateAssertion`. It is a specification you can
+build, not a shipped app, and its own README says so first. The one
 property that *is* checked from source, by the `capture-app-has-no-library-path`
 invariant, is that the app has no path to a file it did not photograph. Nothing
 in production carries an attestation today — see AR-1.

@@ -43,13 +43,14 @@ iOS capture is recorded while everything else is refused.
 What that does **not** yet mean, said plainly because this is the risk the
 register exists for:
 
-* **The iOS client is written but has never been compiled** — `shield/ios/`,
-  no Swift toolchain in the environment that wrote it. Nothing produces an
-  attestation today and no photograph in Shield carries one. The gate is
-  verifiable and unreachable until somebody builds that app on a real device.
-  The one property checked from its source is that it has no photo-library
-  path (`capture-app-has-no-library-path`); everything else about it is
-  unverified.
+* **The iOS client compiles but has never run on a device** — `shield/ios/`.
+  Since 2026-09-29 the `Shield iOS build` workflow compiles it for the iPhone
+  SDK (unsigned) on every change; before that it had never met a compiler.
+  Nothing produces an attestation today and no photograph in Shield carries
+  one. The gate is verifiable and unreachable until somebody runs that app on
+  a real device. Beyond compiling, the one property checked from its source is
+  that it has no photo-library path (`capture-app-has-no-library-path`);
+  everything else about its behaviour is unverified.
 * **Assertions have never been checked against a real device.** A key is
   attested once and each later capture is a `generateAssertion` signature
   (`app_attest.verify_assertion`). The tests sign with their own P-256 key,
