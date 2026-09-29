@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Debug builds attest in Apple's development environment. The server refuses
+  these unless APP_ATTEST_ALLOW_DEVELOPMENT=1 is set on that deployment, and
+  that must never be set in production.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.developer.devicecheck.appattest-environment</key>
+  <string>development</string>
+</dict>
+</plist>

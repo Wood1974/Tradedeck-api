@@ -409,9 +409,10 @@ def capture_challenge(record_id):
         "challenge": nonce,
         "expires_in_s": attestation.CHALLENGE_TTL_S,
         "client_data_hash_alg": "sha256",
-        "note": ("Hash this value with SHA-256 and use the digest as the "
-                 "clientDataHash for DCAppAttestService.attestKey. Send the "
-                 "challenge back verbatim as attestation_challenge."),
+        "note": ("clientDataHash = SHA-256(challenge || SHA-256(photo bytes)), "
+                 "for DCAppAttestService.attestKey on a key's first capture "
+                 "and generateAssertion after it. Send the challenge back "
+                 "verbatim as attestation_challenge."),
     }), 201
 
 
@@ -424,9 +425,10 @@ def _attestation_for(req, principal, payload_sha256):
 
     Two things this function is careful never to do. It does not accept a
     caller's word that verification happened -- `verified` comes only from
-    `app_attest.verify`, which walks the chain itself. And it does not treat a
-    missing trust anchor as a reason to skip the chain check: with no root
-    configured, `verify` refuses, and so does this.
+    `app_attest.verify` or `app_attest.verify_assertion`, which check the
+    cryptography themselves. And it does not treat a missing trust anchor as a
+    reason to skip the chain check: with no root configured, `verify` refuses,
+    and so does this.
 
     The challenge is spent exactly once, whatever the outcome. A failed
     attestation that left the nonce live would let an attacker grind attempts
@@ -437,18 +439,45 @@ def _attestation_for(req, principal, payload_sha256):
     attestation says a genuine app was running when the nonce was issued and
     nothing at all about the file in the same request — so an attacker with a
     real iPhone attests honestly and uploads a stock photograph.
+
+    Two shapes reach trust on iOS. `attestation` is the first capture from a
+    key: the full chain to Apple's root, after which the key's public half is
+    stored. `assertion` is every capture after that: a Secure Enclave
+    signature checked against the stored key, whose counter must advance.
+    Both commit to the same client data -- challenge and photo digest -- so
+    the binding argument above holds for either.
     """
     platform = (req.form.get("attestation_platform") or "").strip().lower()
     token = (req.form.get("attestation") or "").strip()
+    assertion = (req.form.get("assertion") or "").strip()
     nonce = (req.form.get("attestation_challenge") or "").strip()
-    if not token:
+    if not token and not assertion:
         return {"trusted": False, "tier": attestation.TIER_UNATTESTED,
                 "reason": "no device attestation was presented."}
 
     challenge_ok = CHALLENGES.consume(nonce, principal.actor_id)
 
-    if platform == "ios":
+    if token and assertion:
+        return {"trusted": False, "tier": attestation.TIER_UNVERIFIABLE,
+                "reason": "both an attestation and an assertion were "
+                          "presented; a capture carries exactly one."}
+
+    allow_dev = config.get("APP_ATTEST_ALLOW_DEVELOPMENT") == "1"
+    app_id = config.get("APP_ATTEST_APP_ID") or ""
+    extra = {}
+    if platform == "ios" and assertion:
+        checked, key_row, extra = _check_assertion(
+            assertion, req.form.get("attestation_key_id"), principal,
+            challenge=nonce, payload_sha256=payload_sha256, app_id=app_id,
+            allow_development=allow_dev)
+        verdict = attestation.interpret_app_attest(
+            verified=checked["verified"],
+            receipt_ok=checked["receipt_ok"],
+            token_nonce=checked["token_nonce"],
+            expect_nonce=nonce or None)
+    elif platform == "ios":
         blob = _b64(token)
+        checked = None
         if blob is None:
             verdict = attestation.interpret_app_attest(verified=False)
         else:
@@ -456,11 +485,10 @@ def _attestation_for(req, principal, payload_sha256):
                 blob,
                 challenge=nonce,
                 payload_sha256=payload_sha256,
-                app_id=config.get("APP_ATTEST_APP_ID") or "",
+                app_id=app_id,
                 key_id=_b64(req.form.get("attestation_key_id")),
                 root_pem=config.get("APPLE_APP_ATTEST_ROOT_PEM"),
-                allow_development=(
-                    config.get("APP_ATTEST_ALLOW_DEVELOPMENT") == "1"))
+                allow_development=allow_dev)
             if not checked["verified"]:
                 log.info("App Attest refused for record: %s", checked["reason"])
             verdict = attestation.interpret_app_attest(
@@ -479,8 +507,103 @@ def _attestation_for(req, principal, payload_sha256):
                 "reason": f"attestation_platform {platform!r} is not one this "
                           f"service can check."}
 
-    return attestation.assess(platform=platform, verdict=verdict,
-                              challenge_ok=challenge_ok if nonce else None)
+    result = attestation.assess(platform=platform, verdict=verdict,
+                                challenge_ok=challenge_ok if nonce else None)
+    result.update(extra)
+    if not result["trusted"] or platform != "ios":
+        return result
+
+    if assertion:
+        # The compare-and-set is what makes the counter check hold across
+        # requests. `verify_assertion` compared against the value it was
+        # handed; this refuses if another upload advanced it in between.
+        if not _advance_counter(key_row["key_id"], checked["counter"]):
+            return {"trusted": False, "tier": attestation.TIER_UNVERIFIABLE,
+                    "reason": "this assertion was already used for another "
+                              "capture."}
+    else:
+        result["key_registered"] = _register_key(checked, principal)
+    return result
+
+
+def _check_assertion(assertion, key_id_field, principal, **kw):
+    """Look the key up, then verify. Returns (checked, key_row, extra).
+
+    `extra` carries `reattest: True` when the refusal is about the key rather
+    than the capture -- unknown, revoked, or attested under a different
+    credential. The app answers that by attesting a fresh key, which is the
+    one recovery it has, so saying so saves it guessing from the prose.
+
+    The three key refusals share one message on purpose. "This key belongs to
+    somebody else" would confirm to a caller that a key id they hold is live.
+    """
+    unknown = ({**app_attest._no("this device's key is not on file for this "
+                                 "credential, so the capture must be attested "
+                                 "afresh"), "counter": None},
+               None, {"reattest": True})
+    raw_key_id = _b64(key_id_field)
+    blob = _b64(assertion)
+    if raw_key_id is None or blob is None:
+        return ({**app_attest._no("the assertion or its key id is not valid "
+                                  "base64"), "counter": None}, None, {})
+    key_id = base64.b64encode(raw_key_id).decode()
+    try:
+        rows = (_t("attested_keys").select("*").eq("key_id", key_id)
+                .limit(1).execute()).data or []
+    except Exception:
+        log.exception("Attested key lookup failed")
+        return ({**app_attest._no("the device key could not be looked up"),
+                 "counter": None}, None, {})
+    row = rows[0] if rows else None
+    if (row is None or row.get("revoked_at")
+            or str(row.get("tenant_id")) != str(principal.tenant_id)
+            or str(row.get("actor_id")) != str(principal.actor_id)):
+        return unknown
+
+    checked = app_attest.verify_assertion(
+        blob, public_key=_b64(row.get("public_key")),
+        previous_counter=row.get("sign_count") or 0,
+        environment=row.get("environment") or "production", **kw)
+    if not checked["verified"]:
+        log.info("App Attest assertion refused: %s", checked["reason"])
+    return checked, row, {}
+
+
+def _advance_counter(key_id, counter):
+    """Compare-and-set the key's counter. True only if this call moved it."""
+    try:
+        res = (_t("attested_keys")
+               .update({"sign_count": counter, "last_used_at": _now()})
+               .eq("key_id", key_id).lt("sign_count", counter).execute())
+    except Exception:
+        log.exception("Counter update failed for an attested key")
+        return False
+    return bool(res.data)
+
+
+def _register_key(checked, principal):
+    """Keep a verified attestation's public key for the captures after it.
+
+    A failure here does not unrecord the capture -- that photograph was
+    attested in full -- it only means the next one must attest again, which
+    the response tells the app through `attestation_key_registered`.
+    """
+    try:
+        _t("attested_keys").insert({
+            "key_id": base64.b64encode(checked["key_id"]).decode(),
+            "tenant_id": principal.tenant_id,
+            "actor_id": str(principal.actor_id),
+            "public_key": base64.b64encode(checked["public_key"]).decode(),
+            "environment": checked["environment"],
+            "receipt": (base64.b64encode(checked["receipt"]).decode()
+                        if checked.get("receipt") else None),
+            "sign_count": 0,
+            "attested_at": _now(),
+        }).execute()
+    except Exception:
+        log.exception("Could not store an attested key")
+        return False
+    return True
 
 
 # ------------------------------------------------------------------ photos --
@@ -548,12 +671,15 @@ def upload_photo(record_id):
     attested = _attestation_for(request, _principal(),
                                 hashlib.sha256(raw).digest())
     if not attested["trusted"]:
-        return _err(
-            f"This capture was not accepted: {attested['reason']} "
-            f"Shield records photographs that can prove they came from a "
-            f"camera on a genuine device. Capture from the Shield app; a "
-            f"file chosen from storage cannot be attested and is not "
-            f"recorded.", 422)
+        return jsonify({
+            "error": (
+                f"This capture was not accepted: {attested['reason']} "
+                f"Shield records photographs that can prove they came from a "
+                f"camera on a genuine device. Capture from the Shield app; a "
+                f"file chosen from storage cannot be attested and is not "
+                f"recorded."),
+            "reattest": bool(attested.get("reattest")),
+        }), 422
 
     mime = integrity.normalize_mime(upload.mimetype or "")
     sniffed = integrity.sniff_mime(raw)
@@ -665,7 +791,12 @@ def upload_photo(record_id):
             "attestation_tier": attested["tier"],
         },
     })
-    return jsonify({"photo": (res.data or [{}])[0]}), 201
+    return jsonify({
+        "photo": (res.data or [{}])[0],
+        # Only an attestation registers a key; an assertion used one that was.
+        # The app keeps its key id only when this is true.
+        "attestation_key_registered": bool(attested.get("key_registered")),
+    }), 201
 
 
 # ------------------------------------------------------------------ custody --

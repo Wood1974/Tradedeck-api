@@ -50,6 +50,16 @@ register exists for:
   The one property checked from its source is that it has no photo-library
   path (`capture-app-has-no-library-path`); everything else about it is
   unverified.
+* **Assertions have never been checked against a real device.** A key is
+  attested once and each later capture is a `generateAssertion` signature
+  (`app_attest.verify_assertion`). The tests sign with their own P-256 key,
+  which proves the counter, binding and ownership logic. It does not prove
+  Apple's exact signing convention (a signature over `nonce`, per Apple's docs
+  and `node-app-attest`) or how Apple encodes `validationCategory` in the
+  assertion's extensions — the server enforces a category only when it can
+  read one. If the convention is wrong, every assertion is refused and the app
+  falls back to nothing: `reattest` is only sent for key-state refusals, so a
+  signature mismatch would surface as refused captures, not silent trust.
 * **The chain has never been checked against Apple's real root.** The tests
   mint their own CA and hand it in through the same parameter, which proves
   the logic and proves nothing about Apple's certificate profile. The first

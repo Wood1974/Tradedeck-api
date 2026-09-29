@@ -78,6 +78,7 @@ class FakeQuery:
         self._op = "select"
         self._order = None
         self._limit = None
+        self._below = {}
 
     def select(self, *_a, **_kw):
         return self
@@ -95,6 +96,10 @@ class FakeQuery:
         return self
 
     def neq(self, *_a):
+        return self
+
+    def lt(self, col, val):
+        self._below[col] = val
         return self
 
     def is_(self, *_a):
@@ -127,7 +132,18 @@ class FakeQuery:
             return type("Res", (), {"data": written})()
         if self._op == "update":
             self.store.writes.append((self.table, self._payload))
-            return type("Res", (), {"data": []})()
+            # Applied, and the changed rows returned, as PostgREST does. The
+            # attested-key counter is a compare-and-set whose only signal is
+            # whether a row came back, so a fake that returned nothing would
+            # refuse every assertion and one that ignored `lt` would accept a
+            # replay.
+            hit = [r for r in rows
+                   if all(r.get(c) == v for c, v in self.filters.items())
+                   and all(r.get(c) is not None and r.get(c) < v
+                           for c, v in self._below.items())]
+            for r in hit:
+                r.update(self._payload)
+            return type("Res", (), {"data": [dict(r) for r in hit]})()
 
         out = rows
         for col, val in self.filters.items():
@@ -905,3 +921,201 @@ class TestTheOutcomeReachesThePublishedReport:
         canonical = json.dumps(row["report_json"], sort_keys=True,
                                separators=(",", ":"), default=str)
         assert hashlib.sha256(canonical.encode()).hexdigest() == row["report_sha256"]
+
+
+class TestCaptureWithAnAssertion:
+    """Attest once, then assert: the path that lets a crew shoot all day.
+
+    `attestKey` may be called once per key and Apple rate-limits it, so the
+    first capture from a key attests it and every later one is a
+    `generateAssertion` signature checked against the stored public key. These
+    run through the real route, the real challenge store and the real
+    verifier; only the database is fake, and its compare-and-set is faithful.
+    """
+
+    KEY_ID = hashlib.sha256(attest_fixtures.DEVICE_PUB).digest()
+
+    def seed_key(self, store, *, actor="key-" + TENANT_A[:4],
+                 tenant=TENANT_A, sign_count=0, environment="production",
+                 revoked_at=None):
+        store.rows.setdefault("attested_keys", []).append({
+            "key_id": base64.b64encode(self.KEY_ID).decode(),
+            "tenant_id": tenant, "actor_id": actor,
+            "public_key": base64.b64encode(attest_fixtures.DEVICE_PUB).decode(),
+            "environment": environment, "sign_count": sign_count,
+            "revoked_at": revoked_at,
+        })
+
+    def fields(self, monkeypatch, client, *, counter=1, payload=JPEG, **kw):
+        got = client.post(f"/shield/v2/records/{RECORD_A}/capture-challenge")
+        assert got.status_code == 201, got.get_json()
+        challenge = got.get_json()["challenge"]
+        monkeypatch.setenv("APP_ATTEST_APP_ID", APP_ID)
+        blob = attest_fixtures.build_assertion(
+            challenge=challenge, counter=counter,
+            payload_sha256=hashlib.sha256(payload).digest(), **kw)
+        return {
+            "assertion": base64.b64encode(blob).decode(),
+            "attestation_key_id": base64.b64encode(self.KEY_ID).decode(),
+            "attestation_challenge": challenge,
+            "attestation_platform": "ios",
+        }
+
+    def post(self, client, fields, jpeg=JPEG):
+        data = {"checkpoint_id": "cp-1", "file": (io.BytesIO(jpeg), "shot.jpg")}
+        data.update(fields)
+        return client.post(f"/shield/v2/records/{RECORD_A}/photos",
+                           data=data, content_type="multipart/form-data")
+
+    def key_row(self, store):
+        return store.rows["attested_keys"][0]
+
+    # ---- the door opens -----------------------------------------------------
+    def test_an_attested_capture_registers_its_key(self, app_and_db,
+                                                   monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = TestCaptureWithARealAttestation().attest(
+            monkeypatch, client)
+
+        got = self.post(client, fields)
+        assert got.status_code == 201, got.get_json()
+        assert got.get_json()["attestation_key_registered"] is True
+
+        row = self.key_row(store)
+        assert row["key_id"] == fields["attestation_key_id"]
+        assert row["tenant_id"] == TENANT_A
+        assert row["sign_count"] == 0
+        assert row["environment"] == "production"
+        # The stored key is the attested one: its hash IS the key id.
+        assert (base64.b64encode(hashlib.sha256(
+            base64.b64decode(row["public_key"])).digest()).decode()
+            == row["key_id"])
+
+    def test_a_refused_attestation_registers_nothing(self, app_and_db,
+                                                     monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        fields, _root = TestCaptureWithARealAttestation().attest(
+            monkeypatch, client, app_id="ZZZZZ99999.com.someone.else")
+        assert self.post(client, fields).status_code == 422
+        assert not store.rows.get("attested_keys")
+
+    def test_an_asserted_capture_is_recorded_at_hardware_tier(
+            self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+
+        got = self.post(client, self.fields(monkeypatch, client))
+        assert got.status_code == 201, got.get_json()
+        assert got.get_json()["attestation_key_registered"] is False
+        row = [w for t, w in store.writes if t == "photos"][0]
+        assert attestation.TIER_HARDWARE in json.dumps(row)
+        assert self.key_row(store)["sign_count"] == 1
+
+    def test_a_crew_can_shoot_all_day_on_one_key(self, app_and_db,
+                                                 monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+        for n in range(1, 6):
+            got = self.post(client, self.fields(monkeypatch, client, counter=n))
+            assert got.status_code == 201, (n, got.get_json())
+        assert self.key_row(store)["sign_count"] == 5
+
+    # ---- and stays shut -----------------------------------------------------
+    def test_a_replayed_counter_is_refused(self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store, sign_count=4)
+        got = self.post(client, self.fields(monkeypatch, client, counter=4))
+        assert got.status_code == 422
+        # A replay is a refusal of the capture, not of the key: attesting a
+        # fresh key would not make a replayed signature honest.
+        assert got.get_json()["reattest"] is False
+        assert not [w for t, w in store.writes if t == "photos"]
+
+    def test_losing_the_counter_race_is_refused(self, app_and_db,
+                                                monkeypatch):
+        """Verified against a stale counter, then beaten to the update."""
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+        monkeypatch.setattr(tenant_api, "_advance_counter", lambda *_a: False)
+        got = self.post(client, self.fields(monkeypatch, client))
+        assert got.status_code == 422
+        assert "already used" in got.get_json()["error"]
+        assert not [w for t, w in store.writes if t == "photos"]
+
+    def test_an_assertion_does_not_carry_over_to_another_file(
+            self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+        fields = self.fields(monkeypatch, client, payload=b"some other file")
+        got = self.post(client, fields)
+        assert got.status_code == 422
+        assert self.key_row(store)["sign_count"] == 0
+
+    def test_an_unknown_key_asks_for_a_fresh_attestation(self, app_and_db,
+                                                         monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        got = self.post(client, self.fields(monkeypatch, client))
+        assert got.status_code == 422
+        assert got.get_json()["reattest"] is True
+
+    @pytest.mark.parametrize("owner", [
+        {"actor": "member-admin"},
+        {"tenant": TENANT_B, "actor": "key-" + TENANT_B[:4]},
+        {"revoked_at": "2026-09-01T00:00:00+00:00"},
+    ], ids=["another-actor", "another-tenant", "revoked"])
+    def test_a_key_that_is_not_yours_is_treated_as_unknown(
+            self, app_and_db, monkeypatch, owner):
+        """Same answer as an unknown key, so a key id is not an oracle.
+
+        The reason text is the generic refusal, as for every verifier refusal
+        on this route; the specific one goes to the log. `reattest` is what
+        the app acts on.
+        """
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store, **owner)
+        got = self.post(client, self.fields(monkeypatch, client))
+        assert got.status_code == 422
+        assert got.get_json()["reattest"] is True
+        assert self.key_row(store)["sign_count"] == 0
+
+    def test_a_development_key_is_refused_unless_enabled(self, app_and_db,
+                                                         monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store, environment="development")
+        assert self.post(client, self.fields(
+            monkeypatch, client)).status_code == 422
+        monkeypatch.setenv("APP_ATTEST_ALLOW_DEVELOPMENT", "1")
+        assert self.post(client, self.fields(
+            monkeypatch, client)).status_code == 201
+
+    def test_an_assertion_spends_its_challenge(self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+        fields = self.fields(monkeypatch, client, counter=1)
+        assert self.post(client, fields).status_code == 201
+        # A fresh counter, the same challenge: the challenge is gone.
+        again = self.fields(monkeypatch, client, counter=2)
+        again["attestation_challenge"] = fields["attestation_challenge"]
+        assert self.post(client, again).status_code == 422
+
+    def test_attestation_and_assertion_together_are_refused(
+            self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = client_for(flask_app, store, tenant_api, TENANT_A, keys)
+        self.seed_key(store)
+        fields = self.fields(monkeypatch, client)
+        fields["attestation"] = fields["assertion"]
+        got = self.post(client, fields)
+        assert got.status_code == 422
+        assert "exactly one" in got.get_json()["error"]

@@ -21,6 +21,9 @@ enum ClientError: LocalizedError {
     case badURL
     case notConnected
     case http(Int, String)
+    /// The server refused the key rather than the capture: unknown, revoked,
+    /// or attested under another credential. Answered by attesting afresh.
+    case reattest(String)
     case transport(String)
 
     var errorDescription: String? {
@@ -32,7 +35,7 @@ enum ClientError: LocalizedError {
             // viewfinder, and "that is not a valid Shield address" sends
             // somebody to re-type a URL that was never the problem.
             return "You are signed out of Shield. Connect again to record this capture."
-        case .http(_, let message):
+        case .http(_, let message), .reattest(let message):
             // The server's refusals are written to be read by a person —
             // "This capture was not accepted: …" — so they are surfaced as
             // they are rather than replaced with a generic failure.
@@ -92,13 +95,18 @@ actor ShieldClient {
         try await postJSON("records/\(recordID)/capture-challenge", [String: String]())
     }
 
-    /// Photograph first, attest second, upload third.
+    /// Photograph first, prove second, upload third.
     ///
     /// The order is the opposite of the intuitive one and it is the whole
-    /// design: the attestation commits to these exact bytes, so the bytes have
-    /// to exist before it is made. An app that attested at the start of the
+    /// design: the proof commits to these exact bytes, so the bytes have to
+    /// exist before it is made. An app that attested at the start of the
     /// screen and photographed afterwards would produce something genuine that
     /// proves nothing about the file.
+    ///
+    /// Usually the proof is an assertion from the key this install attested
+    /// on its first capture. If the server no longer recognises that key, it
+    /// says so with `reattest`, and this tries exactly once more with a
+    /// freshly attested key and a fresh challenge. Any other refusal is final.
     ///
     /// `location` is sent because the device has it and the server's geofence
     /// wants it — and it is sent as what it is, the *device's claim*. The
@@ -106,17 +114,35 @@ actor ShieldClient {
     /// the person holding the phone did not write.
     func upload(photo: Data, to recordID: String, checkpoint checkpointID: String,
                 location: (lat: Double, lng: Double)?) async throws -> StoredPhoto {
+        do {
+            return try await attempt(photo: photo, to: recordID,
+                                     checkpoint: checkpointID, location: location)
+        } catch ClientError.reattest {
+            Attestor.forget()
+            return try await attempt(photo: photo, to: recordID,
+                                     checkpoint: checkpointID, location: location)
+        }
+    }
+
+    private func attempt(photo: Data, to recordID: String,
+                         checkpoint checkpointID: String,
+                         location: (lat: Double, lng: Double)?) async throws -> StoredPhoto {
         let issued = try await challenge(for: recordID)
-        let attestation = try await Attestor.attest(photo: photo,
-                                                    challenge: issued.challenge)
+        let proof = try await Attestor.prove(photo: photo,
+                                             challenge: issued.challenge)
 
         var fields: [String: String] = [
             "checkpoint_id": checkpointID,
-            "attestation": attestation.blob.base64EncodedString(),
-            "attestation_key_id": attestation.keyID,
+            "attestation_key_id": proof.keyID,
             "attestation_challenge": issued.challenge,
             "attestation_platform": "ios",
         ]
+        switch proof {
+        case .attestation(_, let blob):
+            fields["attestation"] = blob.base64EncodedString()
+        case .assertion(_, let blob):
+            fields["assertion"] = blob.base64EncodedString()
+        }
         if let location {
             fields["gps_lat"] = String(location.lat)
             fields["gps_lng"] = String(location.lng)
@@ -125,6 +151,14 @@ actor ShieldClient {
         let out: PhotoResponse = try await multipart(
             "records/\(recordID)/photos", fields: fields,
             file: photo, filename: "capture.jpg", mime: "image/jpeg")
+
+        // Keep a newly attested key only once the server has stored it. If it
+        // could not, the next capture attests again rather than asserting
+        // with a key nobody can check.
+        if case .attestation(let keyID, _) = proof,
+           out.attestation_key_registered == true {
+            Attestor.keep(keyID)
+        }
         return out.photo
     }
 
@@ -153,8 +187,9 @@ actor ShieldClient {
             // the person can act on ("this device could not attest…") is worth
             // more than a status code, and the refusals were written to be
             // read.
-            let message = (try? JSONDecoder().decode(APIError.self, from: data))?.error
-                ?? "Shield returned \(code)."
+            let body = try? JSONDecoder().decode(APIError.self, from: data)
+            let message = body?.error ?? "Shield returned \(code)."
+            if body?.reattest == true { throw ClientError.reattest(message) }
             throw ClientError.http(code, message)
         }
         return try JSONDecoder().decode(T.self, from: data)

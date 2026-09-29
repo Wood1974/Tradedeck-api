@@ -98,6 +98,9 @@ final class AppState: ObservableObject {
 
     func signOut() {
         Keychain.clear()
+        // The key was attested under this credential, and the server will
+        // not accept it from another. The next sign-in attests its own.
+        Attestor.forget()
         client = nil
         records = []
         tenantName = nil

@@ -58,13 +58,21 @@ struct StoredPhoto: Decodable {
 
 struct APIError: Decodable {
     let error: String
+    /// Set on a refused capture when the problem is the device key rather
+    /// than the photograph. The client answers it by attesting a new key.
+    let reattest: Bool?
 }
 
 /// Wrappers for the shapes the API returns.
 struct RecordList: Decodable { let records: [Record] }
 struct RecordResponse: Decodable { let record: Record }
 struct CheckpointList: Decodable { let checkpoints: [Checkpoint] }
-struct PhotoResponse: Decodable { let photo: StoredPhoto }
+struct PhotoResponse: Decodable {
+    let photo: StoredPhoto
+    /// True when this capture's attestation registered its key on the
+    /// server, so later captures can assert with it instead.
+    let attestation_key_registered: Bool?
+}
 
 /// `GET /records/<id>` returns the record together with its checkpoints, each
 /// carrying whichever photograph is currently live for it. A retake
