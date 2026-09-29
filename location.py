@@ -10,9 +10,19 @@ All computation is deterministic and reproducible.
 """
 
 import math
+from typing import List, Dict, Union
+
+# GPS spoofing detection thresholds
+IMPOSSIBLE_SPEED_THRESHOLD_MPH = 250  # Above this: GPS teleportation
+UNREALISTIC_SPEED_THRESHOLD_MPH = 120  # Above this: implausible travel speed
+
+# Distance and time conversion constants
+EARTH_RADIUS_KM = 6371
+KM_TO_MILES = 0.621371
+SECONDS_PER_HOUR = 3600
 
 
-def _haversine_distance_km(lat1, lon1, lat2, lon2):
+def _haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
     Calculate distance between two GPS points using Haversine formula.
 
@@ -22,7 +32,7 @@ def _haversine_distance_km(lat1, lon1, lat2, lon2):
     distance = 2 * R * arcsin(sqrt(sin²((lat2-lat1)/2) + cos(lat1)*cos(lat2)*sin²((lon2-lon1)/2)))
     where R = 6371 km (Earth radius)
     """
-    R = 6371  # Earth radius in kilometers
+    R = EARTH_RADIUS_KM
 
     # Convert degrees to radians
     lat1_rad = math.radians(lat1)
@@ -41,7 +51,7 @@ def _haversine_distance_km(lat1, lon1, lat2, lon2):
     return distance_km
 
 
-def _calculate_speed_mph(distance_km, time_delta_seconds):
+def _calculate_speed_mph(distance_km: float, time_delta_seconds: int) -> float:
     """
     Calculate speed in mph from distance and time.
 
@@ -55,18 +65,18 @@ def _calculate_speed_mph(distance_km, time_delta_seconds):
     if time_delta_seconds == 0:
         return float('inf')
 
-    # Convert km to miles (1 km = 0.621371 miles)
-    distance_miles = distance_km * 0.621371
+    # Convert km to miles
+    distance_miles = distance_km * KM_TO_MILES
 
     # Convert seconds to hours
-    time_hours = time_delta_seconds / 3600
+    time_hours = time_delta_seconds / SECONDS_PER_HOUR
 
     # Speed = distance / time
     speed_mph = distance_miles / time_hours
     return speed_mph
 
 
-def score(points):
+def score(points: List[Dict[str, Union[float, int]]]) -> Dict[str, Union[str, float]]:
     """
     Score GPS points for spoofing indicators.
 
@@ -121,10 +131,10 @@ def score(points):
             issues.append("impossible")
             max_speed_mph = float('inf')
         # Check for impossible speed (> 250 mph)
-        elif speed_mph > 250:
+        elif speed_mph > IMPOSSIBLE_SPEED_THRESHOLD_MPH:
             issues.append("impossible")
         # Check for unrealistic speed (> 120 mph)
-        elif speed_mph > 120:
+        elif speed_mph > UNREALISTIC_SPEED_THRESHOLD_MPH:
             issues.append("unrealistic")
 
     # Handle infinite speed

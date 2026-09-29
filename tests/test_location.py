@@ -7,7 +7,7 @@ import pytest
 from location import score
 
 
-class TestLocationScoreing:
+class TestLocationScoring:
     """Test GPS spoofing detection."""
 
     def test_single_point_consistent(self):
