@@ -1,0 +1,368 @@
+"""Claims we intend to be able to make, and what each one still costs.
+
+The failure this prevents
+-------------------------
+`audit/accepted-risks.md` is a ledger of limits we have accepted. This is its
+mirror: a ledger of claims we have *not yet earned*. Both exist for the same
+reason, from opposite directions — the accepted-risks file stops the audit
+re-reporting what we already know, and this file stops us saying something
+before it is true.
+
+A slogan written a month early is a roadmap item. The same slogan on a page a
+week early is an overclaim, and an overclaim is the one kind of damage this
+product does not recover from: the entire reason to prefer a record from us
+over a competitor's is that our statements survive being tested. One that
+doesn't spends an asset that took years to accumulate and cannot be rebought.
+
+So every claim here carries the mechanism that would make it true, the test
+that proves the mechanism works, and a date. The date is the gate. While it is
+None the claim is UNEARNED, and `audit/invariants.py` fails the build if the
+text of an unearned claim appears in anything a customer reads.
+
+Why the phrase matters
+----------------------
+`phrase` is a short distinctive fragment of the claim — what an invariant
+greps for. It is deliberately not the whole sentence: marketing rewords, and a
+check that only catches the exact wording catches nothing. Pick the part that
+carries the assertion and would survive an edit.
+
+Adding one
+----------
+Write it the moment you *want* to say it, not when you can. That is the point:
+capturing the ambition is free and it turns a temptation into a work item with
+an acceptance test attached.
+"""
+
+CLAIMS = (
+    {
+        "id": "cheapest-to-do-the-work",
+        "claim": "The cheapest way to pass is to do the work.",
+        "phrase": "cheapest way to pass",
+        "needs": (
+            "DONE (synthetic only) — flash-pair analysis, rebroadcast.py.",
+            "DONE (synthetic only) — two-pose parallax, rebroadcast.py.",
+            "Field calibration of both against real phones, real displays and "
+            "real jobsites. The thresholds have never seen a real photograph "
+            "of a real screen.",
+            "DONE (server side) — single-use capture nonce with a short TTL, "
+            "ENFORCED against the token's own requestHash rather than asserted "
+            "by the caller, so a replayed attestation cannot carry trust onto "
+            "a file the device never saw. The first cut of this shipped the "
+            "bookkeeping without the binding; see attack 21. Needs a shared "
+            "store before it works under more than one worker (AR-9).",
+            "Platform attestation, which requires the native app that does not "
+            "exist. attestation.py holds the policy; nothing produces a verdict "
+            "for it to read.",
+            "A capture flow that forces real translation between the two "
+            "poses — pure rotation makes every scene look planar.",
+        ),
+        "test": "test_rebroadcast.py — discrimination proven on synthetic "
+                "scenes; field calibration not yet designed",
+        "earned": None,
+        "note": "Two of the mechanisms now exist and separate the cases "
+                "cleanly on synthetic data. That is the maths working, not the "
+                "product working: no threshold here has met a real screen. "
+                "Today a forgery still costs about twelve lines of Python; see "
+                "AR-1.",
+    },
+    {
+        "id": "tamper-evident-custody",
+        "claim": "The custody history cannot be altered without detection, "
+                 "including by the operator.",
+        "phrase": "cannot be altered without detection",
+        "needs": (
+            "Hash-linked custody entries with a published chain head.",
+            "Append-only enforcement at the database level against UPDATE, "
+            "DELETE and TRUNCATE.",
+            "A chain head that has left the building, so a full rewrite is "
+            "detectable rather than merely internally inconsistent.",
+        ),
+        "test": "test_ledger.py — 21 tampering attacks, each caught at the "
+                "correct entry index",
+        "earned": "2026-09-14",
+        "note": "Earned with one honest limit stated alongside it: a complete "
+                "rewrite IS internally consistent. Detection depends on a "
+                "holder comparing the head hash they were given.",
+    },
+    {
+        "id": "verifiable-without-trusting-us",
+        "claim": "The evidence export can be verified by a recipient without "
+                 "trusting us.",
+        "phrase": "without trusting us",
+        "needs": (
+            "A manifest carrying every hash and its algorithm.",
+            "Independent chain verification the recipient runs themselves.",
+            "Published commands that require no access to our systems.",
+        ),
+        "test": "test_evidence.py — manifest and verification instructions "
+                "assert on what a recipient can check unaided",
+        "earned": "2026-09-14",
+        "note": "True for the chain and the hashes. It does NOT extend to the "
+                "photograph's origin — see the unearned claim above.",
+    },
+    {
+        "id": "requirements-predate-work",
+        "claim": "The checkpoint requirements provably predate the work being "
+                 "audited.",
+        "phrase": "provably predate",
+        "needs": (
+            "Checkpoints generated by the buyer, not the audited party.",
+            "A one-way lock with the schedule hash written into the chain.",
+        ),
+        "test": "test_shield.py — checkpoint locking; invariant "
+                "checkpoints-locked",
+        "earned": "2026-09-14",
+        "note": "Predates the *upload*. It does not establish when the photo "
+                "was taken, only that the criteria were fixed first.",
+    },
+    {
+        "id": "independently-corroborated-location",
+        "claim": "A photo's location is corroborated against a reference the "
+                 "audited party does not control.",
+        "phrase": "does not control",
+        "needs": (
+            "A geofence measured against a site the buyer fixed at purchase.",
+            "Solar geometry constraining the light for the claimed place and "
+            "time.",
+        ),
+        "test": "test_corroborate.py — solar position against geometric "
+                "identities; test_shield.py — haversine geofence",
+        "earned": "2026-09-14",
+        "note": "Corroborates the *reported* position against the site. A "
+                "contractor physically on site photographing a screen defeats "
+                "it; that is what the flash-pair work is for.",
+    },
+    {
+        "id": "note-time-is-real",
+        "claim": "A field note's stated time is the time it was actually "
+                 "written.",
+        "phrase": "actually written",
+        "needs": (
+            "written_at set server-side and never accepted from the client.",
+            "Append-only notes; corrections are amendments, not edits.",
+            "The delay between observation and writing carried into the "
+            "export rather than hidden.",
+        ),
+        "test": "test_notes.py — contemporaneity banding; invariants "
+                "note-time-server-set and notes-append-only",
+        "earned": "2026-09-14",
+        "note": "The write time is ours. The *observation* time is the "
+                "writer's assertion, and the export says so.",
+    },
+    {
+        "id": "rebroadcast-detection",
+        "claim": "A capture can be positively corroborated as a real "
+                 "three-dimensional scene.",
+        "phrase": "positively corroborated as a real",
+        "needs": (
+            "Flash-pair and parallax analysis — built.",
+            "Thresholds calibrated against real devices and real displays, "
+            "with a measured false-positive rate on ordinary flat subjects.",
+            "The capture flow that produces the two frames and the two poses.",
+        ),
+        "test": "test_rebroadcast.py — 18 cases including the flat wall, the "
+                "blown-out frame, and pure rotation",
+        "earned": None,
+        "note": "Deliberately framed as an UPGRADE, never a detector. Both "
+                "signals are strong positives and weak negatives: non-planar "
+                "proves depth, but planar means screen OR flat wall OR a "
+                "rotated capture. Construction is full of flat subjects, so a "
+                "system that read planar as fraud would accuse honest "
+                "contractors far more often than it caught anyone. assess() "
+                "enforces that asymmetry and a test asserts it.",
+    },
+    {
+        "id": "photo-came-from-a-camera",
+        "claim": "A photo came off a camera sensor rather than a file picker.",
+        "phrase": "came off a camera sensor",
+        "needs": (
+            "DONE — trust tiering and single-use capture challenges, "
+            "attestation.py. Fails closed; an unverified or unbound "
+            "attestation can never reach a trusted tier.",
+            "The native app. App Attest and Play Integrity do not exist for a "
+            "web page, and both Shield frontends are web pages, so every real "
+            "upload today is tier 'unattested'.",
+            "The cryptographic verification itself: CBOR plus an X.509 walk to "
+            "Apple's App Attest root, and JWE decryption or a Google API call "
+            "for Play Integrity. attestation.py takes an already-verified "
+            "verdict and refuses to invent one.",
+            "Rebroadcast detection (flash pair, parallax) to defeat the "
+            "screen-replay path that attestation alone leaves open.",
+            "C2PA capture-side credentials where the device supports them.",
+        ),
+        "test": "test_attestation.py — 33 cases covering fail-closed verdicts, "
+                "replayed and unbound tokens, repackaged apps, malformed "
+                "payloads, and the empty-verdict attack signal",
+        "earned": None,
+        "note": "This is AR-1. The policy layer is built, hardened after an "
+                "adversarial re-read found three holes in it (attacks 21-23), "
+                "and the honest state of it is still that it has nothing to "
+                "judge: with no native app, every capture is 'unattested', "
+                "which the module treats as the expected case rather than a "
+                "finding. Note also what a pass "
+                "would NOT mean — Apple does not expose jailbreak state "
+                "through App Attest, so 'attested' is a strong statement about "
+                "the app and the silicon and a silent one about the OS. The "
+                "claim may never be fully earnable; the honest endpoint is "
+                "probably a stated cost of forgery, not a proof. If that is "
+                "where it lands, change the claim rather than stretching the "
+                "evidence to reach it.",
+    },
+    {
+        "id": "listed-conforming-product",
+        "claim": "Shield is a C2PA Conforming Product.",
+        "phrase": "Conforming Product",
+        "needs": (
+            "Legal entity in good standing whose name matches registration "
+            "exactly.",
+            "C2PA conformance submission, legal onboarding, and product "
+            "security architecture documentation.",
+            "A Conformance Letter, then a Claim Signing Certificate from a CA "
+            "on the C2PA Trust List.",
+        ),
+        "test": "listing verifiable on the public Conforming Products List",
+        "earned": None,
+        "note": "The one claim here whose proof is somebody else's register "
+                "rather than our own test suite — which is precisely why it "
+                "is worth more than the others.",
+    },
+    {
+        "id": "fee-does-not-follow-the-verdict",
+        "claim": "Our fee is identical whether the record is favourable or "
+                 "damning, and anyone can check that without asking us.",
+        "phrase": "identical whether the record is favourable or damning",
+        "needs": (
+            "DONE — a single price table with no outcome as an input. "
+            "pricing.quote() takes job_budget_cents and nothing else, so "
+            "there is no channel through which a verdict could reach a price.",
+            "DONE — the complete list served to anonymous callers at "
+            "GET /shield/public/pricing, with the prohibited arrangements "
+            "published beside the numbers.",
+            "DONE — price-list-is-complete sweeps the budget axis and fails "
+            "the build if any chargeable price is absent from that list, so a "
+            "secret fourth tier cannot exist quietly.",
+        ),
+        "test": "test_pricing.py — signature, completeness and neutrality; "
+                "invariants price-independent-of-verdict, "
+                "price-list-is-complete, pricing-and-results-public, each "
+                "verified by breaking it",
+        "earned": "2026-09-18",
+        "note": "Earned narrowly, and the limit belongs beside it. This "
+                "establishes that no fee moves with a verdict. It does not "
+                "remove the conflict of being paid by the sealed party at "
+                "all: a customer whose records keep coming back damning can "
+                "still leave, and enough of those is quiet pressure on "
+                "thresholds and defaults rather than on any single record. "
+                "Flat pricing closes the channel that failed in 2008; it does "
+                "not close the incentive. See INDEPENDENCE.md.",
+    },
+    {
+        "id": "published-outcome-rates",
+        "claim": "Our published pass and failure rates show how often this "
+                 "system says no.",
+        "phrase": "published pass and failure rates",
+        "needs": (
+            "DONE — GET /shield/public/results serves exact counts in every "
+            "verdict category, including superseded retakes, to anonymous "
+            "callers, and states its own limits in the payload.",
+            "At least 30 closed jobs. Below that the endpoint withholds "
+            "percentages on purpose: a rate over a handful of jobs moves by "
+            "tens of points on one outcome, and '100% pass rate' with n=1 is "
+            "the exact overclaim this ledger exists to stop.",
+            "Independent review. These are our own numbers about our own "
+            "product, computed by the party that issues the records. Until "
+            "someone else can recompute them, they are a disclosure and not "
+            "an attestation.",
+        ),
+        "test": "test_transparency.py and test_public_routes.py — categories "
+                "fixed, retakes counted, rates withheld below the minimum; "
+                "invariants results-cannot-hide-failures and "
+                "results-withhold-small-rates, each verified by breaking it",
+        "earned": None,
+        "note": "The mechanism is built and running; the sample is not. No "
+                "job has been closed out yet, so there is nothing for a rate "
+                "to be computed over and the endpoint says so instead of "
+                "computing one. That refusal is the claim's own acceptance "
+                "test running in production — when closed jobs cross the "
+                "minimum the rates appear on their own, and the first half of "
+                "this claim becomes earnable without anyone deciding it has. "
+                "Deliberately no figure here: the endpoint reports the sample "
+                "live, and a count copied into prose is wrong the day after "
+                "it is written. An earlier draft of this note said 'one "
+                "Shield job on record', which was true of shield_jobs and "
+                "misleading about the thing that matters — "
+                "shield_completion_reports was, and is, zero.",
+    },
+)
+
+
+def earned(claims=CLAIMS):
+    """Claims that may appear in anything a customer reads."""
+    return [c for c in claims if c["earned"]]
+
+
+def unearned(claims=CLAIMS):
+    """Claims that may not. The invariant enforces this against the docs."""
+    return [c for c in claims if not c["earned"]]
+
+
+def by_id(claim_id, claims=CLAIMS):
+    return next((c for c in claims if c["id"] == claim_id), None)
+
+
+def render_markdown(claims=CLAIMS) -> str:
+    """The ledger as `audit/CLAIMS.md`.
+
+    Generated rather than hand-written, and an invariant asserts the file on
+    disk matches this output — so the ledger and the checks cannot drift the
+    way a hand-maintained document always eventually does.
+    """
+    out = [
+        "# Claims ledger — what we may say, and what it still costs",
+        "",
+        "**Generated from `shield/claims.py`. Do not edit by hand** — an",
+        "invariant compares this file against the source and fails the build",
+        "if they differ.",
+        "",
+        "The mirror of `accepted-risks.md`. That file records limits we have",
+        "accepted; this one records claims we have not yet earned. A claim",
+        "with no date is **unearned**, and `audit/invariants.py` fails if its",
+        "text appears in anything a customer reads.",
+        "",
+        "Write a claim down the moment you want to make it. Capturing the",
+        "ambition is free, and it converts a temptation into a work item with",
+        "an acceptance test attached.",
+        "",
+        "---",
+        "",
+    ]
+    for group, heading in ((unearned(claims), "Unearned — do not publish"),
+                           (earned(claims), "Earned")):
+        if not group:
+            continue
+        out += [f"## {heading}", ""]
+        for c in group:
+            status = f"earned {c['earned']}" if c["earned"] else "**UNEARNED**"
+            out += [
+                f"### {c['claim']}",
+                f"`{c['id']}` · {status} · greps for *\"{c['phrase']}\"*",
+                "",
+                "**Needs:**",
+            ]
+            out += [f"- {n}" for n in c["needs"]]
+            out += [
+                "",
+                f"**Test:** {c['test']}",
+                "",
+                c["note"],
+                "",
+            ]
+        out += ["---", ""]
+    return "\n".join(out).rstrip() + "\n"
+
+
+if __name__ == "__main__":  # regenerate the ledger
+    import pathlib
+    target = pathlib.Path(__file__).parent / "audit" / "CLAIMS.md"
+    target.write_text(render_markdown())
+    print(f"wrote {target} ({len(unearned())} unearned, {len(earned())} earned)")

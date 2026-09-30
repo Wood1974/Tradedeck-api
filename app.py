@@ -1,12 +1,12 @@
 import base64
 import binascii
 import hashlib
-import hmac
 import json
 import logging
 import os
 import re
 import anthropic
+import requests
 import stripe
 from flask import Flask, g, jsonify, request
 from flask_cors import CORS
@@ -45,7 +45,7 @@ SUPABASE_URL              = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY      = os.environ["SUPABASE_SERVICE_KEY"]
 DRAW_PHOTOS_BUCKET        = get_env("DRAW_PHOTOS_BUCKET", "draw-photos")
 ANTHROPIC_MODEL           = get_env("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-INTERNAL_ANALYZE_KEY      = os.environ.get("INTERNAL_ANALYZE_KEY", "")
+
 
 supabase_admin    = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 anthropic_client  = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -329,36 +329,89 @@ def stripe_webhook():
         return _error("Webhook processing failed", 500)
     return jsonify({"received":True})
 
-@app.route('/internal/analyze-photos', methods=['POST'])
-def internal_analyze_photos():
-    # Gated behind INTERNAL_ANALYZE_KEY (set in Render). Denies all if unset,
-    # so a missing env var never leaves the route open. Fetches remote images
-    # and bills the Anthropic key, so this must never be publicly callable.
-    if not INTERNAL_ANALYZE_KEY:
-        return jsonify({'error': 'Route disabled'}), 503
-    key = request.headers.get('X-Internal-Key', '')
-    if not hmac.compare_digest(key, INTERNAL_ANALYZE_KEY):
-        return jsonify({'error': 'Unauthorized'}), 401
-    import anthropic as ac, requests as rq, base64 as b64
-    client = ac.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
-    photos = request.get_json().get('photos', [])
-    results = []
-    for p in photos:
+# ── KSL JOBS SCRAPER ──────────────────────────────────────────────────────────
+# Scrapes KSL construction jobs, filters to Wasatch-surrounding counties,
+# categorizes by trade, writes to Supabase jobs table.
+# ---------------------------------------------------------------------------
+from ksl_scraper import process_job, fetch_ksl_jobs, is_construction, categorize_county
+
+def _ksl_upsert(job, cat):
+    """Insert job into Supabase; skip if external_url already exists."""
+    ext_url = (job.get("url") or "").strip()
+    if not ext_url:
+        return False
+    existing = supabase_admin.table("jobs").select("id").eq("external_url", ext_url).limit(1).execute()
+    if existing.data:
+        return False
+    # Build description with pay info if available
+    desc_parts = [job.get("title") or ""]
+    if job.get("pay"):
+        desc_parts.append(job["pay"])
+    supabase_admin.table("jobs").insert({
+        "title":        (job.get("title") or "")[:200],
+        "trade":        cat["trade"],
+        "county":       cat["county"],
+        "state":        "UT",
+        "location":     (job.get("location") or "")[:200],
+        "description":  " — ".join(p for p in desc_parts if p)[:1000],
+        "source":       "ksl",
+        "external_url": ext_url,
+        "status":       "open",
+    }).execute()
+    return True
+
+
+def ksl_scrape():
+    """
+    Scrape KSL construction jobs → filter by county → categorize → upsert Supabase.
+    Called by admin or cron. No auth required (write-only, idempotent).
+    """
+    try:
+        raw_jobs = fetch_ksl_jobs(requests)
+    except Exception as e:
+        log.exception("KSL fetch failed")
+        return _error(f"KSL fetch failed: {e}", 502)
+
+    inserted = 0
+    skipped_category = 0
+    skipped_county   = 0
+    skipped_dup      = 0
+
+    for job in raw_jobs:
+        title  = job.get("title", "")
+        desc   = job.get("description", "")
+        loc    = job.get("location") or job.get("city") or ""
+        cat    = process_job(title, desc, loc)
+        if cat is None:
+            if not is_construction(title, desc):
+                skipped_category += 1
+            else:
+                skipped_county += 1
+            continue
         try:
-            img = rq.get(p['url'], timeout=15)
-            img_b64 = b64.b64encode(img.content).decode()
-            mt = 'image/png' if img.content[:4] == b'\x89PNG' else 'image/jpeg'
-            msg = client.messages.create(model='claude-haiku-4-5-20251001', max_tokens=200,
-                messages=[{'role':'user','content':[
-                    {'type':'image','source':{'type':'base64','media_type':mt,'data':img_b64}},
-                    {'type':'text','text':f'TradeDeck Shield inspector. Checkpoint: "{p["label"]}". Required: {p["instruction"]}. JSON only: {{"verdict":"pass|flag|fail","confidence":0.0,"notes":"brief","authentic":true}}'}
-                ]}])
-            import json as _j
-            r2 = _j.loads(msg.content[0].text.strip())
-            results.append({'photo_id':p['id'],'point_id':p['point_id'],**r2})
-        except Exception as e:
-            results.append({'photo_id':p['id'],'error':str(e)})
-    return jsonify({'results':results})
+            if _ksl_upsert(job, cat):
+                inserted += 1
+            else:
+                skipped_dup += 1
+        except Exception:
+            log.exception("KSL upsert failed for: %s", title)
+
+    log.info("KSL scrape: inserted=%d dup=%d non-construction=%d out-of-area=%d",
+             inserted, skipped_dup, skipped_category, skipped_county)
+    return jsonify({
+        "success":          True,
+        "inserted":         inserted,
+        "skipped_dup":      skipped_dup,
+        "skipped_category": skipped_category,
+        "skipped_county":   skipped_county,
+        "total_fetched":    len(raw_jobs),
+    })
+
+@app.route("/api/ksl/scrape", methods=["GET"])
+def ksl_scrape_get():
+    """Cron-friendly GET alias."""
+    return ksl_scrape()
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

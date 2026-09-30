@@ -1,0 +1,1 @@
+{"id":"seed","date":"2026-09-14","result":"baseline","note":"Audit established. 146 tests pass, 22 invariants hold. All findings from the 2026-09-14 adversarial review are closed and now covered by invariants; see accepted-risks.md for what is deliberately not fixed.","tests":146,"invariants":22,"broken":0}

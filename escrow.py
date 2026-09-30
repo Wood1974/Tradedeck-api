@@ -59,46 +59,55 @@ def get_profile_stripe_account(supabase: Client, user_id):
 
 
 def ensure_escrow_create_allowed(supabase: Client, data, payer_id):
-    draw = get_draw(supabase, data["draw_id"])
+    draw_id = data.get("draw_id")
+    if not draw_id:
+        raise EscrowError("draw_id required", status_code=400)
+
+    draw = get_draw(supabase, draw_id)
     if not draw:
         raise EscrowError("Draw not found", status_code=404)
-    if str(draw.get("job_id")) != str(data["job_id"]):
-        raise EscrowError("draw_id does not belong to job_id", status_code=400)
 
-    job = get_job(supabase, data["job_id"])
+    # draws.job_id is a FK to draw_schedules.id (known naming quirk — not jobs.id)
+    schedule = get_draw_schedule(supabase, draw.get("job_id"))
+    if not schedule:
+        raise EscrowError("Draw schedule not found", status_code=404)
+
+    # real job lives at draw_schedules.job_id
+    job = get_job(supabase, schedule.get("job_id"))
     if not job:
         raise EscrowError("Job not found", status_code=404)
     if job.get("owner_id") != payer_id:
         raise EscrowError("Only the job owner can fund escrow", status_code=403)
 
-    payee_id = data.get("payee_id") or draw_payee_id(draw)
+    # payee: caller may supply it, otherwise fall back to schedule assignment
+    payee_id = data.get("payee_id") or schedule.get("payee_id") or draw_payee_id(draw)
     if not payee_id:
-        raise EscrowError("payee_id required", status_code=400)
-    if draw_payee_id(draw) and draw_payee_id(draw) != payee_id:
-        raise EscrowError("payee_id does not match draw assignment", status_code=400)
+        raise EscrowError("No contractor assigned to this job yet", status_code=400)
 
-    existing = get_escrow_for_draw(supabase, data["draw_id"])
+    existing = get_escrow_for_draw(supabase, draw_id)
     if existing and existing.get("status") not in (ESCROW_REFUNDED, ESCROW_FAILED):
         raise EscrowError("Escrow already exists for this draw", status_code=409)
 
-    amount_cents = int(data["amount_cents"])
+    # amount: use draw's stored value if caller didn't send one
+    amount_cents = int(data.get("amount_cents") or draw.get("amount_cents") or 0)
     if amount_cents <= 0:
         raise EscrowError("amount_cents must be positive", status_code=400)
 
-    return draw, job, payee_id, amount_cents
+    return draw, schedule, job, payee_id, amount_cents
 
 
 def create_escrow_payment(supabase: Client, data, payer_id):
-    draw, job, payee_id, amount_cents = ensure_escrow_create_allowed(supabase, data, payer_id)
-    idempotency_key = f"escrow-{data['draw_id']}-{amount_cents}"
+    draw, schedule, job, payee_id, amount_cents = ensure_escrow_create_allowed(supabase, data, payer_id)
+    draw_id = data["draw_id"]
+    idempotency_key = f"escrow-{draw_id}-{amount_cents}"
 
     intent = stripe.PaymentIntent.create(
         amount=amount_cents,
         currency="usd",
         capture_method="manual",
         metadata={
-            "job_id": str(data["job_id"]),
-            "draw_id": str(data["draw_id"]),
+            "job_id": str(job["id"]),
+            "draw_id": str(draw_id),
             "payer_id": str(payer_id),
             "payee_id": str(payee_id),
         },
@@ -107,8 +116,8 @@ def create_escrow_payment(supabase: Client, data, payer_id):
 
     supabase.table("stripe_escrow").insert(
         {
-            "job_id": data["job_id"],
-            "draw_id": data["draw_id"],
+            "job_id": job["id"],
+            "draw_id": draw_id,
             "payer_id": payer_id,
             "payee_id": payee_id,
             "stripe_payment_intent_id": intent.id,
@@ -120,7 +129,7 @@ def create_escrow_payment(supabase: Client, data, payer_id):
     return {
         "client_secret": intent.client_secret,
         "payment_intent_id": intent.id,
-        "draw_id": data["draw_id"],
+        "draw_id": draw_id,
         "payee_id": payee_id,
     }
 

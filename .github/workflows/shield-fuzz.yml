@@ -1,0 +1,58 @@
+name: Shield continuous fuzzing
+
+# The cheap tier of the audit. No model, no tokens, no network — just CPU
+# throwing millions of cases at the surfaces where a finding would be most
+# expensive. Runs nightly and on demand; the model's budget is spent only on
+# triaging what this produces and on inventing new attack CLASSES.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'      # 03:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Fuzzing budget in seconds'
+        default: '1200'
+      seed:
+        description: 'Seed, to reproduce a reported finding'
+        required: false
+      target:
+        description: 'Single target (differential|chain|canonical|parsers|geometry)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install
+        run: pip install -r shield/requirements.txt
+
+      - name: Fuzz
+        working-directory: shield
+        run: |
+          python audit/fuzz.py \
+            --seconds "${{ github.event.inputs.seconds || 1200 }}" \
+            ${{ github.event.inputs.seed && format('--seed {0}', github.event.inputs.seed) || '' }} \
+            ${{ github.event.inputs.target && format('--target {0}', github.event.inputs.target) || '' }}
+
+      # The corpus is the point: a finding is a reproducible case, not a
+      # paragraph. Upload it whether or not the run failed, so a flaky finding
+      # is still recoverable.
+      - name: Upload corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ github.run_number }}
+          path: shield/audit/corpus/
+          if-no-files-found: ignore
+          retention-days: 30

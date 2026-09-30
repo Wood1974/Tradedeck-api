@@ -1,0 +1,26 @@
+{
+  "extraKnownMarketplaces": {
+    "godmode": {
+      "source": {
+        "source": "github",
+        "repo": "NoobyGains/godmode"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "godmode@godmode": true
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Initializing godmode...",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"GODMODE IS ACTIVE FOR THIS SESSION.\\n\\nBefore generating any response or taking any action, including clarifying questions, invoke the godmode:activation skill via the Skill tool. Then invoke every other godmode skill that could apply to the task. Even a marginal chance of relevance is enough.\\n\\nSkill order: rationale (is the work worth doing at all) -> intent-discovery -> reference-engine -> design skills -> implementation skills -> quality skills (completion-gate, security-protocol) -> orchestration.\\n\\nPROJECT RULE: do not write, commit, or push code the user did not ask for. When the user pastes a document, an architecture, or a spec with no action verb, study it and report. Ask before building.\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}

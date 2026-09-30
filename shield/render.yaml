@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: tradedeck-shield
+    runtime: python
+    buildCommand: pip install -r shield/requirements.txt
+    startCommand: gunicorn --chdir shield --bind 0.0.0.0:$PORT --workers 2 --timeout 120 app:app
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: IP_HASH_SALT
+        generateValue: true
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-5

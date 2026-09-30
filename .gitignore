@@ -4,3 +4,9 @@ __pycache__/
 node_modules/
 supabase/.temp/
 supabase/.branches/
+
+# shield standalone
+shield/.env
+shield/__pycache__/
+shield/tests/__pycache__/
+shield/.pytest_cache/
