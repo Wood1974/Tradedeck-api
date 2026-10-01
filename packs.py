@@ -21,7 +21,12 @@ Validation rules:
 - All point names must be non-empty strings
 """
 
+from copy import deepcopy
 from typing import Dict, List, Optional
+
+# Constants for pack validation
+MIN_CUSTOM_POINTS = 5
+MAX_CUSTOM_POINTS = 20
 
 
 class PackNotFoundError(Exception):
@@ -220,6 +225,8 @@ def get_pack(pack_id: str) -> Dict:
     2. Code pack: code (AI-generated IRC/IBC violations)
     3. Custom packs: custom_<id> (buyer-defined, retrieved from storage)
 
+    Returns a deep copy to prevent mutation of template definitions.
+
     Args:
         pack_id: Pack identifier (string)
 
@@ -234,11 +241,11 @@ def get_pack(pack_id: str) -> Dict:
 
     # Check fixed packs first
     if pack_id in FIXED_PACKS:
-        return FIXED_PACKS[pack_id].copy()
+        return deepcopy(FIXED_PACKS[pack_id])
 
     # Check code pack
     if pack_id == "code":
-        return CODE_PACK.copy()
+        return deepcopy(CODE_PACK)
 
     # Custom packs follow pattern custom_<id>
     if pack_id.startswith("custom_"):
@@ -280,16 +287,16 @@ def validate_pack(pack: Dict) -> None:
     if not isinstance(pack["points"], list):
         raise PackValidationError("Pack 'points' must be a list")
 
-    # Point count validation (5-20 for custom packs)
+    # Point count validation (MIN-MAX for custom packs)
     point_count = len(pack["points"])
     if pack["id"].startswith("custom_"):
-        if point_count < 5:
+        if point_count < MIN_CUSTOM_POINTS:
             raise PackValidationError(
-                f"Custom pack must have at least 5 points, got {point_count}"
+                f"Custom pack must have at least {MIN_CUSTOM_POINTS} points, got {point_count}"
             )
-        if point_count > 20:
+        if point_count > MAX_CUSTOM_POINTS:
             raise PackValidationError(
-                f"Custom pack can have maximum 20 points, got {point_count}"
+                f"Custom pack can have maximum {MAX_CUSTOM_POINTS} points, got {point_count}"
             )
 
     # Validate point structure and ordering
@@ -317,12 +324,9 @@ def validate_pack(pack: Dict) -> None:
             raise PackValidationError(f"Point {i} name must be non-empty string")
 
         # Validate description is non-empty string
-        if not isinstance(point["description"], str) or not point[
-            "description"
-        ].strip():
-            raise PackValidationError(
-                f"Point {i} description must be non-empty string"
-            )
+        desc = point.get("description", "")
+        if not isinstance(desc, str) or not desc.strip():
+            raise PackValidationError(f"Point {i} description must be non-empty string")
 
 
 def validate_fixed_pack(pack_id: str) -> bool:
@@ -338,17 +342,14 @@ def validate_fixed_pack(pack_id: str) -> bool:
     return pack_id in FIXED_PACKS
 
 
-def validate_code_pack(pack_id: str) -> bool:
+def validate_code_pack() -> bool:
     """
-    Check if a pack ID is the code pack.
-
-    Args:
-        pack_id: Pack identifier to check
+    Check if the code pack exists.
 
     Returns:
-        True if pack_id is "code", False otherwise
+        True (code pack is always available)
     """
-    return pack_id == "code"
+    return True
 
 
 def validate_custom_pack_id(pack_id: str) -> bool:

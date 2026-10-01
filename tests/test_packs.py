@@ -7,6 +7,10 @@ import pytest
 from packs import (
     get_pack,
     validate_pack,
+    validate_fixed_pack,
+    validate_code_pack,
+    validate_custom_pack_id,
+    list_fixed_packs,
     PackNotFoundError,
     PackValidationError,
 )
@@ -15,62 +19,33 @@ from packs import (
 class TestFixedPackRetrieval:
     """Test retrieval of fixed packs."""
 
-    def test_get_remodel_pack(self):
-        """Retrieve 'remodel' fixed pack."""
-        pack = get_pack("remodel")
-        assert pack["id"] == "remodel"
-        assert pack["name"] == "Kitchen/Bath Remodel"
-        assert isinstance(pack["points"], list)
-        assert len(pack["points"]) >= 5
-
-    def test_get_lender_draw_pack(self):
-        """Retrieve 'lender_draw' fixed pack."""
-        pack = get_pack("lender_draw")
-        assert pack["id"] == "lender_draw"
-        assert pack["name"] == "Construction Draw Schedule"
-        assert isinstance(pack["points"], list)
-        assert len(pack["points"]) >= 5
-
-    def test_get_insurance_loss_pack(self):
-        """Retrieve 'insurance_loss' fixed pack."""
-        pack = get_pack("insurance_loss")
-        assert pack["id"] == "insurance_loss"
-        assert pack["name"] == "Insurance Loss Documentation"
-        assert isinstance(pack["points"], list)
-        assert len(pack["points"]) >= 5
-
-    def test_get_rental_unit_pack(self):
-        """Retrieve 'rental_unit' fixed pack."""
-        pack = get_pack("rental_unit")
-        assert pack["id"] == "rental_unit"
-        assert pack["name"] == "Rental Unit Assessment"
-        assert isinstance(pack["points"], list)
-        assert len(pack["points"]) >= 5
-
-    def test_get_auto_shop_pack(self):
-        """Retrieve 'auto_shop' fixed pack."""
-        pack = get_pack("auto_shop")
-        assert pack["id"] == "auto_shop"
-        assert pack["name"] == "Vehicle Repair Documentation"
-        assert isinstance(pack["points"], list)
-        assert len(pack["points"]) >= 5
+    @pytest.mark.parametrize(
+        "pack_id,expected_name",
+        [
+            ("remodel", "Kitchen/Bath Remodel"),
+            ("lender_draw", "Construction Draw Schedule"),
+            ("insurance_loss", "Insurance Loss Documentation"),
+            ("rental_unit", "Rental Unit Assessment"),
+            ("auto_shop", "Vehicle Repair Documentation"),
+        ],
+    )
+    def test_get_fixed_pack(self, pack_id, expected_name):
+        """Retrieve fixed pack by ID with correct name."""
+        pack = get_pack(pack_id)
+        assert pack["id"] == pack_id
+        assert pack["name"] == expected_name
+        assert len(pack["points"]) == 5
+        assert all(isinstance(p, dict) for p in pack["points"])
 
     def test_all_fixed_packs_have_structure(self):
         """All fixed packs have required structure."""
-        fixed_pack_ids = [
-            "remodel",
-            "lender_draw",
-            "insurance_loss",
-            "rental_unit",
-            "auto_shop",
-        ]
-        for pack_id in fixed_pack_ids:
+        for pack_id in list_fixed_packs():
             pack = get_pack(pack_id)
             assert "id" in pack
             assert "name" in pack
             assert "points" in pack
             assert isinstance(pack["points"], list)
-            assert len(pack["points"]) > 0
+            assert len(pack["points"]) == 5
 
 
 class TestPackStructure:
@@ -129,59 +104,40 @@ class TestCodePack:
 class TestCustomPackValidation:
     """Test custom pack validation."""
 
-    def test_custom_pack_5_points_minimum(self):
-        """Custom pack must have at least 5 points."""
-        custom_pack = {
-            "id": "custom_abc123",
-            "name": "My Custom Pack",
+    def create_custom_pack(self, pack_id, num_points):
+        """Helper to create a custom pack with specified number of points."""
+        return {
+            "id": pack_id,
+            "name": "Test Pack",
             "points": [
-                {"order": 1, "name": "Point 1", "description": "Test point 1"},
-                {"order": 2, "name": "Point 2", "description": "Test point 2"},
-                {"order": 3, "name": "Point 3", "description": "Test point 3"},
-                {"order": 4, "name": "Point 4", "description": "Test point 4"},
+                {"order": i, "name": f"Point {i}", "description": f"Test point {i}"}
+                for i in range(1, num_points + 1)
             ],
         }
+
+    def test_custom_pack_5_points_minimum(self):
+        """Custom pack must have at least 5 points."""
+        custom_pack = self.create_custom_pack("custom_abc123", 4)
         with pytest.raises(PackValidationError) as exc_info:
             validate_pack(custom_pack)
         assert "at least 5 points" in str(exc_info.value)
 
     def test_custom_pack_20_points_maximum(self):
         """Custom pack can have maximum 20 points."""
-        custom_pack = {
-            "id": "custom_abc123",
-            "name": "My Custom Pack",
-            "points": [
-                {"order": i, "name": f"Point {i}", "description": f"Test point {i}"}
-                for i in range(1, 22)
-            ],
-        }
+        custom_pack = self.create_custom_pack("custom_abc123", 21)
         with pytest.raises(PackValidationError) as exc_info:
             validate_pack(custom_pack)
         assert "maximum 20 points" in str(exc_info.value)
 
     def test_custom_pack_5_points_valid(self):
         """Custom pack with exactly 5 points is valid."""
-        custom_pack = {
-            "id": "custom_abc123",
-            "name": "My Custom Pack",
-            "points": [
-                {"order": i, "name": f"Point {i}", "description": f"Test point {i}"}
-                for i in range(1, 6)
-            ],
-        }
+        custom_pack = self.create_custom_pack("custom_abc123", 5)
         # Should not raise
         validate_pack(custom_pack)
 
     def test_custom_pack_20_points_valid(self):
         """Custom pack with exactly 20 points is valid."""
-        custom_pack = {
-            "id": "custom_abc123",
-            "name": "My Custom Pack",
-            "points": [
-                {"order": i, "name": f"Point {i}", "description": f"Test point {i}"}
-                for i in range(1, 21)
-            ],
-        }
+        custom_pack = self.create_custom_pack("custom_abc123", 20)
         # Should not raise
         validate_pack(custom_pack)
 
@@ -286,3 +242,55 @@ class TestPackIDs:
         }
         validate_pack(custom_pack)
         assert custom_pack["id"].startswith("custom_")
+
+
+class TestPackUtilities:
+    """Test pack utility functions."""
+
+    def test_list_fixed_packs_returns_all_ids(self):
+        """list_fixed_packs() returns all fixed pack IDs."""
+        packs = list_fixed_packs()
+        assert "remodel" in packs
+        assert "lender_draw" in packs
+        assert "insurance_loss" in packs
+        assert "rental_unit" in packs
+        assert "auto_shop" in packs
+        assert len(packs) == 5
+
+    def test_validate_fixed_pack_true_for_valid(self):
+        """validate_fixed_pack() returns True for valid fixed pack IDs."""
+        assert validate_fixed_pack("remodel") is True
+        assert validate_fixed_pack("lender_draw") is True
+        assert validate_fixed_pack("insurance_loss") is True
+
+    def test_validate_fixed_pack_false_for_invalid(self):
+        """validate_fixed_pack() returns False for invalid pack IDs."""
+        assert validate_fixed_pack("nonexistent") is False
+        assert validate_fixed_pack("code") is False
+        assert validate_fixed_pack("custom_123") is False
+
+    def test_validate_code_pack_true(self):
+        """validate_code_pack() returns True."""
+        assert validate_code_pack() is True
+
+    def test_validate_custom_pack_id_true_for_valid(self):
+        """validate_custom_pack_id() returns True for custom pack IDs."""
+        assert validate_custom_pack_id("custom_123") is True
+        assert validate_custom_pack_id("custom_abc_def") is True
+
+    def test_validate_custom_pack_id_false_for_invalid(self):
+        """validate_custom_pack_id() returns False for non-custom pack IDs."""
+        assert validate_custom_pack_id("remodel") is False
+        assert validate_custom_pack_id("code") is False
+        assert validate_custom_pack_id("invalid") is False
+
+    def test_get_pack_returns_copy_not_reference(self):
+        """get_pack() returns a deep copy, not a reference to template."""
+        pack1 = get_pack("remodel")
+        pack2 = get_pack("remodel")
+        assert pack1 is not pack2
+        pack1["name"] = "Modified Name"
+        assert pack2["name"] == "Kitchen/Bath Remodel"
+        # Verify original template is unchanged
+        pack3 = get_pack("remodel")
+        assert pack3["name"] == "Kitchen/Bath Remodel"
