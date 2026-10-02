@@ -157,6 +157,18 @@ def _extract_jwt_claims(token: str) -> dict:
     except Exception:
         return {}
 
+def _require_admin(f):
+    """Decorator to check admin role."""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        user_metadata = getattr(g.user, "user_metadata", {})
+        is_admin = getattr(g.user, "admin", False) or user_metadata.get("role") == "admin"
+        if not is_admin:
+            return _error("Admin role required", 403)
+        return f(*args, **kwargs)
+    return decorated_function
+
 def _webhook_already_processed(event_id):
     result = supabase_admin.table("stripe_webhook_events").select("event_id").eq("event_id", event_id).limit(1).execute()
     return bool(result.data)
@@ -208,7 +220,8 @@ def api_health():
         return jsonify({"status": "degraded", "version": "1.0", "database": "error"}), 503
 
 @app.route("/api/jobs", methods=["GET"])
-def get_jobs():
+def get_jobs() -> dict:
+    """List jobs with optional trade, location, and status filters."""
     trade = request.args.get("trade",""); location = request.args.get("location",""); status = request.args.get("status","open")
     try:
         limit = min(int(request.args.get("limit", jobs_page_size())), 100)
@@ -218,7 +231,10 @@ def get_jobs():
     try:
         query = supabase_admin.table("jobs").select("*", count="exact").eq("status", status).order("created_at", desc=True).range(offset, offset+limit-1)
         if trade: query = query.eq("trade", trade)
-        if location: query = query.ilike("location", f"%{location[:80]}%")
+        if location:
+            location_str = str(location).strip()[:80]
+            if location_str:
+                query = query.ilike("location", f"%{location_str}%")
         result = query.execute()
         return jsonify({"jobs":result.data,"count":len(result.data),"total":result.count,"limit":limit,"offset":offset})
     except Exception:
@@ -227,7 +243,8 @@ def get_jobs():
 
 @app.route("/api/jobs", methods=["POST"])
 @require_auth
-def post_job():
+def post_job() -> tuple:
+    """Create a new job posting."""
     data = request.get_json(silent=True) or {}
     missing = [f for f in ["title","trade","location"] if not data.get(f)]
     if missing: return _error("Missing: " + ", ".join(missing))
@@ -240,7 +257,8 @@ def post_job():
 
 @app.route("/stripe/connect/onboard", methods=["POST"])
 @require_auth
-def stripe_connect_onboard():
+def stripe_connect_onboard() -> tuple:
+    """Start Stripe Connect onboarding for the user."""
     data = request.get_json(silent=True) or {}
     user_id = g.user_id
     try:
@@ -255,13 +273,14 @@ def stripe_connect_onboard():
             supabase_admin.table("profiles").update({"stripe_account_id":account_id}).eq("id",user_id).execute()
         base_url = get_env("APP_URL","https://tradedeckapp.com")
         link = stripe.AccountLink.create(account=account_id,refresh_url=f"{base_url}/profile",return_url=f"{base_url}/profile?stripe=success",type="account_onboarding")
-        return jsonify({"url":link.url,"account_id":account_id})
+        return jsonify({"url":link.url,"account_id":account_id}), 201
     except Exception:
         log.exception("Stripe Connect onboarding failed for %s", user_id)
         return _error("Could not start Stripe onboarding", 500)
 
 @app.route("/stripe/webhook", methods=["POST"])
-def stripe_webhook():
+def stripe_webhook() -> tuple:
+    """Handle Stripe webhook events."""
     signature = request.headers.get("Stripe-Signature","")
     try:
         event = stripe.Webhook.construct_event(request.data, signature, STRIPE_WEBHOOK_SECRET)
@@ -286,7 +305,7 @@ def stripe_webhook():
 # ════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/packs", methods=["GET"])
-def api_list_packs():
+def api_list_packs() -> tuple:
     """List all available packs (fixed, code, custom)."""
     pack_type = request.args.get("pack_type", "").lower()
 
@@ -328,7 +347,7 @@ def api_list_packs():
 
 
 @app.route("/api/packs/<pack_id>", methods=["GET"])
-def api_get_pack(pack_id):
+def api_get_pack(pack_id: str) -> tuple:
     """Get single pack with all checkpoint definitions."""
     try:
         pack = packs.get_pack(pack_id)
@@ -342,7 +361,7 @@ def api_get_pack(pack_id):
 
 @app.route("/api/packs/custom", methods=["POST"])
 @require_auth
-def api_create_custom_pack():
+def api_create_custom_pack() -> tuple:
     """Create custom pack with buyer-written checkpoint list."""
     data = request.get_json(silent=True) or {}
 
@@ -396,13 +415,15 @@ def api_create_custom_pack():
     # Store custom pack in database
     try:
         db = _get_db()
-        db.execute("""
-            INSERT INTO custom_packs (id, account_id, name, description, points)
-            VALUES (?, ?, ?, ?, ?)
-        """, (custom_id, g.user_id, custom_pack["name"], custom_pack["description"], json.dumps(pack_points)))
-        db.commit()
-        db.close()
-        log.info(f"Stored custom pack {custom_id} for account {g.user_id}")
+        try:
+            db.execute("""
+                INSERT INTO custom_packs (id, account_id, name, description, points)
+                VALUES (?, ?, ?, ?, ?)
+            """, (custom_id, g.user_id, custom_pack["name"], custom_pack["description"], json.dumps(pack_points)))
+            db.commit()
+            log.info(f"Stored custom pack {custom_id} for account {g.user_id}")
+        finally:
+            db.close()
     except Exception as e:
         log.exception(f"Failed to store custom pack: {e}")
         return _error("Could not store custom pack", 500)
@@ -420,7 +441,7 @@ def api_create_custom_pack():
 
 @app.route("/api/challenges/issue", methods=["POST"])
 @require_auth
-def api_issue_challenge():
+def api_issue_challenge() -> tuple:
     """Issue single-use nonce for capture session."""
     account_id = g.user_id
 
@@ -439,7 +460,7 @@ def api_issue_challenge():
 
 @app.route("/api/captures/<pack_id>/seal", methods=["POST"])
 @require_auth
-def api_seal_capture(pack_id):
+def api_seal_capture(pack_id: str) -> tuple:
     """Seal single photo+note capture."""
     account_id = g.user_id
 
@@ -519,15 +540,18 @@ def api_seal_capture(pack_id):
 
 
 @app.route("/api/captures/<pack_id>/verify", methods=["POST"])
-def api_verify_capture(pack_id):
+def api_verify_capture(pack_id: str) -> tuple:
     """Offline verify a sealed capture."""
     try:
         data = request.get_json(silent=True) or {}
 
         # Extract required fields
         photo_bytes = data.get("photo_bytes")
-        if isinstance(photo_bytes, str):
-            photo_bytes = photo_bytes.encode("utf-8")
+        if photo_bytes is not None:
+            if isinstance(photo_bytes, str):
+                photo_bytes = photo_bytes.encode("utf-8")
+            elif not isinstance(photo_bytes, bytes):
+                return _error("photo_bytes must be a string or bytes", 400)
 
         note = data.get("note", "")
         checkpoint_name = data.get("checkpoint_name", "")
@@ -571,7 +595,7 @@ def api_verify_capture(pack_id):
 
 @app.route("/api/manifests/<pack_id>/submit", methods=["POST"])
 @require_auth
-def api_submit_manifest(pack_id):
+def api_submit_manifest(pack_id: str) -> tuple:
     """Submit complete manifest (all captures for pack)."""
     account_id = g.user_id
 
@@ -633,14 +657,16 @@ def api_submit_manifest(pack_id):
         # Store manifest in SQLite database
         try:
             db = _get_db()
-            db.execute("""
-                INSERT INTO manifests
-                (id, pack_id, account_id, data, status, manifest_hash, chain_head_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (manifest_id, pack_id, account_id, json.dumps(manifest), 'verified', manifest_hash, chain_head_hash))
-            db.commit()
-            db.close()
-            log.info(f"Stored manifest {manifest_id} for account {account_id} in pack {pack_id}")
+            try:
+                db.execute("""
+                    INSERT INTO manifests
+                    (id, pack_id, account_id, data, status, manifest_hash, chain_head_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (manifest_id, pack_id, account_id, json.dumps(manifest), 'verified', manifest_hash, chain_head_hash))
+                db.commit()
+                log.info(f"Stored manifest {manifest_id} for account {account_id} in pack {pack_id}")
+            finally:
+                db.close()
         except Exception as e:
             log.exception(f"Failed to store manifest: {e}")
             return _error("Could not store manifest", 500)
@@ -652,7 +678,7 @@ def api_submit_manifest(pack_id):
                 "manifest": manifest_hash,
                 "chain_head": chain_head_hash
             }
-        }), 200
+        }), 201
 
     except Exception:
         log.exception("Failed to submit manifest")
@@ -665,16 +691,18 @@ def api_submit_manifest(pack_id):
 
 @app.route("/api/manifests/<manifest_id>", methods=["GET"])
 @require_auth
-def api_get_manifest(manifest_id):
+def api_get_manifest(manifest_id: str) -> tuple:
     """Retrieve manifest metadata and verification status."""
     try:
         # Fetch from SQLite database
         db = _get_db()
-        result = db.execute(
-            "SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash FROM manifests WHERE id = ? AND account_id = ?",
-            (manifest_id, g.user_id)
-        ).fetchone()
-        db.close()
+        try:
+            result = db.execute(
+                "SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash FROM manifests WHERE id = ? AND account_id = ?",
+                (manifest_id, g.user_id)
+            ).fetchone()
+        finally:
+            db.close()
 
         if not result:
             return _error("Manifest not found", 404)
@@ -698,22 +726,29 @@ def api_get_manifest(manifest_id):
 
 @app.route("/api/manifests/<manifest_id>/pdf", methods=["GET"])
 @require_auth
-def api_get_manifest_pdf(manifest_id):
+def api_get_manifest_pdf(manifest_id: str) -> tuple:
     """Download manifest as signed PDF."""
     try:
         # Fetch manifest from SQLite database
         db = _get_db()
-        result = db.execute(
-            "SELECT id, pack_id, data, chain_head_hash FROM manifests WHERE id = ? AND account_id = ?",
-            (manifest_id, g.user_id)
-        ).fetchone()
-        db.close()
+        try:
+            result = db.execute(
+                "SELECT id, pack_id, data, chain_head_hash FROM manifests WHERE id = ? AND account_id = ?",
+                (manifest_id, g.user_id)
+            ).fetchone()
+        finally:
+            db.close()
 
         if not result:
             return _error("Manifest not found", 404)
 
         # Parse manifest data
-        manifest_data = json.loads(result[2])
+        try:
+            manifest_data = json.loads(result[2])
+        except (json.JSONDecodeError, TypeError) as e:
+            log.error(f"Failed to parse manifest data for {manifest_id}: {e}")
+            return _error("Invalid manifest data", 500)
+
         pack_id = result[1]
         chain_head_hash = result[3]
 
@@ -721,7 +756,7 @@ def api_get_manifest_pdf(manifest_id):
         try:
             pack = packs.get_pack(pack_id)
             pack_name = pack.get("name", pack_id)
-        except:
+        except (packs.PackNotFoundError, KeyError):
             pack_name = pack_id
 
         # Generate PDF
@@ -744,7 +779,7 @@ def api_get_manifest_pdf(manifest_id):
 
 
 @app.route("/api/manifests/<manifest_id>/verify-offline", methods=["POST"])
-def api_verify_manifest_offline(manifest_id):
+def api_verify_manifest_offline(manifest_id: str) -> tuple:
     """Offline verification proof-of-concept."""
     try:
         data = request.get_json(silent=True) or {}
@@ -783,7 +818,7 @@ def api_verify_manifest_offline(manifest_id):
 # ════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/config/shields", methods=["GET"])
-def api_config_shields():
+def api_config_shields() -> tuple:
     """Return Shield configuration and features."""
     return jsonify({
         "version": "1.0",
@@ -799,7 +834,7 @@ def api_config_shields():
 
 
 @app.route("/api/config/location", methods=["GET"])
-def api_config_location():
+def api_config_location() -> tuple:
     """Return location verification settings."""
     return jsonify({
         "impossible_speed_mph": location.IMPOSSIBLE_SPEED_THRESHOLD_MPH,
@@ -814,15 +849,9 @@ def api_config_location():
 
 @app.route("/api/admin/manifests", methods=["GET"])
 @require_auth
-def api_admin_list_manifests():
+@_require_admin
+def api_admin_list_manifests() -> tuple:
     """List manifests (paginated, admin only)."""
-    # Check admin role from user metadata or attribute
-    user_metadata = getattr(g.user, "user_metadata", {})
-    is_admin = getattr(g.user, "admin", False) or user_metadata.get("role") == "admin"
-
-    if not is_admin:
-        return _error("Admin role required", 403)
-
     try:
         limit = min(int(request.args.get("limit", 20)), 100)
         offset = max(int(request.args.get("offset", 0)), 0)
@@ -830,36 +859,36 @@ def api_admin_list_manifests():
 
         # Fetch from SQLite database with pagination
         db = _get_db()
+        try:
+            # Get total count
+            if status_filter:
+                total_result = db.execute(
+                    "SELECT COUNT(*) FROM manifests WHERE status = ?",
+                    (status_filter,)
+                ).fetchone()
+            else:
+                total_result = db.execute("SELECT COUNT(*) FROM manifests").fetchone()
 
-        # Get total count
-        if status_filter:
-            total_result = db.execute(
-                "SELECT COUNT(*) FROM manifests WHERE status = ?",
-                (status_filter,)
-            ).fetchone()
-        else:
-            total_result = db.execute("SELECT COUNT(*) FROM manifests").fetchone()
+            total = total_result[0] if total_result else 0
 
-        total = total_result[0] if total_result else 0
-
-        # Get paginated manifests
-        if status_filter:
-            manifests = db.execute("""
-                SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash
-                FROM manifests
-                WHERE status = ?
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-            """, (status_filter, limit, offset)).fetchall()
-        else:
-            manifests = db.execute("""
-                SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash
-                FROM manifests
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-            """, (limit, offset)).fetchall()
-
-        db.close()
+            # Get paginated manifests
+            if status_filter:
+                manifests = db.execute("""
+                    SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash
+                    FROM manifests
+                    WHERE status = ?
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                """, (status_filter, limit, offset)).fetchall()
+            else:
+                manifests = db.execute("""
+                    SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash
+                    FROM manifests
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                """, (limit, offset)).fetchall()
+        finally:
+            db.close()
 
         manifest_list = [
             {
@@ -886,15 +915,9 @@ def api_admin_list_manifests():
 
 @app.route("/api/admin/challenges", methods=["GET"])
 @require_auth
-def api_admin_list_challenges():
+@_require_admin
+def api_admin_list_challenges() -> tuple:
     """List active challenges (admin only)."""
-    # Check admin role from user metadata or attribute
-    user_metadata = getattr(g.user, "user_metadata", {})
-    is_admin = getattr(g.user, "admin", False) or user_metadata.get("role") == "admin"
-
-    if not is_admin:
-        return _error("Admin role required", 403)
-
     try:
         # Count active challenges
         active_count = len(challenges._challenges)
@@ -913,28 +936,29 @@ def api_admin_list_challenges():
 
 @app.route("/api/admin/verify/<manifest_id>", methods=["POST"])
 @require_auth
-def api_admin_verify_manifest(manifest_id):
+@_require_admin
+def api_admin_verify_manifest(manifest_id: str) -> tuple:
     """Manually trigger verification (admin only)."""
-    # Check admin role from user metadata or attribute
-    user_metadata = getattr(g.user, "user_metadata", {})
-    is_admin = getattr(g.user, "admin", False) or user_metadata.get("role") == "admin"
-
-    if not is_admin:
-        return _error("Admin role required", 403)
-
     try:
         # Fetch manifest from database
         db = _get_db()
-        result = db.execute(
-            "SELECT id, pack_id, data, manifest_hash, chain_head_hash FROM manifests WHERE id = ?",
-            (manifest_id,)
-        ).fetchone()
-        db.close()
+        try:
+            result = db.execute(
+                "SELECT id, pack_id, data, manifest_hash, chain_head_hash FROM manifests WHERE id = ?",
+                (manifest_id,)
+            ).fetchone()
+        finally:
+            db.close()
 
         if not result:
             return _error("Manifest not found", 404)
 
-        manifest_data = json.loads(result[2])
+        try:
+            manifest_data = json.loads(result[2])
+        except (json.JSONDecodeError, TypeError) as e:
+            log.error(f"Failed to parse manifest data for {manifest_id}: {e}")
+            return _error("Invalid manifest data", 500)
+
         manifest_hash = result[3]
         chain_head_hash = result[4]
 
@@ -962,9 +986,11 @@ def api_admin_verify_manifest(manifest_id):
 
         # Update status in database
         db = _get_db()
-        db.execute("UPDATE manifests SET status = ? WHERE id = ?", (verdict, manifest_id))
-        db.commit()
-        db.close()
+        try:
+            db.execute("UPDATE manifests SET status = ? WHERE id = ?", (verdict, manifest_id))
+            db.commit()
+        finally:
+            db.close()
 
         log.info(f"Admin verified manifest {manifest_id}: {verdict}")
 
