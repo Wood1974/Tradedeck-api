@@ -5,12 +5,13 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 import uuid
 import anthropic
 import requests
 import stripe
-from flask import Flask, g, jsonify, request, send_file
+from flask import Flask, g, jsonify, request, send_file, make_response
 from flask_cors import CORS
 from supabase import create_client
 import config
@@ -53,6 +54,58 @@ ANTHROPIC_MODEL           = get_env("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 supabase_admin    = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 anthropic_client  = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 challenges        = Challenges()  # Global challenge/nonce manager
+
+# Database setup
+DB_PATH = get_env("DB_PATH", "/tmp/tradedeckapp_shield.db")
+
+def _get_db():
+    """Get database connection."""
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    return db
+
+def _init_db():
+    """Initialize database tables if they don't exist."""
+    db = _get_db()
+    try:
+        # Custom packs table
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS custom_packs (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                points JSON NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Manifests table
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS manifests (
+                id TEXT PRIMARY KEY,
+                pack_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                data JSON NOT NULL,
+                status TEXT DEFAULT 'verified',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                manifest_hash TEXT,
+                chain_head_hash TEXT
+            )
+        """)
+
+        db.commit()
+    except Exception as e:
+        log.error(f"Failed to initialize database: {e}")
+        raise
+    finally:
+        db.close()
+
+# Initialize database on startup
+try:
+    _init_db()
+except Exception as e:
+    log.error(f"Database initialization failed: {e}")
 
 MIME_BY_EXT = {".jpg":"image/jpeg",".jpeg":"image/jpeg",".png":"image/png",".webp":"image/webp"}
 
@@ -340,8 +393,19 @@ def api_create_custom_pack():
         "points": pack_points
     }
 
-    # TODO: Store custom pack in database/storage
-    # For now, just return success response
+    # Store custom pack in database
+    try:
+        db = _get_db()
+        db.execute("""
+            INSERT INTO custom_packs (id, account_id, name, description, points)
+            VALUES (?, ?, ?, ?, ?)
+        """, (custom_id, g.user_id, custom_pack["name"], custom_pack["description"], json.dumps(pack_points)))
+        db.commit()
+        db.close()
+        log.info(f"Stored custom pack {custom_id} for account {g.user_id}")
+    except Exception as e:
+        log.exception(f"Failed to store custom pack: {e}")
+        return _error("Could not store custom pack", 500)
 
     return jsonify({
         "id": custom_id,
@@ -536,20 +600,57 @@ def api_submit_manifest(pack_id):
         except AssertionError as e:
             return _error(str(e), 400)
 
+        # Validate nonce consumption and prevent replay
+        for capture in manifest:
+            nonce = capture.get("nonce")
+            if not nonce or not challenges.is_valid(nonce):
+                return _error("Nonce already consumed or invalid", 400)
+
+        # Consume all nonces (mark as used)
+        for capture in manifest:
+            nonce = capture.get("nonce")
+            challenges.consume(nonce)
+
+        # Collect GPS points and run spoofing detection
+        gps_points = []
+        for capture in manifest:
+            gps_points.append({
+                "lat": capture.get("gps_lat", 0),
+                "lon": capture.get("gps_lon", 0),
+                "timestamp": capture.get("timestamp", int(time.time()))
+            })
+
+        try:
+            audit.invariants.assert_location_consistent(gps_points)
+        except AssertionError as e:
+            return _error(f"GPS spoofing detected: {str(e)}", 400)
+
         # Generate manifest ID and hash
         manifest_id = f"manifest_{uuid.uuid4().hex[:12]}"
         manifest_hash = pdf_export._compute_manifest_hash(manifest)
+        chain_head_hash = manifest[-1]["bind_hash"] if manifest else ""
 
-        # TODO: Store manifest in SQLite database
-        # TODO: Validate nonce consumption
-        # TODO: Run GPS spoofing detection
+        # Store manifest in SQLite database
+        try:
+            db = _get_db()
+            db.execute("""
+                INSERT INTO manifests
+                (id, pack_id, account_id, data, status, manifest_hash, chain_head_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (manifest_id, pack_id, account_id, json.dumps(manifest), 'verified', manifest_hash, chain_head_hash))
+            db.commit()
+            db.close()
+            log.info(f"Stored manifest {manifest_id} for account {account_id} in pack {pack_id}")
+        except Exception as e:
+            log.exception(f"Failed to store manifest: {e}")
+            return _error("Could not store manifest", 500)
 
         return jsonify({
             "manifest_id": manifest_id,
             "status": "verified",
             "hashes": {
                 "manifest": manifest_hash,
-                "chain_head": "chain_head_hash_placeholder"
+                "chain_head": chain_head_hash
             }
         }), 200
 
@@ -567,9 +668,29 @@ def api_submit_manifest(pack_id):
 def api_get_manifest(manifest_id):
     """Retrieve manifest metadata and verification status."""
     try:
-        # TODO: Fetch from SQLite database
-        # For now, return 404
-        return _error("Manifest not found", 404)
+        # Fetch from SQLite database
+        db = _get_db()
+        result = db.execute(
+            "SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash FROM manifests WHERE id = ? AND account_id = ?",
+            (manifest_id, g.user_id)
+        ).fetchone()
+        db.close()
+
+        if not result:
+            return _error("Manifest not found", 404)
+
+        return jsonify({
+            "id": result[0],
+            "pack_id": result[1],
+            "account_id": result[2],
+            "created_at": result[3],
+            "status": result[4],
+            "manifest_hash": result[5],
+            "hashes": {
+                "manifest": result[5],
+                "chain_head": result[6]
+            }
+        }), 200
     except Exception:
         log.exception("Failed to retrieve manifest %s", manifest_id)
         return _error("Could not retrieve manifest", 500)
@@ -580,9 +701,43 @@ def api_get_manifest(manifest_id):
 def api_get_manifest_pdf(manifest_id):
     """Download manifest as signed PDF."""
     try:
-        # TODO: Fetch manifest from SQLite database
-        # For now, return 404
-        return _error("Manifest not found", 404)
+        # Fetch manifest from SQLite database
+        db = _get_db()
+        result = db.execute(
+            "SELECT id, pack_id, data, chain_head_hash FROM manifests WHERE id = ? AND account_id = ?",
+            (manifest_id, g.user_id)
+        ).fetchone()
+        db.close()
+
+        if not result:
+            return _error("Manifest not found", 404)
+
+        # Parse manifest data
+        manifest_data = json.loads(result[2])
+        pack_id = result[1]
+        chain_head_hash = result[3]
+
+        # Get pack name for PDF
+        try:
+            pack = packs.get_pack(pack_id)
+            pack_name = pack.get("name", pack_id)
+        except:
+            pack_name = pack_id
+
+        # Generate PDF
+        pdf_bytes = pdf_export.render_manifest_pdf(
+            manifest=manifest_data,
+            pack_name=pack_name,
+            account_id=g.user_id,
+            chain_head_hash=chain_head_hash
+        )
+
+        # Return PDF response
+        response = make_response(pdf_bytes)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = f'attachment; filename=manifest_{manifest_id}.pdf'
+        return response
+
     except Exception:
         log.exception("Failed to generate PDF for %s", manifest_id)
         return _error("Could not generate PDF", 500)
@@ -673,12 +828,55 @@ def api_admin_list_manifests():
         offset = max(int(request.args.get("offset", 0)), 0)
         status_filter = request.args.get("status")
 
-        # TODO: Fetch from SQLite database with pagination
+        # Fetch from SQLite database with pagination
+        db = _get_db()
+
+        # Get total count
+        if status_filter:
+            total_result = db.execute(
+                "SELECT COUNT(*) FROM manifests WHERE status = ?",
+                (status_filter,)
+            ).fetchone()
+        else:
+            total_result = db.execute("SELECT COUNT(*) FROM manifests").fetchone()
+
+        total = total_result[0] if total_result else 0
+
+        # Get paginated manifests
+        if status_filter:
+            manifests = db.execute("""
+                SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash
+                FROM manifests
+                WHERE status = ?
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+            """, (status_filter, limit, offset)).fetchall()
+        else:
+            manifests = db.execute("""
+                SELECT id, pack_id, account_id, created_at, status, manifest_hash, chain_head_hash
+                FROM manifests
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+            """, (limit, offset)).fetchall()
+
+        db.close()
+
+        manifest_list = [
+            {
+                "id": m[0],
+                "pack_id": m[1],
+                "account_id": m[2],
+                "created_at": m[3],
+                "status": m[4],
+                "manifest_hash": m[5]
+            }
+            for m in manifests
+        ]
 
         return jsonify({
-            "total": 0,
-            "count": 0,
-            "manifests": []
+            "total": total,
+            "count": len(manifest_list),
+            "manifests": manifest_list
         }), 200
 
     except Exception:
@@ -725,9 +923,56 @@ def api_admin_verify_manifest(manifest_id):
         return _error("Admin role required", 403)
 
     try:
-        # TODO: Fetch manifest from database
-        # For now, return error
-        return _error("Manifest not found", 404)
+        # Fetch manifest from database
+        db = _get_db()
+        result = db.execute(
+            "SELECT id, pack_id, data, manifest_hash, chain_head_hash FROM manifests WHERE id = ?",
+            (manifest_id,)
+        ).fetchone()
+        db.close()
+
+        if not result:
+            return _error("Manifest not found", 404)
+
+        manifest_data = json.loads(result[2])
+        manifest_hash = result[3]
+        chain_head_hash = result[4]
+
+        # Perform verification using invariants
+        verdict = "verified"
+        reason = "All invariant checks passed"
+
+        try:
+            # Check manifest structure
+            audit.invariants.assert_manifest_structure(manifest_data)
+
+            # Check manifest integrity
+            audit.invariants.assert_no_manifest_tampering(manifest_data, manifest_hash)
+
+            # Check GPS locations for spoofing
+            gps_points = [
+                (c.get("gps_lat", 0), c.get("gps_lon", 0), c.get("timestamp", int(time.time())))
+                for c in manifest_data
+            ]
+            audit.invariants.assert_location_consistent(gps_points)
+
+        except AssertionError as e:
+            verdict = "rejected"
+            reason = str(e)
+
+        # Update status in database
+        db = _get_db()
+        db.execute("UPDATE manifests SET status = ? WHERE id = ?", (verdict, manifest_id))
+        db.commit()
+        db.close()
+
+        log.info(f"Admin verified manifest {manifest_id}: {verdict}")
+
+        return jsonify({
+            "manifest_id": manifest_id,
+            "status": verdict,
+            "reason": reason
+        }), 200
 
     except Exception:
         log.exception("Failed to verify manifest %s", manifest_id)

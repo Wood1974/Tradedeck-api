@@ -342,6 +342,46 @@ def test_submit_manifest_incomplete_pack(client, mock_jwt_header, mock_supabase)
     assert response.status_code == 400
 
 
+def test_submit_manifest_with_nonce_validation(client, mock_jwt_header, mock_supabase):
+    """POST /api/manifests/:pack_id/submit - Validates and consumes nonces."""
+    from app import challenges
+
+    # Create valid nonce for a 5-checkpoint pack (remodel)
+    nonce = challenges.issue("test_user_id")
+
+    # Build complete manifest for remodel pack (5 checkpoints)
+    manifest_template = [
+        {"checkpoint_name": "Before Photos", "order": 1},
+        {"checkpoint_name": "Framing", "order": 2},
+        {"checkpoint_name": "Drywall & Tape", "order": 3},
+        {"checkpoint_name": "Finishes", "order": 4},
+        {"checkpoint_name": "Cleanup & Handover", "order": 5},
+    ]
+
+    manifest = [
+        {
+            "checkpoint_name": cp["checkpoint_name"],
+            "photo_bytes": "fake_photo_data",
+            "note": f"Note for {cp['checkpoint_name']}",
+            "bind_hash": f"{'a' * 63}{i}",  # Different hash for each
+            "nonce": nonce if i == 0 else f"{'b' * 64}",  # Only first uses real nonce
+            "gps_lat": 40.7128,
+            "gps_lon": -74.0060,
+            "timestamp": int(time.time()) + i
+        }
+        for i, cp in enumerate(manifest_template)
+    ]
+
+    response = client.post(
+        "/api/manifests/remodel/submit",
+        json=manifest,
+        headers=mock_jwt_header
+    )
+
+    # Should fail with invalid nonce message
+    assert response.status_code == 400
+
+
 # ============================================================================
 # Export & Verification Tests (2 tests)
 # ============================================================================
