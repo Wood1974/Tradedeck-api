@@ -12,9 +12,9 @@ This module provides:
 
 import hashlib
 import json
-import io
-from datetime import datetime
-from typing import Dict, List
+import logging
+from datetime import datetime, UTC
+from typing import Dict, List, Tuple
 from io import BytesIO
 
 from reportlab.pdfgen import canvas
@@ -24,12 +24,109 @@ from reportlab.lib.colors import HexColor
 from PIL import Image
 
 
-# Constants
+logger = logging.getLogger(__name__)
+
+# Page Layout Constants
 MARGIN = 1.0 * inch
 COLUMN_WIDTH = 4.0 * inch
 COLUMN_HEIGHT = 5.0 * inch
-PHOTO_MAX_WIDTH = COLUMN_WIDTH * 0.9  # 90% of column width
 FOOTER_MARGIN = 0.5 * inch
+
+# Photo Scaling Constants
+PHOTO_COLUMN_RATIO = 0.9  # 90% of column width
+PHOTO_HEIGHT_RATIO = 0.4  # 40% of column height
+
+# Text Rendering Constants
+CHECKPOINT_NAME_MAX_CHARS = 50
+NOTE_LINE_MAX_CHARS = 50
+NOTE_MAX_LINES = 3
+CERT_LINE_MAX_CHARS = 80
+BIND_HASH_DISPLAY_CHARS = 8
+
+# Font Size Constants (in points)
+TITLE_FONT_SIZE = 24
+BODY_FONT_SIZE = 12
+CHECKPOINT_FONT_SIZE = 14
+NOTE_FONT_SIZE = 10
+HASH_FONT_SIZE = 8
+
+# Layout Constants (in points)
+PAGE_BREAK_THRESHOLD = 200
+FOOTER_CONTENT_MARGIN = 40
+PHOTO_MARGIN_BOTTOM = 10
+CHECKPOINT_MARGIN_BOTTOM = 25
+HASH_MARGIN_BOTTOM = 20
+BIND_HASH_PREFIX_MARGIN_TOP = 15
+
+# Manifest validation constants
+REQUIRED_MANIFEST_KEYS = {"checkpoint_name", "photo_bytes", "note", "bind_hash"}
+
+
+def _validate_manifest(manifest: List[Dict]) -> None:
+    """
+    Validate manifest structure before PDF rendering.
+
+    Args:
+        manifest: List of capture dicts to validate
+
+    Raises:
+        ValueError: If manifest is invalid or entries missing required keys
+    """
+    if not isinstance(manifest, list):
+        raise ValueError(f"Manifest must be a list, got {type(manifest).__name__}")
+
+    for i, entry in enumerate(manifest):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Manifest entry {i} must be a dict, got {type(entry).__name__}")
+
+        missing_keys = REQUIRED_MANIFEST_KEYS - set(entry.keys())
+        if missing_keys:
+            raise ValueError(
+                f"Manifest entry {i} missing required keys: {missing_keys}"
+            )
+
+        # Validate key types
+        if not isinstance(entry["checkpoint_name"], str):
+            raise ValueError(f"Manifest entry {i}: checkpoint_name must be string")
+        if not isinstance(entry["photo_bytes"], bytes):
+            raise ValueError(f"Manifest entry {i}: photo_bytes must be bytes")
+        if not isinstance(entry["note"], str):
+            raise ValueError(f"Manifest entry {i}: note must be string")
+        if not isinstance(entry["bind_hash"], str):
+            raise ValueError(f"Manifest entry {i}: bind_hash must be string")
+
+
+def _wrap_text(text: str, max_line_length: int) -> List[str]:
+    """
+    Wrap text into multiple lines based on word boundaries.
+
+    Args:
+        text: Text to wrap
+        max_line_length: Maximum characters per line
+
+    Returns:
+        List of wrapped lines
+    """
+    if not text:
+        return []
+
+    lines = []
+    words = text.split()
+    current_line = ""
+
+    for word in words:
+        test_line = current_line + " " + word if current_line else word
+        if len(test_line) > max_line_length:
+            if current_line:
+                lines.append(current_line)
+            current_line = word
+        else:
+            current_line = test_line
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines
 
 
 def _compute_manifest_hash(manifest: List[Dict]) -> str:
@@ -59,9 +156,15 @@ def _compute_manifest_hash(manifest: List[Dict]) -> str:
     return hashlib.sha256(serialized.encode()).hexdigest()
 
 
-def _scale_photo(photo_bytes: bytes, max_width: float, max_height: float) -> tuple:
+def _scale_photo(
+    photo_bytes: bytes,
+    max_width: float,
+    max_height: float
+) -> Tuple[bytes, float, float]:
     """
     Scale photo to fit within max_width x max_height while preserving aspect ratio.
+
+    Does not upscale photos smaller than target dimensions.
 
     Args:
         photo_bytes: Raw image bytes
@@ -70,6 +173,7 @@ def _scale_photo(photo_bytes: bytes, max_width: float, max_height: float) -> tup
 
     Returns:
         Tuple of (scaled_image_bytes, final_width, final_height)
+        On error: returns (photo_bytes, max_width, max_height)
     """
     try:
         # Load image
@@ -97,10 +201,12 @@ def _scale_photo(photo_bytes: bytes, max_width: float, max_height: float) -> tup
         img_resized.save(img_bytes, format=fmt)
         img_bytes.seek(0)
 
-        return img_bytes.getvalue(), new_width, new_height
+        return img_bytes.getvalue(), float(new_width), float(new_height)
+
     except Exception as e:
-        # If image processing fails, return original
-        return photo_bytes, PHOTO_MAX_WIDTH, PHOTO_MAX_WIDTH
+        # Log failure but return valid fallback
+        logger.warning(f"Failed to scale photo: {e}")
+        return photo_bytes, max_width, max_height
 
 
 def _draw_photo_with_metadata(
@@ -119,9 +225,11 @@ def _draw_photo_with_metadata(
     Returns the y-position after this element (for stacking).
     """
     y_pos = y
+    max_photo_width = col_width * PHOTO_COLUMN_RATIO
+    max_photo_height = COLUMN_HEIGHT * PHOTO_HEIGHT_RATIO
 
     # Scale photo
-    scaled_photo, photo_w, photo_h = _scale_photo(photo_bytes, col_width * 0.9, COLUMN_HEIGHT * 0.4)
+    scaled_photo, photo_w, photo_h = _scale_photo(photo_bytes, max_photo_width, max_photo_height)
 
     try:
         # Draw photo
@@ -138,50 +246,164 @@ def _draw_photo_with_metadata(
             c.drawImage(
                 imagedata=img_bytes_rgb,
                 x=x + (col_width - photo_w) / 2,
-                y=y_pos - photo_h - 10,
+                y=y_pos - photo_h - PHOTO_MARGIN_BOTTOM,
                 width=photo_w,
                 height=photo_h,
                 mask=None
             )
-            y_pos -= photo_h + 10
-    except Exception:
-        # If image draw fails, skip the image
-        pass
+            y_pos -= photo_h + PHOTO_MARGIN_BOTTOM
+    except Exception as e:
+        # Log failure but continue rendering
+        logger.warning(f"Failed to draw image: {e}")
 
     # Draw checkpoint name (bold, 14pt)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(x + 10, y_pos - 20, checkpoint_name[:50])  # Truncate very long names
-    y_pos -= 25
+    c.setFont("Helvetica-Bold", CHECKPOINT_FONT_SIZE)
+    truncated_name = checkpoint_name[:CHECKPOINT_NAME_MAX_CHARS]
+    c.drawString(x + 10, y_pos - BIND_HASH_PREFIX_MARGIN_TOP, truncated_name)
+    y_pos -= CHECKPOINT_MARGIN_BOTTOM
 
     # Draw note (italic, 10pt, word-wrapped)
-    c.setFont("Helvetica-Oblique", 10)
-    note_lines = []
-    words = note.split()
-    current_line = ""
-    for word in words:
-        test_line = current_line + " " + word if current_line else word
-        if len(test_line) > 50:  # Simple word wrap at 50 chars
-            if current_line:
-                note_lines.append(current_line)
-            current_line = word
-        else:
-            current_line = test_line
-    if current_line:
-        note_lines.append(current_line)
+    c.setFont("Helvetica-Oblique", NOTE_FONT_SIZE)
+    note_lines = _wrap_text(note, NOTE_LINE_MAX_CHARS)
 
-    for line in note_lines[:3]:  # Max 3 lines for note
+    for line in note_lines[:NOTE_MAX_LINES]:
         if y_pos > FOOTER_MARGIN + 100:
             c.drawString(x + 10, y_pos, line)
             y_pos -= 12
 
     # Draw bind_hash first 8 chars (monospace, 8pt, gray)
-    c.setFont("Courier", 8)
+    c.setFont("Courier", HASH_FONT_SIZE)
     c.setFillColor(HexColor("#666666"))
-    c.drawString(x + 10, y_pos - 15, f"bind: {bind_hash[:8]}")
+    bind_hash_display = bind_hash[:BIND_HASH_DISPLAY_CHARS]
+    c.drawString(x + 10, y_pos - BIND_HASH_PREFIX_MARGIN_TOP, f"bind: {bind_hash_display}")
     c.setFillColor(HexColor("#000000"))
-    y_pos -= 20
+    y_pos -= HASH_MARGIN_BOTTOM
 
     return y_pos
+
+
+def _render_pdf_header(
+    c: canvas.Canvas,
+    page_width: float,
+    page_height: float,
+    pack_name: str,
+    account_id: str,
+    timestamp: str
+) -> float:
+    """
+    Render PDF header section with pack name, timestamp, account ID.
+
+    Returns y-position after header.
+    """
+    y_pos = page_height - MARGIN
+
+    # Pack name (24pt bold, centered)
+    c.setFont("Helvetica-Bold", TITLE_FONT_SIZE)
+    pack_name_text = pack_name or "Capture Pack"
+    c.drawCentredString(page_width / 2, y_pos, pack_name_text)
+    y_pos -= 35
+
+    # Timestamp (12pt)
+    c.setFont("Helvetica", BODY_FONT_SIZE)
+    c.drawCentredString(page_width / 2, y_pos, timestamp)
+    y_pos -= 20
+
+    # Account ID (12pt)
+    c.drawCentredString(page_width / 2, y_pos, f"Account: {account_id}")
+    y_pos -= 40
+
+    return y_pos
+
+
+def _render_photo_grid(
+    c: canvas.Canvas,
+    manifest: List[Dict],
+    start_y: float,
+    page_width: float,
+    page_height: float
+) -> None:
+    """
+    Render 2-column photo grid from manifest captures.
+
+    Handles page breaks for large manifests.
+    """
+    col1_x = MARGIN
+    col2_x = page_width / 2 + MARGIN / 2
+
+    col1_y = start_y
+    col2_y = start_y
+
+    # Process captures in pairs (column 1, column 2)
+    for i, capture in enumerate(manifest):
+        if i % 2 == 0:  # Left column
+            col1_y = _draw_photo_with_metadata(
+                c,
+                capture["photo_bytes"],
+                capture["checkpoint_name"],
+                capture["note"],
+                capture["bind_hash"],
+                col1_x,
+                col1_y,
+                COLUMN_WIDTH
+            )
+
+            # Check if we need a new page
+            if col1_y < FOOTER_MARGIN + PAGE_BREAK_THRESHOLD:
+                c.showPage()
+                c.setFont("Helvetica", BODY_FONT_SIZE)
+                col1_y = page_height - MARGIN
+                col2_y = page_height - MARGIN
+        else:  # Right column
+            col2_y = _draw_photo_with_metadata(
+                c,
+                capture["photo_bytes"],
+                capture["checkpoint_name"],
+                capture["note"],
+                capture["bind_hash"],
+                col2_x,
+                col2_y,
+                COLUMN_WIDTH
+            )
+
+            # Check if we need a new page
+            if col2_y < FOOTER_MARGIN + PAGE_BREAK_THRESHOLD:
+                c.showPage()
+                c.setFont("Helvetica", BODY_FONT_SIZE)
+                col1_y = page_height - MARGIN
+                col2_y = page_height - MARGIN
+
+
+def _render_pdf_footer(
+    c: canvas.Canvas,
+    manifest_hash: str,
+    chain_head_hash: str
+) -> None:
+    """
+    Render PDF footer with manifest hash, chain head hash, and certification.
+    """
+    footer_y = FOOTER_MARGIN + FOOTER_CONTENT_MARGIN
+
+    # Manifest hash
+    c.setFont("Courier", HASH_FONT_SIZE)
+    c.drawString(MARGIN, footer_y, f"Manifest: {manifest_hash}")
+    footer_y -= 12
+
+    # Chain head hash
+    c.drawString(MARGIN, footer_y, f"Chain Head: {chain_head_hash}")
+    footer_y -= 12
+
+    # Unsigned certification statement
+    c.setFont("Helvetica", HASH_FONT_SIZE)
+    certification = (
+        "This manifest has not been cryptographically signed. "
+        "Verification occurs offline using the Challenges class. "
+        "Timestamp and device binding are optional."
+    )
+    cert_lines = _wrap_text(certification, CERT_LINE_MAX_CHARS)
+
+    for line in cert_lines:
+        c.drawString(MARGIN, footer_y, line)
+        footer_y -= 10
 
 
 def render_manifest_pdf(
@@ -215,119 +437,32 @@ def render_manifest_pdf(
 
     Returns:
         PDF document as bytes (A4 size)
+
+    Raises:
+        ValueError: If manifest structure is invalid
     """
+    # Validate manifest structure
+    _validate_manifest(manifest)
+
     # Create PDF in memory
     pdf_buffer = BytesIO()
     c = canvas.Canvas(pdf_buffer, pagesize=A4)
     page_width, page_height = A4
 
-    # Compute manifest hash
+    # Compute manifest hash (only uses metadata, not photo_bytes)
     manifest_hash = _compute_manifest_hash(manifest)
 
-    # Get current timestamp in ISO 8601 format
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    # Get current timestamp in ISO 8601 format using UTC
+    timestamp = datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
 
-    # --- HEADER ---
-    y_pos = page_height - MARGIN
+    # Render header
+    y_pos = _render_pdf_header(c, page_width, page_height, pack_name, account_id, timestamp)
 
-    # Pack name (24pt bold, centered)
-    c.setFont("Helvetica-Bold", 24)
-    pack_name_text = pack_name or "Capture Pack"
-    c.drawCentredString(page_width / 2, y_pos, pack_name_text)
-    y_pos -= 35
+    # Render photo grid
+    _render_photo_grid(c, manifest, y_pos, page_width, page_height)
 
-    # Timestamp (12pt)
-    c.setFont("Helvetica", 12)
-    c.drawCentredString(page_width / 2, y_pos, timestamp)
-    y_pos -= 20
-
-    # Account ID (12pt)
-    c.drawCentredString(page_width / 2, y_pos, f"Account: {account_id}")
-    y_pos -= 40
-
-    # --- PHOTO GRID (2 columns) ---
-    col1_x = MARGIN
-    col2_x = page_width / 2 + MARGIN / 2
-
-    col1_y = y_pos
-    col2_y = y_pos
-
-    # Process captures in pairs (column 1, column 2)
-    for i, capture in enumerate(manifest):
-        if i % 2 == 0:  # Left column
-            col1_y = _draw_photo_with_metadata(
-                c,
-                capture["photo_bytes"],
-                capture["checkpoint_name"],
-                capture["note"],
-                capture["bind_hash"],
-                col1_x,
-                col1_y,
-                COLUMN_WIDTH
-            )
-
-            # Check if we need a new page
-            if col1_y < FOOTER_MARGIN + 200:
-                c.showPage()
-                c.setFont("Helvetica", 12)
-                col1_y = page_height - MARGIN
-                col2_y = page_height - MARGIN
-        else:  # Right column
-            col2_y = _draw_photo_with_metadata(
-                c,
-                capture["photo_bytes"],
-                capture["checkpoint_name"],
-                capture["note"],
-                capture["bind_hash"],
-                col2_x,
-                col2_y,
-                COLUMN_WIDTH
-            )
-
-            # Check if we need a new page
-            if col2_y < FOOTER_MARGIN + 200:
-                c.showPage()
-                c.setFont("Helvetica", 12)
-                col1_y = page_height - MARGIN
-                col2_y = page_height - MARGIN
-
-    # --- FOOTER ---
-    footer_y = FOOTER_MARGIN + 40
-
-    # Manifest hash
-    c.setFont("Courier", 8)
-    c.drawString(MARGIN, footer_y, f"Manifest: {manifest_hash}")
-    footer_y -= 12
-
-    # Chain head hash
-    c.drawString(MARGIN, footer_y, f"Chain Head: {chain_head_hash}")
-    footer_y -= 12
-
-    # Unsigned certification statement
-    c.setFont("Helvetica", 8)
-    certification = (
-        "This manifest has not been cryptographically signed. "
-        "Verification occurs offline using the Challenges class. "
-        "Timestamp and device binding are optional."
-    )
-    # Word-wrap certification
-    cert_lines = []
-    words = certification.split()
-    current_line = ""
-    for word in words:
-        test_line = current_line + " " + word if current_line else word
-        if len(test_line) > 80:
-            if current_line:
-                cert_lines.append(current_line)
-            current_line = word
-        else:
-            current_line = test_line
-    if current_line:
-        cert_lines.append(current_line)
-
-    for line in cert_lines:
-        c.drawString(MARGIN, footer_y, line)
-        footer_y -= 10
+    # Render footer
+    _render_pdf_footer(c, manifest_hash, chain_head_hash)
 
     # Finalize PDF
     c.save()

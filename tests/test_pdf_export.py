@@ -6,10 +6,8 @@ Tests PDF rendering with manifest data, hashing, photo scaling, and layout.
 import pytest
 import hashlib
 import json
-import io
 from io import BytesIO
 from PIL import Image
-import time
 
 from pdf_export import render_manifest_pdf
 
@@ -816,3 +814,158 @@ class TestEdgeCases:
             chain_head_hash="f" * 64
         )
         assert isinstance(pdf_bytes, bytes)
+
+    def test_corrupted_photo_bytes(self, sample_manifest):
+        """Corrupted photo bytes render without crashing."""
+        manifest = [dict(sample_manifest[0])]
+        manifest[0]["photo_bytes"] = b"\x89PNG\x00\x00CORRUPTED"
+
+        # Should not raise, gracefully handles corrupted image
+        pdf_bytes = render_manifest_pdf(
+            manifest=manifest,
+            pack_name="Test Pack",
+            account_id="user-123",
+            chain_head_hash="f" * 64
+        )
+        assert isinstance(pdf_bytes, bytes)
+        assert len(pdf_bytes) > 1000
+
+
+class TestInputValidation:
+    """Test manifest input validation."""
+
+    def test_manifest_not_list_raises_error(self, sample_photo_bytes):
+        """Non-list manifest raises ValueError."""
+        with pytest.raises(ValueError, match="Manifest must be a list"):
+            render_manifest_pdf(
+                manifest={"not": "a list"},
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_manifest_entry_not_dict_raises_error(self):
+        """Non-dict manifest entry raises ValueError."""
+        with pytest.raises(ValueError, match="must be a dict"):
+            render_manifest_pdf(
+                manifest=["not a dict"],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_missing_checkpoint_name_raises_error(self, sample_photo_bytes):
+        """Missing checkpoint_name raises ValueError."""
+        with pytest.raises(ValueError, match="missing required keys"):
+            render_manifest_pdf(
+                manifest=[{
+                    "photo_bytes": sample_photo_bytes,
+                    "note": "Test",
+                    "bind_hash": "a" * 64,
+                }],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_missing_photo_bytes_raises_error(self):
+        """Missing photo_bytes raises ValueError."""
+        with pytest.raises(ValueError, match="missing required keys"):
+            render_manifest_pdf(
+                manifest=[{
+                    "checkpoint_name": "Test",
+                    "note": "Test",
+                    "bind_hash": "a" * 64,
+                }],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_missing_note_raises_error(self, sample_photo_bytes):
+        """Missing note raises ValueError."""
+        with pytest.raises(ValueError, match="missing required keys"):
+            render_manifest_pdf(
+                manifest=[{
+                    "checkpoint_name": "Test",
+                    "photo_bytes": sample_photo_bytes,
+                    "bind_hash": "a" * 64,
+                }],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_missing_bind_hash_raises_error(self, sample_photo_bytes):
+        """Missing bind_hash raises ValueError."""
+        with pytest.raises(ValueError, match="missing required keys"):
+            render_manifest_pdf(
+                manifest=[{
+                    "checkpoint_name": "Test",
+                    "photo_bytes": sample_photo_bytes,
+                    "note": "Test",
+                }],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_photo_bytes_not_bytes_raises_error(self):
+        """photo_bytes not bytes raises ValueError."""
+        with pytest.raises(ValueError, match="photo_bytes must be bytes"):
+            render_manifest_pdf(
+                manifest=[{
+                    "checkpoint_name": "Test",
+                    "photo_bytes": "not bytes",
+                    "note": "Test",
+                    "bind_hash": "a" * 64,
+                }],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_checkpoint_name_not_string_raises_error(self, sample_photo_bytes):
+        """checkpoint_name not string raises ValueError."""
+        with pytest.raises(ValueError, match="checkpoint_name must be string"):
+            render_manifest_pdf(
+                manifest=[{
+                    "checkpoint_name": 123,
+                    "photo_bytes": sample_photo_bytes,
+                    "note": "Test",
+                    "bind_hash": "a" * 64,
+                }],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_note_not_string_raises_error(self, sample_photo_bytes):
+        """note not string raises ValueError."""
+        with pytest.raises(ValueError, match="note must be string"):
+            render_manifest_pdf(
+                manifest=[{
+                    "checkpoint_name": "Test",
+                    "photo_bytes": sample_photo_bytes,
+                    "note": 123,
+                    "bind_hash": "a" * 64,
+                }],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
+
+    def test_bind_hash_not_string_raises_error(self, sample_photo_bytes):
+        """bind_hash not string raises ValueError."""
+        with pytest.raises(ValueError, match="bind_hash must be string"):
+            render_manifest_pdf(
+                manifest=[{
+                    "checkpoint_name": "Test",
+                    "photo_bytes": sample_photo_bytes,
+                    "note": "Test",
+                    "bind_hash": 123,
+                }],
+                pack_name="Test Pack",
+                account_id="user-123",
+                chain_head_hash="f" * 64
+            )
