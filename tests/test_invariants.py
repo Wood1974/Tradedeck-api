@@ -75,18 +75,46 @@ def valid_gps_points():
 
 
 # ============================================================================
+# Helper Functions
+# ============================================================================
+
+def _build_pack_manifest(pack, num_checkpoints=None):
+    """
+    Helper to build a manifest matching pack checkpoints.
+
+    Args:
+        pack: Pack dict with 'points' array
+        num_checkpoints: Number of checkpoints to include (default: all from pack)
+
+    Returns:
+        List of manifest entries matching pack checkpoint names
+    """
+    if num_checkpoints is None:
+        num_checkpoints = len(pack["points"])
+
+    return [
+        {
+            "checkpoint_name": pack["points"][i]["name"],
+            "photo_bytes": b"test",
+            "note": f"Checkpoint {i}",
+            "bind_hash": chr(ord('a') + i) * 64,
+        }
+        for i in range(num_checkpoints)
+    ]
+
+
+# ============================================================================
 # 1. Manifest Structure Validation (6 tests)
 # ============================================================================
 
 def test_assert_manifest_structure_valid(valid_manifest):
     """Valid manifest should pass validation."""
-    assert_manifest_structure(valid_manifest)  # Should not raise
+    assert_manifest_structure(valid_manifest)
 
 
 def test_assert_manifest_structure_empty_valid():
     """Empty manifest should be valid (valid list, just no entries)."""
-    # An empty list is structurally valid, just with no captures
-    assert_manifest_structure([])  # Should not raise
+    assert_manifest_structure([])
 
 
 def test_assert_manifest_structure_not_a_list():
@@ -156,18 +184,9 @@ def test_assert_manifest_structure_empty_photo_bytes():
 
 def test_assert_pack_checkpoint_correspondence_perfect_match(valid_manifest, valid_pack):
     """Manifest checkpoints perfectly matching pack should pass."""
-    # Create manifest matching the remodel pack's 5 checkpoints
     remodel_pack = packs.get_pack("remodel")
-    manifest = [
-        {
-            "checkpoint_name": remodel_pack["points"][i]["name"],
-            "photo_bytes": b"test",
-            "note": f"Checkpoint {i}",
-            "bind_hash": chr(ord('a') + i) * 64,
-        }
-        for i in range(len(remodel_pack["points"]))
-    ]
-    assert_pack_checkpoint_correspondence(manifest, remodel_pack)  # Should not raise
+    manifest = _build_pack_manifest(remodel_pack)
+    assert_pack_checkpoint_correspondence(manifest, remodel_pack)
 
 
 def test_assert_pack_checkpoint_correspondence_manifest_too_short():
@@ -188,15 +207,7 @@ def test_assert_pack_checkpoint_correspondence_manifest_too_short():
 def test_assert_pack_checkpoint_correspondence_manifest_too_long():
     """Manifest with more captures than pack should fail."""
     pack = packs.get_pack("remodel")  # 5 checkpoints
-    manifest = [
-        {
-            "checkpoint_name": pack["points"][i]["name"],
-            "photo_bytes": b"test",
-            "note": f"Checkpoint {i}",
-            "bind_hash": chr(ord('a') + i) * 64,
-        }
-        for i in range(len(pack["points"]))
-    ] + [
+    manifest = _build_pack_manifest(pack) + [
         {
             "checkpoint_name": "Extra checkpoint",
             "photo_bytes": b"test",
@@ -211,38 +222,8 @@ def test_assert_pack_checkpoint_correspondence_manifest_too_long():
 def test_assert_pack_checkpoint_correspondence_names_mismatch():
     """Checkpoint names not matching pack should fail."""
     pack = packs.get_pack("remodel")
-    manifest = [
-        {
-            "checkpoint_name": "WRONG NAME",  # Mismatch
-            "photo_bytes": b"test",
-            "note": "Test",
-            "bind_hash": "a" * 64,
-        },
-        {
-            "checkpoint_name": pack["points"][1]["name"],
-            "photo_bytes": b"test",
-            "note": "Test",
-            "bind_hash": "b" * 64,
-        },
-        {
-            "checkpoint_name": pack["points"][2]["name"],
-            "photo_bytes": b"test",
-            "note": "Test",
-            "bind_hash": "c" * 64,
-        },
-        {
-            "checkpoint_name": pack["points"][3]["name"],
-            "photo_bytes": b"test",
-            "note": "Test",
-            "bind_hash": "d" * 64,
-        },
-        {
-            "checkpoint_name": pack["points"][4]["name"],
-            "photo_bytes": b"test",
-            "note": "Test",
-            "bind_hash": "e" * 64,
-        },
-    ]
+    manifest = _build_pack_manifest(pack)
+    manifest[0]["checkpoint_name"] = "WRONG NAME"  # Mismatch on first
     with pytest.raises(AssertionError, match="mismatch|name"):
         assert_pack_checkpoint_correspondence(manifest, pack)
 
@@ -250,38 +231,9 @@ def test_assert_pack_checkpoint_correspondence_names_mismatch():
 def test_assert_pack_checkpoint_correspondence_duplicate_names():
     """Duplicate checkpoint names should fail."""
     pack = packs.get_pack("remodel")
-    manifest = [
-        {
-            "checkpoint_name": "Duplicate",
-            "photo_bytes": b"test",
-            "note": "First",
-            "bind_hash": "a" * 64,
-        },
-        {
-            "checkpoint_name": "Duplicate",  # Duplicate
-            "photo_bytes": b"test",
-            "note": "Second",
-            "bind_hash": "b" * 64,
-        },
-        {
-            "checkpoint_name": pack["points"][2]["name"],
-            "photo_bytes": b"test",
-            "note": "Third",
-            "bind_hash": "c" * 64,
-        },
-        {
-            "checkpoint_name": pack["points"][3]["name"],
-            "photo_bytes": b"test",
-            "note": "Fourth",
-            "bind_hash": "d" * 64,
-        },
-        {
-            "checkpoint_name": pack["points"][4]["name"],
-            "photo_bytes": b"test",
-            "note": "Fifth",
-            "bind_hash": "e" * 64,
-        },
-    ]
+    manifest = _build_pack_manifest(pack)
+    manifest[0]["checkpoint_name"] = "Duplicate"
+    manifest[1]["checkpoint_name"] = "Duplicate"  # Duplicate
     with pytest.raises(AssertionError, match="duplicate"):
         assert_pack_checkpoint_correspondence(manifest, pack)
 
@@ -297,18 +249,17 @@ def test_assert_nonce_single_use_valid_unconsumed(challenges):
     assert result is True
 
 
-def test_assert_nonce_single_use_invalid_format():
+@pytest.mark.parametrize("invalid_nonce", [
+    "too_short",
+    "not_hex_chars_!@#$%^&*()",
+    "",
+    "a" * 63,  # One char short
+])
+def test_assert_nonce_single_use_invalid_format(invalid_nonce):
     """Invalid nonce format should return False."""
     challenges = Challenges()
-    invalid_nonces = [
-        "too_short",
-        "not_hex_chars_!@#$%^&*()",
-        "",
-        "a" * 63,  # One char short
-    ]
-    for nonce in invalid_nonces:
-        result = assert_nonce_single_use(nonce, challenges)
-        assert result is False
+    result = assert_nonce_single_use(invalid_nonce, challenges)
+    assert result is False
 
 
 def test_assert_nonce_single_use_already_consumed(challenges):
@@ -334,7 +285,7 @@ def test_assert_nonce_single_use_expired(challenges):
 
 def test_assert_location_consistent_stationary(valid_gps_points):
     """Stationary GPS points should pass."""
-    assert_location_consistent(valid_gps_points)  # Should not raise
+    assert_location_consistent(valid_gps_points)
 
 
 def test_assert_location_consistent_impossible_speed():
@@ -386,13 +337,13 @@ def test_assert_location_consistent_non_monotonic_timestamps():
 def test_assert_device_consistency_all_identical():
     """All identical device hashes should pass."""
     hashes = ["a" * 64, "a" * 64, "a" * 64]
-    assert_device_consistency(hashes)  # Should not raise
+    assert_device_consistency(hashes)
 
 
 def test_assert_device_consistency_empty_to_nonempty():
     """Transition from empty to non-empty hash (native app adoption) should pass."""
     hashes = ["", "", "b" * 64]
-    assert_device_consistency(hashes)  # Should not raise
+    assert_device_consistency(hashes)
 
 
 def test_assert_device_consistency_device_swap():
@@ -422,7 +373,7 @@ def test_assert_capture_sequence_integrity_valid():
             "bind_hash": "b" * 64,  # Valid hex
         },
     ]
-    assert_capture_sequence_integrity(manifest)  # Should not raise
+    assert_capture_sequence_integrity(manifest)
 
 
 def test_assert_capture_sequence_integrity_malformed_hash():
@@ -468,7 +419,7 @@ def test_assert_timestamp_monotonic_strictly_increasing():
             "timestamp": 2000,
         },
     ]
-    assert_timestamp_monotonic(manifest)  # Should not raise
+    assert_timestamp_monotonic(manifest)
 
 
 def test_assert_timestamp_monotonic_not_increasing():
@@ -500,7 +451,7 @@ def test_assert_timestamp_monotonic_not_increasing():
 def test_assert_no_manifest_tampering_unmodified(valid_manifest):
     """Unmodified manifest should pass."""
     manifest_hash = pdf_export._compute_manifest_hash(valid_manifest)
-    assert_no_manifest_tampering(valid_manifest, manifest_hash)  # Should not raise
+    assert_no_manifest_tampering(valid_manifest, manifest_hash)
 
 
 def test_assert_no_manifest_tampering_modified(valid_manifest):
@@ -535,7 +486,7 @@ def test_assert_bind_hash_validity_correct_hash():
     # Verify should pass (pass checkpoint_name string, not pack dict)
     assert_bind_hash_validity(
         photo_bytes, note, checkpoint_name, nonce, account_id, gps_lat, gps_lon, timestamp, bind_hash
-    )  # Should not raise
+    )
 
 
 def test_assert_bind_hash_validity_incorrect_hash():

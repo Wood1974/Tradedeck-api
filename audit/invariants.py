@@ -14,6 +14,7 @@ Core responsibility:
 
 import logging
 import re
+import time
 from typing import List, Dict, Tuple, Optional
 
 import capture
@@ -23,6 +24,33 @@ import packs
 from capture import Challenges
 
 logger = logging.getLogger(__name__)
+
+# Constants for validation
+SHA256_HEX_LENGTH = 64
+SHA256_HEX_PATTERN = r"^[a-f0-9]{64}$"
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def _validate_sha256_hex(value: str, field_name: str) -> None:
+    """
+    Validate that a value is a valid SHA-256 hex string (64 lowercase hex chars).
+
+    Args:
+        value: The value to validate
+        field_name: Name of the field for error messages
+
+    Raises:
+        AssertionError: If value is not a valid SHA-256 hex string
+    """
+    assert isinstance(value, str), \
+        f"{field_name} must be string, got {type(value).__name__}"
+    assert len(value) == SHA256_HEX_LENGTH, \
+        f"{field_name} must be {SHA256_HEX_LENGTH} chars, got {len(value)}"
+    assert re.match(SHA256_HEX_PATTERN, value), \
+        f"{field_name} must be valid hex, got {value[:8]}..."
 
 
 # ============================================================================
@@ -75,12 +103,7 @@ def assert_manifest_structure(manifest: List[Dict]) -> None:
 
         # Validate bind_hash
         bind_hash = entry.get("bind_hash")
-        assert isinstance(bind_hash, str), \
-            f"manifest entry {i}: bind_hash must be string, got {type(bind_hash).__name__}"
-        assert len(bind_hash) == 64, \
-            f"manifest entry {i}: bind_hash must be 64 chars, got {len(bind_hash)}"
-        assert re.match(r"^[a-f0-9]{64}$", bind_hash), \
-            f"manifest entry {i}: bind_hash must be valid hex, got {bind_hash[:8]}..."
+        _validate_sha256_hex(bind_hash, f"manifest entry {i}: bind_hash")
 
 
 # ============================================================================
@@ -159,18 +182,8 @@ def assert_nonce_single_use(nonce: str, challenges: Challenges) -> bool:
     if not re.match(r"^[a-f0-9]{64}$", nonce):
         return False
 
-    # Check if nonce exists in challenges (not consumed and not expired)
-    if nonce not in challenges._challenges:
-        return False
-
-    # Check if nonce has expired
-    issue_time = challenges._challenges[nonce]
-    import time
-    current_time = time.time()
-    if current_time - issue_time >= Challenges.TTL_SECONDS:
-        return False
-
-    return True
+    # Check if nonce is valid using public API (not consumed and not expired)
+    return challenges.is_valid(nonce)
 
 
 # ============================================================================
@@ -296,33 +309,24 @@ def assert_capture_sequence_integrity(manifest: List[Dict]) -> None:
     """
     for i, entry in enumerate(manifest):
         bind_hash = entry.get("bind_hash")
-
-        # Validate format
-        assert isinstance(bind_hash, str), \
-            f"manifest entry {i}: bind_hash must be string"
-        assert len(bind_hash) == 64, \
-            f"manifest entry {i}: bind_hash must be 64 chars, got {len(bind_hash)}"
-        assert re.match(r"^[a-f0-9]{64}$", bind_hash), \
-            f"manifest entry {i}: bind_hash must be valid hex"
+        _validate_sha256_hex(bind_hash, f"manifest entry {i}: bind_hash")
 
 
 # ============================================================================
 # 7. assert_timestamp_monotonic
 # ============================================================================
 
-def assert_timestamp_monotonic(manifest: List[Dict], provide_timestamps: bool = False) -> None:
+def assert_timestamp_monotonic(manifest: List[Dict]) -> None:
     """
     Verify manifest timestamps are strictly increasing.
 
-    If provide_timestamps=False (default): assumes each manifest entry
-    has a 'timestamp' field (ISO 8601 string or Unix seconds)
+    Assumes each manifest entry has a 'timestamp' field (ISO 8601 string or Unix seconds).
     Checks:
     - timestamps parse correctly
     - each timestamp > previous (strictly increasing, no ties)
 
     Args:
         manifest: List of capture dicts with timestamp field
-        provide_timestamps: If True, expects timestamps to be provided
 
     Raises:
         AssertionError: With timestamp mismatch details
@@ -391,12 +395,7 @@ def assert_no_manifest_tampering(
         AssertionError: If hash mismatch detected
     """
     # Validate provided hash format
-    assert isinstance(manifest_hash, str), \
-        f"manifest_hash must be string, got {type(manifest_hash).__name__}"
-    assert len(manifest_hash) == 64, \
-        f"manifest_hash must be 64 chars, got {len(manifest_hash)}"
-    assert re.match(r"^[a-f0-9]{64}$", manifest_hash), \
-        f"manifest_hash must be valid hex, got {manifest_hash[:8]}..."
+    _validate_sha256_hex(manifest_hash, "manifest_hash")
 
     # Recompute hash
     recomputed_hash = pdf_export._compute_manifest_hash(manifest)
@@ -474,8 +473,7 @@ def assert_bind_hash_validity(
     assert isinstance(timestamp, int), \
         f"timestamp must be int, got {type(timestamp).__name__}"
 
-    assert isinstance(bind_hash, str) and len(bind_hash) == 64, \
-        f"bind_hash must be 64-char hex string, got {repr(bind_hash)[:20]}..."
+    _validate_sha256_hex(bind_hash, "bind_hash")
 
     # Create checkpoint pack dict for verification
     checkpoint_pack = {

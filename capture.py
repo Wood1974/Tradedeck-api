@@ -52,6 +52,30 @@ class Challenges:
 
         return nonce
 
+    def is_valid(self, nonce: str) -> bool:
+        """
+        Check if nonce exists and hasn't expired (without consuming it).
+
+        Args:
+            nonce: The nonce string to check
+
+        Returns:
+            True if nonce exists and hasn't expired, False otherwise
+        """
+        # Check if nonce exists
+        if nonce not in self._challenges:
+            return False
+
+        # Get issue time
+        issue_time = self._challenges[nonce]
+        current_time = time.time()
+
+        # Check if expired (120 second TTL)
+        if current_time - issue_time >= self.TTL_SECONDS:
+            return False
+
+        return True
+
     def consume(self, nonce: str) -> bool:
         """
         Check if nonce exists and hasn't expired, then delete it (single-use).
