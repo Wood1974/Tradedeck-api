@@ -810,12 +810,17 @@ def _offer_genesis(record_id, platform, points):
             "challenge": ticket.GENESIS_CHALLENGE,
             "ticket_hash": signed["ticket_hash"],
             "note": (
-                "clientData is the UTF-8 bytes of the challenge followed by "
-                "the raw 32-byte ticket hash, not the hex text. iOS passes "
-                "SHA-256(clientData) to generateAssertion. Android signs "
-                "clientData with SHA256withECDSA and does not pre-hash it. "
-                "Send the ticket and this server_signature back with that "
-                "signature. Nothing is stored until that signature verifies."),
+                "Measure the phone clocks now and send them back as "
+                "ticket_clock: wall_time_ms, monotonic_ms, and boot_id "
+                "and/or boot_count. clientData is the UTF-8 bytes of the "
+                "challenge followed by SHA-256 of the raw 32-byte ticket "
+                "hash concatenated with the canonical JSON of that clock. "
+                "The clock JSON uses sorted keys and tight separators. "
+                "iOS passes SHA-256(clientData) to generateAssertion. "
+                "Android signs clientData with SHA256withECDSA and does not "
+                "pre-hash it. Send the ticket, ticket_clock, and this "
+                "server_signature back with that signature. Nothing is "
+                "stored until that signature verifies."),
         },
     })
 
@@ -861,8 +866,14 @@ def _seal_genesis(record_id, platform, body, points):
     if not assertion:
         return _err("A hardware signature over the ticket hash is required. "
                     "Nothing was stored.", 422)
+    try:
+        clock = ticket.normalize_clock(body.get("ticket_clock"))
+    except ValueError as exc:
+        return _err("The phone clock at ticket time could not be read "
+                    f"({exc}). Nothing was stored.", 422)
 
-    challenge, payload_sha256 = ticket.hardware_binding(signed["ticket_hash"])
+    challenge, payload_sha256 = ticket.hardware_binding(
+        signed["ticket_hash"], clock)
     allow_dev = config.get("APP_ATTEST_ALLOW_DEVELOPMENT") == "1"
     checked, key_row, extra = _check_assertion(
         assertion, body.get("attestation_key_id"), _principal(),
@@ -903,6 +914,7 @@ def _seal_genesis(record_id, platform, body, points):
         "expires_at_ms": canonical_ticket["expires_at_ms"],
         "roughtime_ms": canonical_ticket.get("roughtime_ms"),
         "ticket_json": canonical_ticket,
+        "ticket_clock": clock,
         "server_signature": server_sig.strip() if isinstance(server_sig, str) else server_sig,
         "hardware_signature": assertion,
         "created_at": _now(),
@@ -919,6 +931,7 @@ def _seal_genesis(record_id, platform, body, points):
         "ticket_id": row["ticket_hash"],
         "ticket_hash": row["ticket_hash"],
         "ticket": canonical_ticket,
+        "ticket_clock": clock,
         "server_signature": row["server_signature"],
         "server_public_key": ticket.export_public_key(),
         "play_integrity": {

@@ -458,8 +458,12 @@ Whole numbers only. The same rule as §9.2. A float is rejected. `0` is not
 absent. Null and absent are the same bytes.
 
 `server_time_ms` is the server's clock. It is not the phone's wall clock.
-§9.5 compares the phone's clocks with each other. This ticket does not
-collect that phone observation.
+§9.5 compares the phone's clocks with each other. The phone's own clocks
+at the moment it countersigns are `ticket_clock`. They are not fields of
+this signed ticket, because the server builds the ticket before the phone
+measures them. They are covered by the hardware signature in §10.4 and
+stored on the row. A later batch reads that row. It does not get to
+supply a different baseline.
 
 `ticket_id` on a capture record is the ticket hash from §10.3, not a
 separate identifier. The database row also has its own id. That id is not
@@ -489,17 +493,21 @@ exported as PEM and as the uncompressed point (`0x04 || X || Y`, base64)
 for an evidence package. The private key is not in that export.
 
 **The phone.** The install key already in `shield.attested_keys`. The
-signed message is the ticket hash, carried in the same slot the capture
-path already uses:
+signed message carries the ticket hash and the phone clock, in the same
+slot the capture path already uses:
 
 ```
-clientData = UTF-8("shield-genesis-v1") || ticket_hash_raw
+ticket_clock = canonical JSON of wall_time_ms, monotonic_ms, and boot_id and/or boot_count
+clientData = UTF-8("shield-genesis-v1") || SHA256(ticket_hash_raw || ticket_clock)
 ```
 
-`ticket_hash_raw` is the 32-byte digest, not the hex text. iOS passes
-`SHA-256(clientData)` to `generateAssertion`. Android signs `clientData`
-with `SHA256withECDSA` and does not pre-hash it. Both are checked by the
-existing verifiers. Those verifiers are not changed.
+`ticket_hash_raw` is the 32-byte digest, not the hex text. `ticket_clock`
+is UTF-8 JSON with sorted keys and tight separators, the same whole-number
+rules as §9.3. The SHA-256 is 32 bytes. iOS passes `SHA-256(clientData)` to
+`generateAssertion`. Android signs `clientData` with `SHA256withECDSA` and
+does not pre-hash it. Both are checked by the existing verifiers. Those
+verifiers are not changed. A signature over the bare ticket hash does not
+verify: the clock would otherwise be free to change at sync.
 
 A capture assertion uses a server nonce as its challenge. A ticket
 assertion uses the fixed challenge `shield-genesis-v1`. One does not
@@ -525,7 +533,10 @@ moved does not get a stored ticket.
 
 The route refuses, and stores nothing, when:
 
-- the hardware signature is missing or does not verify
+- the hardware signature is missing or does not verify, including a
+  signature that does not cover the `ticket_clock` sent with it
+- `ticket_clock` is missing, or it has no wall time, no monotonic time,
+  or no boot identity
 - the server signature does not verify (the ticket was altered)
 - `record_id` is not the record in the URL
 - `actor_id` is not the authenticated actor
@@ -582,6 +593,8 @@ the key is configuration, not memory. The stored ticket is a row in
   ones the capture tests already run, against keys those tests mint.
 - That Google Play Integrity was called. It was not.
 - That an iOS device is not jailbroken.
-- That the phone's wall clock matches the server clock. §9.5's phone
-  observation is not collected here.
+- That the phone's wall clock matches the server clock. The stored
+  `ticket_clock` is the phone's own clocks at countersign. §9.5 compares
+  later photos to that observation. A clock set wrong before the ticket,
+  and left alone, still reads CONSISTENT.
 - Anything about `chain_version`, which remains 2.

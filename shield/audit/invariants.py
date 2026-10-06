@@ -1845,6 +1845,7 @@ def inv_job_ticket_is_a_database_row():
         ("revoke all on shield.job_tickets from anon, authenticated",
          "the browser roles can reach job tickets"),
         ("hardware_signature", "a row can be stored with no hardware signature"),
+        ("ticket_clock", "the phone clock at genesis is not stored on the ticket"),
     ):
         if needle not in sql:
             return False, why
@@ -1871,6 +1872,17 @@ def inv_job_ticket_is_a_database_row():
     if "verified=False" not in play or "verified=True" in play:
         return False, ("genesis treats a Play Integrity body as verified; "
                        "this release does not call Google")
+    if "ticket_clock" not in seal or "normalize_clock" not in seal:
+        return False, "the seal route does not bind the phone clock"
+    sample_hash = "ab" * 32
+    try:
+        _challenge, payload = ticket.hardware_binding(
+            sample_hash, {"wall_time_ms": 1, "monotonic_ms": 2, "boot_count": 1})
+    except Exception as exc:
+        return False, f"the genesis binding refused a phone clock ({exc})"
+    if payload == bytes.fromhex(sample_hash):
+        return False, ("the genesis signature covers only the ticket hash, "
+                       "so the phone clock can be substituted later")
 
     import ledger
     if ledger.CHAIN_VERSION != 2:
