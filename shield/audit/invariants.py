@@ -1968,6 +1968,8 @@ def inv_offline_queue_does_not_replace_the_chain():
          "a timestamp status other than present or missing is allowed"),
         ("offline_batch",
          "the custody log cannot record an offline batch"),
+        ("unique (record_id, phone_chain_head)",
+         "two receipts can cover one phone-chain head"),
     ):
         if needle not in sql:
             return False, why
@@ -1988,6 +1990,17 @@ def inv_offline_queue_does_not_replace_the_chain():
     checked = _strip_prose(_source(tenant_api._queue_signatures))
     if '["verified"]' not in checked:
         return False, "the batch does not require a verified hardware signature"
+    if 'existing.get("ticket_clock")' not in ingest:
+        return False, "the batch does not read the clock stored on the ticket"
+    if 'body.get("ticket_clock")' in ingest or "body.get('ticket_clock')" in ingest:
+        return False, "the batch trusts a clock supplied with the request"
+    advance_at = ingest.find("_advance_counter")
+    if advance_at < 0 or advance_at < insert_at:
+        return False, "the assertion counter moves before the receipt is stored"
+    photos = _strip_prose(_source(tenant_api._store_batch_photos))
+    if 'split(",")[-1]' not in photos:
+        return False, ("the batch records the leftmost X-Forwarded-For hop, "
+                       "which the client chooses")
     return True, ("offline batches nest under chain_version 2, and a missing "
                   "timestamp is not forged")
 

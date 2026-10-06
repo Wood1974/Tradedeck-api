@@ -1116,10 +1116,16 @@ def _store_batch_photos(record_id, accepted, tiers):
             "attestation_tier": tier,
             "received_at": _now(),
         }
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+        # Rightmost hop. The leftmost entry is whatever the client sent.
+        # Render adds one trusted proxy, same rule as routes.client_ip.
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            ip = xff.split(",")[-1].strip()
+        else:
+            ip = request.remote_addr or ""
         if ip:
             row["upload_ip_hash"] = integrity.hash_ip(
-                ip.split(",")[0].strip(), config.get("IP_HASH_SALT"))
+                ip, config.get("IP_HASH_SALT"))
         try:
             _t("photos").insert(row).execute()
         except Exception:
@@ -1173,6 +1179,63 @@ def _receipt_view(row, token_row):
     return receipt, timestamp
 
 
+def _prior_receipt(record_id, captures, existing, allowed, stored_clock):
+    """The response for a batch whose receipt is already stored, or None.
+
+    The phone retries when a response is lost. The chain head of a batch
+    that already has a receipt is that receipt, not a second acceptance.
+    A request longer than the cap is not treated as a replay of its prefix:
+    the phone still has to send what was not accepted.
+    """
+    if not captures or len(captures) > queue_ingest.batch_cap():
+        return None
+    first = captures[0] if isinstance(captures[0], dict) else None
+    record = first.get("record") if isinstance(first, dict) else None
+    if not isinstance(record, dict):
+        return None
+    probe = queue_ingest.prepare(
+        captures,
+        ticket_hash=existing.get("ticket_hash"),
+        expected_prev=record.get("prev_hash"),
+        ticket_clock=stored_clock,
+        allowed_checkpoints=allowed)
+    if not probe["ok"]:
+        return None
+    try:
+        row = shield_db.find_receipt_by_phone_head(
+            _principal().tenant_id, record_id, probe["phone_chain_head"])
+    except Exception:
+        log.exception("Receipt replay lookup failed for %s", record_id)
+        return None
+    if not row:
+        return None
+    try:
+        token_row = shield_db.find_tsa_token(
+            _principal().tenant_id, row.get("id"))
+    except Exception:
+        log.exception("Timestamp replay lookup failed for %s", record_id)
+        token_row = None
+    if not token_row:
+        token_row = {"status": "missing", "token_b64": None}
+    receipt_view, timestamp_view = _receipt_view(row, token_row)
+    body = row.get("receipt_json") if isinstance(row.get("receipt_json"), dict) else {}
+    return jsonify({
+        "stored": True,
+        "replayed": True,
+        "accepted": row.get("batch_size"),
+        "refused": 0,
+        "send_next_batch": False,
+        "phone_chain_head": row.get("phone_chain_head"),
+        "custody_head_hash": row.get("head_hash"),
+        "chain_version": ledger.CHAIN_VERSION,
+        "receipt": receipt_view,
+        "timestamp": timestamp_view,
+        "signing_key": ticket.export_public_key(),
+        "time_labels": body.get("time_labels") or [],
+        "photo_ids": [],
+    }), 200
+
+
 @bp.route("/records/<record_id>/queue", methods=["POST"])
 @require_tenant
 @require_record()
@@ -1185,8 +1248,12 @@ def ingest_queue(record_id):
     the batch cap; the rest are not stored, and the response says to send
     the next batch.
 
+    Time labels are judged against the clock stored on the job ticket when
+    the phone countersigned it. A clock in this request is not read.
+
     The receipt is signed even when the timestamp authority does not
     answer. A missing timestamp is reported as missing. It is not forged.
+    The iOS assertion counter moves only after that receipt row exists.
     """
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
@@ -1240,6 +1307,22 @@ def ingest_queue(record_id):
         return _err("Could not load the checkpoints", 500)
     allowed = [row.get("id") for row in points if row.get("id")]
 
+    stored_clock = existing.get("ticket_clock")
+    if not isinstance(stored_clock, dict):
+        return _err(
+            "This job ticket has no clock observation from when it was "
+            "countersigned. Nothing was stored.", 409)
+    try:
+        stored_clock = ticket.normalize_clock(stored_clock)
+    except ValueError:
+        return _err(
+            "This job ticket's clock observation cannot be read. "
+            "Nothing was stored.", 409)
+
+    prior = _prior_receipt(record_id, captures, existing, allowed, stored_clock)
+    if prior is not None:
+        return prior
+
     try:
         previous = shield_db.latest_receipt(_principal().tenant_id, record_id)
     except Exception:
@@ -1253,7 +1336,7 @@ def ingest_queue(record_id):
         captures,
         ticket_hash=existing.get("ticket_hash"),
         expected_prev=expected_prev,
-        ticket_clock=body.get("ticket_clock"),
+        ticket_clock=stored_clock,
         allowed_checkpoints=allowed,
         claimed_head=body.get("phone_chain_head"))
     if not prepared["ok"]:
@@ -1287,13 +1370,6 @@ def ingest_queue(record_id):
             return _err("This batch was not accepted: the device key is not "
                         "one this service trusts. Nothing was stored.", 422)
         tiers.append(verdict["tier"])
-
-    if platform == "ios":
-        if not _advance_counter(key_row["key_id"], last_counter):
-            return _err("This assertion was already used. Nothing was stored.",
-                        422)
-    else:
-        _touch_key(key_row["key_id"])
 
     photo_ids = _store_batch_photos(record_id, prepared["accepted"], tiers)
     if photo_ids is None:
@@ -1348,6 +1424,17 @@ def ingest_queue(record_id):
     except Exception:
         log.exception("Receipt insert failed for %s", record_id)
         return _err("Could not store the receipt.", 500)
+
+    # The receipt is the replay lock. The counter moves only after that
+    # row exists, so a failed store leaves the assertions usable and the
+    # phone can send the batch again. A compare-and-set that loses does
+    # not undo the receipt: the next batch still has to extend this head.
+    if platform == "ios":
+        if not _advance_counter(key_row["key_id"], last_counter):
+            log.info("Assertion counter did not advance for %s after the "
+                     "receipt was stored", record_id)
+    else:
+        _touch_key(key_row["key_id"])
 
     # The receipt is stored before this call. A failure here does not
     # remove it, and it does not become a forgery finding.

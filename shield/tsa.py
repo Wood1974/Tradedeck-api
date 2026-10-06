@@ -47,8 +47,22 @@ RECEIPT_FIELDS = (
 IMPRINT_ALG = "sha256"
 
 SHA256_OID = "2.16.840.1.101.3.4.2.1"
+SHA384_OID = "2.16.840.1.101.3.4.2.2"
 ECDSA_SHA256_OID = "1.2.840.10045.4.3.2"
+ECDSA_SHA384_OID = "1.2.840.10045.4.3.3"
 RSA_SHA256_OID = "1.2.840.113549.1.1.11"
+RSA_SHA384_OID = "1.2.840.113549.1.1.12"
+# id-RSASSA-PSS. Sectigo signs some tokens this way. The hash is the one
+# named in SignerInfo, not a second algorithm hiding in the parameters.
+RSA_PSS_OID = "1.2.840.113549.1.1.10"
+
+# Digest OIDs this service will accept on a token, and the signature
+# algorithms that may carry each one. SHA-1 is absent on purpose.
+_ACCEPTED_DIGESTS = (SHA256_OID, SHA384_OID)
+_SIG_OIDS = {
+    SHA256_OID: frozenset((ECDSA_SHA256_OID, RSA_SHA256_OID, RSA_PSS_OID)),
+    SHA384_OID: frozenset((ECDSA_SHA384_OID, RSA_SHA384_OID, RSA_PSS_OID)),
+}
 SIGNED_DATA_OID = "1.2.840.113549.1.7.2"
 TST_INFO_OID = "1.2.840.113549.1.9.16.1.4"
 CONTENT_TYPE_OID = "1.2.840.113549.1.9.3"
@@ -371,8 +385,29 @@ def _oid(dotted):
     return _tlv(0x06, _oid_body(dotted))
 
 
+def _alg(oid):
+    return _seq(_oid(oid), _tlv(0x05, b""))
+
+
 def _alg_sha256():
-    return _seq(_oid(SHA256_OID), _tlv(0x05, b""))
+    return _alg(SHA256_OID)
+
+
+def _hashlib_for(oid):
+    if oid == SHA256_OID:
+        return hashlib.sha256
+    if oid == SHA384_OID:
+        return hashlib.sha384
+    return None
+
+
+def _hash_for(oid):
+    from cryptography.hazmat.primitives import hashes
+    if oid == SHA256_OID:
+        return hashes.SHA256()
+    if oid == SHA384_OID:
+        return hashes.SHA384()
+    return None
 
 
 def _set_of(items):
@@ -475,16 +510,34 @@ def parse_timestamp_request(data):
 
 
 def mint_token(*, hashed_message, nonce, key, cert, gen_time=None,
-               policy_oid=LOCAL_POLICY_OID, serial=None):
+               policy_oid=LOCAL_POLICY_OID, serial=None, hash_name="sha256",
+               extra_certs=(), imprint_oid=SHA256_OID):
     """A TimeStampResp from a key and certificate the caller generated.
 
     The route never calls this. A test's local authority does, with a
     certificate that test minted. A missing live authority is not filled
     in by calling this function.
+
+    ``hash_name`` is the hash over TSTInfo (the CMS signature). The imprint
+    inside TSTInfo stays the 32-byte custody head, which is what
+    ``encode_timestamp_request`` asks for. ``extra_certs`` are intermediates
+    a real authority puts in the same bag as the signer. ``imprint_oid``
+    defaults to SHA-256; a test passes another OID to show it is refused.
     """
     from datetime import datetime, timezone
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+    from cryptography.hazmat.primitives.serialization import Encoding
     if not isinstance(hashed_message, (bytes, bytearray)) or len(hashed_message) != 32:
         raise ValueError("the imprint must be 32 bytes")
+    if hash_name == "sha256":
+        digest_oid = SHA256_OID
+        hasher = hashlib.sha256
+    elif hash_name == "sha384":
+        digest_oid = SHA384_OID
+        hasher = hashlib.sha384
+    else:
+        raise ValueError("mint_token only builds sha256 or sha384 signatures")
+    hash_alg = _hash_for(digest_oid)
     if gen_time is None:
         gen_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%SZ")
     if isinstance(gen_time, str):
@@ -496,37 +549,43 @@ def mint_token(*, hashed_message, nonce, key, cert, gen_time=None,
     tst_info = _seq(
         _int(1),
         _oid(policy_oid),
-        _seq(_alg_sha256(), _octets(bytes(hashed_message))),
+        _seq(_alg(imprint_oid), _octets(bytes(hashed_message))),
         _int(serial),
         _tlv(0x18, gen_bytes),
         _int(nonce),
     )
-    digest = hashlib.sha256(tst_info).digest()
+    digest = hasher(tst_info).digest()
     content_type = _seq(_oid(CONTENT_TYPE_OID), _set_of([_oid(TST_INFO_OID)]))
     message_digest = _seq(_oid(MESSAGE_DIGEST_OID), _set_of([_octets(digest)]))
     attr_body = b"".join(sorted((content_type, message_digest)))
     signed_set = _tlv(0x31, attr_body)
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.asymmetric import ec
-    signature = key.sign(signed_set, ec.ECDSA(hashes.SHA256()))
+    if isinstance(key, ec.EllipticCurvePrivateKey):
+        signature = key.sign(signed_set, ec.ECDSA(hash_alg))
+        sig_oid = ECDSA_SHA256_OID if hash_name == "sha256" else ECDSA_SHA384_OID
+    elif isinstance(key, rsa.RSAPrivateKey):
+        signature = key.sign(signed_set, padding.PKCS1v15(), hash_alg)
+        sig_oid = RSA_SHA256_OID if hash_name == "sha256" else RSA_SHA384_OID
+    else:
+        raise ValueError("mint_token needs an EC or RSA private key")
     issuer = cert.issuer.public_bytes()
     sid = _seq(issuer, _int(cert.serial_number))
     signer = _seq(
         _int(1),
         sid,
-        _alg_sha256(),
+        _alg(digest_oid),
         _tlv(0xA0, attr_body),
-        _seq(_oid(ECDSA_SHA256_OID)),
+        _seq(_oid(sig_oid)),
         _octets(signature),
     )
-    from cryptography.hazmat.primitives.serialization import Encoding
-    cert_der = cert.public_bytes(Encoding.DER)
+    ders = [cert.public_bytes(Encoding.DER)]
+    for extra in extra_certs:
+        ders.append(extra.public_bytes(Encoding.DER))
     encap = _seq(_oid(TST_INFO_OID), _tlv(0xA0, _octets(tst_info)))
     signed_data = _seq(
         _int(3),
-        _set_of([_alg_sha256()]),
+        _set_of([_alg(digest_oid)]),
         encap,
-        _tlv(0xA0, cert_der),
+        _tlv(0xA0, b"".join(ders)),
         _set_of([signer]),
     )
     content_info = _seq(_oid(SIGNED_DATA_OID), _tlv(0xA0, signed_data))
@@ -550,24 +609,31 @@ def verify_token(token, *, head_hash, roots_pem, nonce=None) -> dict:
         return {"ok": False, "reason": f"the timestamp token could not be read ({exc})"}
     if parsed["status"] not in (0, 1):
         return {"ok": False, "reason": f"the timestamp authority status is {parsed['status']}"}
-    if parsed["hashed_message"] != expected:
+    if parsed.get("imprint_oid") != SHA256_OID or parsed["hashed_message"] != expected:
         return {"ok": False, "reason": "the timestamp is not over this custody head"}
     if nonce is not None and parsed["nonce"] != nonce:
         return {"ok": False, "reason": "the timestamp nonce does not match this request"}
-    if hashlib.sha256(parsed["tst_info"]).digest() != parsed["message_digest"]:
+    digest_oid = parsed.get("digest_oid")
+    hasher = _hashlib_for(digest_oid)
+    if hasher is None or digest_oid not in _ACCEPTED_DIGESTS:
+        return {"ok": False, "reason": "the timestamp uses a hash this service does not accept"}
+    if parsed.get("signature_oid") not in _SIG_OIDS[digest_oid]:
+        return {"ok": False, "reason": "the timestamp signature algorithm does not match its digest"}
+    if hasher(parsed["tst_info"]).digest() != parsed["message_digest"]:
         return {"ok": False, "reason": "the timestamp's signed digest does not match the token"}
     if parsed["content_type"] != TST_INFO_OID:
         return {"ok": False, "reason": "the timestamp is not a TSTInfo"}
-    cert = _signer_cert(parsed)
+    certs = _certificates(parsed)
+    cert = _signer_cert(certs, parsed)
     if cert is None:
         return {"ok": False, "reason": "the timestamp token has no signer certificate"}
-    if not _signature_ok(cert, parsed["signed_set"], parsed["signature"]):
+    if not _signature_ok(cert, parsed["signed_set"], parsed["signature"], digest_oid):
         return {"ok": False, "reason": "the timestamp signature does not verify"}
     if not _has_time_stamping_eku(cert):
         return {"ok": False, "reason": "the timestamp certificate is not a time-stamping certificate"}
     if not _time_inside_cert(cert, parsed["gen_time"]):
         return {"ok": False, "reason": "the timestamp time is outside the certificate's validity"}
-    if not _chains_to_roots(cert, roots_pem):
+    if not _chains_to_roots(cert, roots_pem, [c for c in certs if c is not cert]):
         return {"ok": False, "reason": "the timestamp certificate does not chain to a configured root"}
     return {
         "ok": True,
@@ -634,10 +700,15 @@ def _parse_response(token):
     policy = _oid_str(tst_fields[1][1])
     imprint = _walk(tst_fields[2][1]) if tst_fields[2][0] == 0x30 else []
     hashed = None
+    imprint_oid = None
     for tag, content, _raw in imprint:
-        if tag == 0x04:
+        if tag == 0x30 and imprint_oid is None:
+            inner = _walk(content)
+            if inner and inner[0][0] == 0x06:
+                imprint_oid = _oid_str(inner[0][1])
+        elif tag == 0x04:
             hashed = content
-    if hashed is None:
+    if hashed is None or imprint_oid is None:
         raise ValueError("TSTInfo has no imprint")
     if tst_fields[3][0] != 0x02 or tst_fields[4][0] != 0x18:
         raise ValueError("TSTInfo serial or time is missing")
@@ -652,10 +723,12 @@ def _parse_response(token):
         else:
             raise ValueError("TSTInfo has an unexpected field")
     signer_fields = _one_seq(_first_seq(signer_blob))
-    signed_set, signature, content_type, message_digest = _signer_bits(signer_fields)
+    (signed_set, signature, content_type, message_digest,
+     digest_oid, signature_oid) = _signer_bits(signer_fields)
     return {
         "status": status,
         "hashed_message": hashed,
+        "imprint_oid": imprint_oid,
         "nonce": nonce_val,
         "policy": policy,
         "serial": serial,
@@ -666,6 +739,8 @@ def _parse_response(token):
         "signature": signature,
         "content_type": content_type,
         "message_digest": message_digest,
+        "digest_oid": digest_oid,
+        "signature_oid": signature_oid,
     }
 
 
@@ -680,13 +755,36 @@ def _first_seq(set_content):
 def _signer_bits(fields):
     signed_raw = None
     signature = None
+    digest_oid = None
+    signature_oid = None
+    seen_sid = False
     for tag, content, raw in fields:
+        # SignerIdentifier is either issuerAndSerialNumber (SEQUENCE) or
+        # subjectKeyIdentifier (context tag 0). The digest algorithm is the
+        # next SEQUENCE, and the signature algorithm is the SEQUENCE after
+        # the signed attributes.
+        if not seen_sid and tag in (0x30, 0x80):
+            seen_sid = True
+            continue
+        if tag == 0x30 and signed_raw is None and digest_oid is None:
+            inner = _walk(content)
+            if inner and inner[0][0] == 0x06:
+                digest_oid = _oid_str(inner[0][1])
+            continue
         if tag == 0xA0 and signed_raw is None:
             signed_raw = raw
-        elif tag == 0x04:
+            continue
+        if tag == 0x30 and signed_raw is not None and signature_oid is None:
+            inner = _walk(content)
+            if inner and inner[0][0] == 0x06:
+                signature_oid = _oid_str(inner[0][1])
+            continue
+        if tag == 0x04 and signature is None:
             signature = content
     if signed_raw is None or signature is None:
         raise ValueError("signer info has no signed attributes")
+    if digest_oid is None or signature_oid is None:
+        raise ValueError("signer info has no digest or signature algorithm")
     # The signature covers the same bytes with the SET tag, not the implicit tag.
     if signed_raw[0] != 0xA0:
         raise ValueError("signed attributes are not implicit")
@@ -708,7 +806,8 @@ def _signer_bits(fields):
             message_digest = inner[0][1]
     if content_type is None or message_digest is None:
         raise ValueError("signed attributes are missing content-type or message-digest")
-    return signed_set, signature, content_type, message_digest
+    return (signed_set, signature, content_type, message_digest,
+            digest_oid, signature_oid)
 
 
 def _value_of(tlv):
@@ -716,7 +815,7 @@ def _value_of(tlv):
     return content
 
 
-def _signer_cert(parsed):
+def _certificates(parsed):
     from cryptography import x509
     certs = []
     for tag, content, raw in _walk(parsed["certificates"]):
@@ -725,22 +824,36 @@ def _signer_cert(parsed):
                 certs.append(x509.load_der_x509_certificate(raw))
             except Exception:
                 continue
+    return certs
+
+
+def _signer_cert(certs, parsed):
+    digest_oid = parsed.get("digest_oid")
     for cert in certs:
-        if _signature_ok(cert, parsed["signed_set"], parsed["signature"]):
+        if _signature_ok(cert, parsed["signed_set"], parsed["signature"], digest_oid):
             return cert
     return certs[0] if len(certs) == 1 else None
 
 
-def _signature_ok(cert, signed_set, signature):
+def _signature_ok(cert, signed_set, signature, digest_oid):
     from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+    if _hash_for(digest_oid) is None:
+        return False
     pub = cert.public_key()
     try:
         if isinstance(pub, ec.EllipticCurvePublicKey):
-            pub.verify(signature, signed_set, ec.ECDSA(hashes.SHA256()))
+            pub.verify(signature, signed_set, ec.ECDSA(_hash_for(digest_oid)))
         elif isinstance(pub, rsa.RSAPublicKey):
-            pub.verify(signature, signed_set, padding.PKCS1v15(), hashes.SHA256())
+            try:
+                digest = _hash_for(digest_oid)
+                pub.verify(signature, signed_set, padding.PKCS1v15(), digest)
+            except InvalidSignature:
+                pub.verify(
+                    signature, signed_set,
+                    padding.PSS(mgf=padding.MGF1(_hash_for(digest_oid)),
+                                salt_length=padding.PSS.AUTO),
+                    _hash_for(digest_oid))
         else:
             return False
     except InvalidSignature:
@@ -759,11 +872,38 @@ def _has_time_stamping_eku(cert):
     return TIME_STAMPING_EKU in {oid.dotted_string for oid in ext}
 
 
-def _time_inside_cert(cert, gen_time):
+def _parse_gen_time(gen_time):
+    """UTC GeneralizedTime, with an optional fraction of a second.
+
+    RFC 3161 requires the token time to be UTC. ``20261006120000Z`` and
+    ``20261006120000.123Z`` are both accepted. A local offset is not.
+    """
     from datetime import datetime, timezone
+    if not isinstance(gen_time, str) or not gen_time.endswith("Z"):
+        return None
+    body = gen_time[:-1]
+    if "." in body:
+        whole, frac = body.split(".", 1)
+        if not frac.isdigit() or len(frac) > 12:
+            return None
+    else:
+        whole, frac = body, ""
+    if len(whole) != 14 or not whole.isdigit():
+        return None
     try:
-        when = datetime.strptime(gen_time, "%Y%m%d%H%M%SZ").replace(tzinfo=timezone.utc)
+        when = datetime.strptime(whole, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
     except ValueError:
+        return None
+    if frac:
+        micros = int((frac + "000000")[:6])
+        when = when.replace(microsecond=micros)
+    return when
+
+
+def _time_inside_cert(cert, gen_time):
+    from datetime import timezone
+    when = _parse_gen_time(gen_time)
+    if when is None:
         return False
     start = getattr(cert, "not_valid_before_utc", None)
     end = getattr(cert, "not_valid_after_utc", None)
@@ -796,29 +936,42 @@ def _load_roots(roots_pem):
     return out
 
 
-def _chains_to_roots(cert, roots_pem):
-    from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+def _issued_by(child, issuer):
+    try:
+        child.verify_directly_issued_by(issuer)
+    except Exception:
+        return False
+    return True
+
+
+def _chains_to_roots(cert, roots_pem, extras=()):
+    """True when ``cert`` chains to a configured root.
+
+    Intermediates come from the token. A certificate in the bag is not a
+    trust anchor: the walk stops only at a root in ``roots_pem``. The
+    signature hash is whatever the certificate says, so a SHA-384
+    intermediate is not rejected for failing a SHA-256 check.
+    """
     roots = _load_roots(roots_pem)
     if not roots:
         return False
-    for root in roots:
-        if cert.issuer.public_bytes() != root.subject.public_bytes():
-            continue
-        pub = root.public_key()
-        try:
-            if isinstance(pub, ec.EllipticCurvePublicKey):
-                pub.verify(cert.signature, cert.tbs_certificate_bytes,
-                           ec.ECDSA(hashes.SHA256()))
-            elif isinstance(pub, rsa.RSAPublicKey):
-                pub.verify(cert.signature, cert.tbs_certificate_bytes,
-                           padding.PKCS1v15(), hashes.SHA256())
-            else:
-                continue
-        except InvalidSignature:
-            continue
-        except Exception:
-            continue
-        return True
+    pool = [item for item in extras if item is not cert]
+    current = cert
+    seen = set()
+    for _step in range(8):
+        ident = (current.subject.public_bytes(), current.serial_number)
+        if ident in seen:
+            return False
+        seen.add(ident)
+        for root in roots:
+            if _issued_by(current, root):
+                return True
+        issuer = None
+        for candidate in pool:
+            if _issued_by(current, candidate):
+                issuer = candidate
+                break
+        if issuer is None:
+            return False
+        current = issuer
     return False

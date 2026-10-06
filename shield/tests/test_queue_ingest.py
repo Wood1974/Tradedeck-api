@@ -34,7 +34,7 @@ android_fixtures = pytest.importorskip(
     "test_android_attest", reason="cryptography is not installed")
 from cryptography import x509  # noqa: E402
 from cryptography.hazmat.primitives import hashes  # noqa: E402
-from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ec, rsa  # noqa: E402
 from cryptography.hazmat.primitives.serialization import (  # noqa: E402
     Encoding, NoEncryption, PrivateFormat, load_pem_public_key)
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID  # noqa: E402
@@ -160,8 +160,8 @@ def _seed_android(store):
     return raw
 
 
-def _seed_ticket(store, key_raw, *, platform="ios", actor=None):
-    store.rows.setdefault("job_tickets", []).append({
+def _seed_ticket(store, key_raw, *, platform="ios", actor=None, clock=TICKET_CLOCK):
+    row = {
         "id": "ticket-1",
         "tenant_id": api.TENANT_A,
         "record_id": api.RECORD_A,
@@ -169,7 +169,10 @@ def _seed_ticket(store, key_raw, *, platform="ios", actor=None):
         "platform": platform,
         "actor_id": actor if actor is not None else _actor(store),
         "key_id": _key_b64(key_raw),
-    })
+    }
+    if clock is not None:
+        row["ticket_clock"] = dict(clock)
+    store.rows.setdefault("job_tickets", []).append(row)
 
 
 def _record(checkpoint_id, prev, *, wall, mono, boot_id=BOOT, flags=0,
@@ -544,6 +547,82 @@ class TestAndroid:
             pem=SIGNING_PEM)["ok"] is True
 
 
+class TestTheStoredClock:
+    def test_a_substituted_clock_does_not_relabel_the_batch(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = api.client_for(flask_app, store, tenant_api, api.TENANT_A, keys)
+        key_raw = _seed_ios(store)
+        _seed_ticket(store, key_raw)
+        records = _chain([_consistent("cp-1")])
+        # This observation would make the same photo UNVERIFIED TIME if the
+        # request were allowed to replace the clock the ticket sealed.
+        lie = {"wall_time_ms": WALL, "monotonic_ms": MONO, "boot_id": "other-boot"}
+        got = _post(
+            client,
+            _captures(records, [_ios_assertion(records[0]["record_hash"], 1)]),
+            attestation_key_id=_key_b64(key_raw),
+            ticket_clock=lie)
+        assert got.status_code == 201, got.get_json()
+        body = got.get_json()
+        assert body["time_labels"][0]["verdict"] == "CONSISTENT"
+        assert _batches(store)[0]["event_data"]["ticket_clock"]["boot_id"] == BOOT
+        assert body["receipt"]["signed"]["head_hash"] == body["custody_head_hash"]
+
+    def test_a_ticket_with_no_stored_clock_stores_nothing(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = api.client_for(flask_app, store, tenant_api, api.TENANT_A, keys)
+        key_raw = _seed_ios(store)
+        _seed_ticket(store, key_raw, clock=None)
+        records = _chain([_consistent("cp-1")])
+        got = _post(
+            client,
+            _captures(records, [_ios_assertion(records[0]["record_hash"], 1)]),
+            attestation_key_id=_key_b64(key_raw))
+        assert got.status_code == 409, got.get_json()
+        assert _receipts(store) == []
+        assert _batches(store) == []
+        assert store.rows["attested_keys"][0]["sign_count"] == 0
+
+    def test_sending_the_same_batch_again_returns_the_receipt(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = api.client_for(flask_app, store, tenant_api, api.TENANT_A, keys)
+        key_raw = _seed_ios(store)
+        _seed_ticket(store, key_raw)
+        records = _chain([_consistent("cp-1")])
+        captures = _captures(records, [_ios_assertion(records[0]["record_hash"], 1)])
+        first = _post(client, captures, attestation_key_id=_key_b64(key_raw))
+        assert first.status_code == 201, first.get_json()
+        again = _post(client, captures, attestation_key_id=_key_b64(key_raw))
+        assert again.status_code == 200, again.get_json()
+        body = again.get_json()
+        assert body["replayed"] is True
+        assert body["phone_chain_head"] == first.get_json()["phone_chain_head"]
+        assert body["custody_head_hash"] == first.get_json()["custody_head_hash"]
+        assert len(_receipts(store)) == 1
+        assert len(_batches(store)) == 1
+        assert store.rows["attested_keys"][0]["sign_count"] == 1
+
+    def test_a_receipt_that_does_not_store_does_not_burn_the_counter(
+            self, app_and_db, monkeypatch):
+        flask_app, store, keys, tenant_api = app_and_db
+
+        def boom(_row):
+            raise RuntimeError("disk")
+
+        monkeypatch.setattr(tenant_api.shield_db, "insert_receipt", boom)
+        client = api.client_for(flask_app, store, tenant_api, api.TENANT_A, keys)
+        key_raw = _seed_ios(store)
+        _seed_ticket(store, key_raw)
+        records = _chain([_consistent("cp-1")])
+        got = _post(
+            client,
+            _captures(records, [_ios_assertion(records[0]["record_hash"], 1)]),
+            attestation_key_id=_key_b64(key_raw))
+        assert got.status_code == 500, got.get_json()
+        assert _receipts(store) == []
+        assert store.rows["attested_keys"][0]["sign_count"] == 0
+
+
 class TestBatchCap:
     def test_the_prefix_is_kept_and_the_rest_is_the_next_batch(
             self, app_and_db, monkeypatch):
@@ -755,6 +834,63 @@ class TestTimestamp:
         assert out["status"] == "missing"
         assert out["forged"] is False
         assert out["token_b64"] is None
+
+
+def _cert(subject, subject_key, issuer, issuer_key, *, ca, hash_alg=None, extra=()):
+    now = datetime.now(timezone.utc)
+    name = lambda cn: x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    builder = (x509.CertificateBuilder()
+               .subject_name(name(subject))
+               .issuer_name(name(issuer))
+               .public_key(subject_key.public_key())
+               .serial_number(x509.random_serial_number())
+               .not_valid_before((now - timedelta(days=1)).replace(tzinfo=None))
+               .not_valid_after((now + timedelta(days=30)).replace(tzinfo=None))
+               .add_extension(x509.BasicConstraints(ca=ca, path_length=None),
+                              critical=True))
+    for ext, critical in extra:
+        builder = builder.add_extension(ext, critical)
+    return builder.sign(issuer_key, hash_alg or hashes.SHA256())
+
+
+class TestARealTimestampShape:
+    def test_sha384_and_an_intermediate_verify_and_a_gap_does_not(self):
+        head = "ab" * 32
+        root_key = ec.generate_private_key(ec.SECP256R1())
+        mid_key = ec.generate_private_key(ec.SECP256R1())
+        leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        root = _cert("Root", root_key, "Root", root_key, ca=True)
+        mid = _cert("Mid", mid_key, "Root", root_key, ca=True, hash_alg=hashes.SHA384())
+        leaf = _cert(
+            "TSA", leaf_key, "Mid", mid_key, ca=False, hash_alg=hashes.SHA384(),
+            extra=((x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), True),))
+        pem = root.public_bytes(Encoding.PEM).decode()
+        token = tsa.mint_token(
+            hashed_message=bytes.fromhex(head), nonce=7, key=leaf_key, cert=leaf,
+            extra_certs=(mid,), hash_name="sha384",
+            gen_time="20261006120000.5Z")
+        checked = tsa.verify_token(token, head_hash=head, roots_pem=pem, nonce=7)
+        assert checked["ok"] is True, checked
+        assert checked["gen_time"] == "20261006120000.5Z"
+
+        gap = tsa.mint_token(
+            hashed_message=bytes.fromhex(head), nonce=7, key=leaf_key, cert=leaf,
+            hash_name="sha384", gen_time="20261006120000.5Z")
+        refused = tsa.verify_token(gap, head_hash=head, roots_pem=pem, nonce=7)
+        assert refused["ok"] is False
+
+        wrong_imprint = tsa.mint_token(
+            hashed_message=bytes.fromhex(head), nonce=7, key=leaf_key, cert=leaf,
+            extra_certs=(mid,), hash_name="sha384", imprint_oid=tsa.SHA384_OID)
+        refused_oid = tsa.verify_token(
+            wrong_imprint, head_hash=head, roots_pem=pem, nonce=7)
+        assert refused_oid["ok"] is False
+
+        local = tsa.mint_token(
+            hashed_message=bytes.fromhex(head), nonce=7, key=leaf_key, cert=leaf,
+            extra_certs=(mid,), hash_name="sha384", gen_time="20261006120000+0000")
+        assert tsa.verify_token(
+            local, head_hash=head, roots_pem=pem, nonce=7)["ok"] is False
 
 
 class TestTheManifest:

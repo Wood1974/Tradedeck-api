@@ -115,6 +115,23 @@ def insert_tsa_token(row):
     return _tsa_tokens().insert(dict(row)).execute()
 
 
+def find_receipt_by_phone_head(tenant_id, record_id, phone_chain_head):
+    """The receipt whose phone-chain head is this one, or None.
+
+    A phone that already received a receipt, and lost the response, sends
+    the same batch again. This is how the route finds that receipt without
+    accepting the batch a second time. Both tenant and record are required.
+    """
+    res = (_receipts().select("*")
+           .eq("tenant_id", tenant_id)
+           .eq("record_id", record_id)
+           .eq("phone_chain_head", phone_chain_head)
+           .limit(1)
+           .execute())
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
 def find_tsa_token(tenant_id, receipt_id):
     """The timestamp row for one receipt in one tenant, or None."""
     res = (_tsa_tokens().select("*")

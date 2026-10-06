@@ -61,7 +61,10 @@ create table if not exists shield.receipts (
     server_signature   text not null,
     created_at         timestamptz not null default now(),
     unique (record_id, batch_index),
-    unique (head_hash)
+    unique (head_hash),
+    -- The same phone-chain head is one batch. A second insert of it is a
+    -- replay, not a second receipt.
+    unique (record_id, phone_chain_head)
 );
 
 create index if not exists shield_receipts_tenant_idx
