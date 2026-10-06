@@ -722,6 +722,24 @@ def inv_capture_flags_never_flip_time_verdict():
     verified = capture_record.verify_chain([sealed], prev)
     if verified["verdict"] != capture_record.VERDICT_INTACT:
         return False, "a record that honestly carries flags verifies as tampered"
+
+    # A monotonic clock does not run backward on one boot. Matching the wall
+    # clock to that backward step must not come out CONSISTENT, and it must
+    # not be accused as a device-clock mismatch.
+    backward = {
+        "wall_time_ms": ticket["wall_time_ms"] - 1,
+        "monotonic_ms": ticket["monotonic_ms"] - 1,
+        "boot_count": ticket["boot_count"],
+        "flags": flags,
+    }
+    back = time_audit.assess(ticket, backward)
+    if back["verdict"] != time_audit.VERDICT_UNVERIFIED_TIME:
+        return False, ("a monotonic clock that ran backward is "
+                       f"{back['verdict']!r}, not unverified time")
+    if time_audit.VERDICT_DEVICE_CLOCK_MISMATCH in back["labels"]:
+        return False, "a backward monotonic clock was labeled a device-clock mismatch"
+    if time_audit.assess(ticket, dict(backward, flags=0))["verdict"] != back["verdict"]:
+        return False, "clearing the flags changed a backward-clock label"
     return True, "flags are carried in the bytes and never move the time label"
 
 
