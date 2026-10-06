@@ -383,15 +383,19 @@ that changing one does not move the other.
 |---|---|
 | Boot id or boot count differs between ticket and photo, or a boot identifier is present on only one of them, or neither observation has a boot identity | **UNVERIFIED TIME** |
 | A wall or monotonic reading the comparison needs is missing, on the same boot | **UNVERIFIED TIME** |
-| Same boot, and \|wall − (ticket wall + monotonic elapsed)\| > 120 s | **DEVICE CLOCK MISMATCH** |
+| Same boot, and monotonic time on the photo is earlier than monotonic time on the ticket | **UNVERIFIED TIME**. The monotonic clock does not run backward on one boot, so there is no interval. A wall clock moved by the same amount does not make the interval reappear. This is not a device-clock mismatch and not a forgery finding |
+| Same boot, monotonic elapsed is zero or positive, and \|wall − (ticket wall + monotonic elapsed)\| > 120 s | **DEVICE CLOCK MISMATCH** |
 | GNSS time is present and \|GNSS − wall\| > 120 s | **DEVICE CLOCK MISMATCH** |
 | GNSS time is absent | No extra label. The monotonic result stands, and the report says GNSS was absent |
 | Same boot, difference ≤ 120 s, and GNSS absent or within 120 s of the wall | **CONSISTENT** |
 
 Monotonic elapsed is `photo.monotonic_ms − ticket.monotonic_ms`. It is only
-computed when the boot is the same. A reboot does not become a clock
-mismatch just because the wall clock also moved: there is no interval to
-check. UNVERIFIED TIME is not TAMPERED. The bytes can still be INTACT.
+computed when the boot is the same and the elapsed time is not negative.
+A reboot does not become a clock mismatch just because the wall clock also
+moved: there is no interval to check. A monotonic clock that moved backward
+on the same boot is the same kind of gap: the interval is not a duration,
+even if the wall clock was set so the absolute formula would come out even.
+UNVERIFIED TIME is not TAMPERED. The bytes can still be INTACT.
 
 GNSS is compared to the photo's wall clock, not to the ticket. If the boot
 changed **and** GNSS disagrees with the wall clock, both labels apply. The
