@@ -24,10 +24,13 @@ public half is exportable so an evidence package can carry it.
 
 The phone signature is not produced here. The existing verifiers check it.
 They already bind ``challenge || payload_sha256``. Genesis uses a fixed
-challenge, ``shield-genesis-v1``, and puts the raw 32-byte ticket hash in
-the payload position. A capture assertion cannot be replayed as a ticket,
-and a ticket assertion cannot be replayed as a photograph: the challenge
-is not a capture nonce.
+challenge, ``shield-genesis-v1``. The 32-byte payload is
+``SHA256(ticket_hash_raw || canonical(ticket_clock))``, not the ticket
+hash alone. The clock is the phone's wall time, monotonic time, and boot
+identity at the moment it countersigns. A later batch cannot substitute
+a different baseline and still match this signature. A capture assertion
+cannot be replayed as a ticket, and a ticket assertion cannot be replayed
+as a photograph: the challenge is not a capture nonce.
 
 Roughtime is a field, not a client. The flag defaults off. When the outside
 clock is absent — the flag, a missing reading, a reading that is not a
@@ -55,6 +58,7 @@ import re
 import attestation
 import capture_record
 import config
+import time_audit
 
 log = logging.getLogger(__name__)
 
@@ -187,16 +191,56 @@ def ticket_hash(ticket) -> str:
     return hashlib.sha256(canonical(ticket)).hexdigest()
 
 
-def hardware_binding(ticket_hash_hex):
+def normalize_clock(observation):
+    """The phone clocks fixed when the ticket is countersigned.
+
+    The signed object is the fields ``time_audit`` reads and nothing else:
+    ``wall_time_ms``, ``monotonic_ms``, and ``boot_id`` and/or ``boot_count``.
+    A float, a boolean, a missing wall or monotonic reading, or a clock with
+    no boot identity is refused. Extra keys are dropped, so they are not
+    signed and they are not stored.
+    """
+    if not isinstance(observation, dict):
+        raise ValueError("ticket_clock must be an object")
+    clock = {}
+    for key in ("wall_time_ms", "monotonic_ms", "boot_count"):
+        if key in observation and observation[key] is not None:
+            clock[key] = observation[key]
+    boot_id = observation.get("boot_id")
+    if isinstance(boot_id, str) and boot_id != "":
+        clock["boot_id"] = boot_id
+    elif boot_id not in (None, ""):
+        raise ValueError("boot_id must be a non-empty string when it is present")
+    if "wall_time_ms" not in clock or "monotonic_ms" not in clock:
+        raise ValueError("ticket_clock needs wall_time_ms and monotonic_ms")
+    if "boot_id" not in clock and "boot_count" not in clock:
+        raise ValueError("ticket_clock needs a boot_id or a boot_count")
+    # A float or a boolean is a bad clock, not a time label.
+    time_audit.assess(clock, dict(clock))
+    signed = {}
+    for key in ("boot_count", "boot_id", "monotonic_ms", "wall_time_ms"):
+        if key in clock:
+            signed[key] = clock[key]
+    capture_record.canonical_whole(signed)
+    return signed
+
+
+def hardware_binding(ticket_hash_hex, ticket_clock):
     """``(challenge, payload_sha256)`` for the existing signature verifiers.
 
-    ``payload_sha256`` is the raw ticket hash, 32 bytes, not the hex text.
-    The verifiers check ``challenge || payload_sha256`` and are not modified.
+    ``payload_sha256`` is 32 bytes:
+    ``SHA256(ticket_hash_raw || canonical(ticket_clock))``. It is not the
+    ticket hash by itself. The verifiers check ``challenge || payload`` and
+    are not modified. The clock has to be the one the phone measured while
+    it still had a signal; a batch that arrives later cannot pick a new one.
     """
     if not isinstance(ticket_hash_hex, str) or _SHA256_HEX.fullmatch(
             ticket_hash_hex) is None:
         raise ValueError("ticket hash must be a 64-character lowercase hex SHA-256")
-    return GENESIS_CHALLENGE, bytes.fromhex(ticket_hash_hex)
+    signed = normalize_clock(ticket_clock)
+    raw_clock = capture_record.canonical_whole(signed)
+    payload = hashlib.sha256(bytes.fromhex(ticket_hash_hex) + raw_clock).digest()
+    return GENESIS_CHALLENGE, payload
 
 
 def checkpoint_list_hash(rows) -> str:

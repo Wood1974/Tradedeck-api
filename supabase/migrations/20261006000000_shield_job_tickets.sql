@@ -38,6 +38,10 @@ create table if not exists shield.job_tickets (
     -- Genesis still completes; absence is the recorded fact.
     roughtime_ms            bigint check (roughtime_ms is null or roughtime_ms >= 0),
     ticket_json             jsonb not null,
+    -- Phone clocks at the moment the hardware key countersigned the ticket.
+    -- The signature covers these bytes. A later batch cannot substitute
+    -- another baseline and still match.
+    ticket_clock            jsonb not null check (jsonb_typeof(ticket_clock) = 'object'),
     server_signature        text not null,
     hardware_signature      text not null,
     play_integrity_status   text not null
@@ -61,6 +65,11 @@ comment on table shield.job_tickets is
 comment on column shield.job_tickets.ticket_hash is
   'SHA-256 of the canonical ticket JSON. The capture record stores this '
   'as ticket_id, and the first on-phone record uses it as prev_hash.';
+
+comment on column shield.job_tickets.ticket_clock is
+  'Phone wall time, monotonic time, and boot identity when the ticket was '
+  'countersigned. Covered by the hardware signature. The offline batch '
+  'reads this row. It does not accept a substitute clock.';
 
 comment on column shield.job_tickets.play_integrity_status is
   'One Play Integrity reading for the job. absent on every iOS row, and '

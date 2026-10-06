@@ -722,6 +722,24 @@ def inv_capture_flags_never_flip_time_verdict():
     verified = capture_record.verify_chain([sealed], prev)
     if verified["verdict"] != capture_record.VERDICT_INTACT:
         return False, "a record that honestly carries flags verifies as tampered"
+
+    # A monotonic clock does not run backward on one boot. Matching the wall
+    # clock to that backward step must not come out CONSISTENT, and it must
+    # not be accused as a device-clock mismatch.
+    backward = {
+        "wall_time_ms": ticket["wall_time_ms"] - 1,
+        "monotonic_ms": ticket["monotonic_ms"] - 1,
+        "boot_count": ticket["boot_count"],
+        "flags": flags,
+    }
+    back = time_audit.assess(ticket, backward)
+    if back["verdict"] != time_audit.VERDICT_UNVERIFIED_TIME:
+        return False, ("a monotonic clock that ran backward is "
+                       f"{back['verdict']!r}, not unverified time")
+    if time_audit.VERDICT_DEVICE_CLOCK_MISMATCH in back["labels"]:
+        return False, "a backward monotonic clock was labeled a device-clock mismatch"
+    if time_audit.assess(ticket, dict(backward, flags=0))["verdict"] != back["verdict"]:
+        return False, "clearing the flags changed a backward-clock label"
     return True, "flags are carried in the bytes and never move the time label"
 
 
@@ -1827,6 +1845,7 @@ def inv_job_ticket_is_a_database_row():
         ("revoke all on shield.job_tickets from anon, authenticated",
          "the browser roles can reach job tickets"),
         ("hardware_signature", "a row can be stored with no hardware signature"),
+        ("ticket_clock", "the phone clock at genesis is not stored on the ticket"),
     ):
         if needle not in sql:
             return False, why
@@ -1853,6 +1872,17 @@ def inv_job_ticket_is_a_database_row():
     if "verified=False" not in play or "verified=True" in play:
         return False, ("genesis treats a Play Integrity body as verified; "
                        "this release does not call Google")
+    if "ticket_clock" not in seal or "normalize_clock" not in seal:
+        return False, "the seal route does not bind the phone clock"
+    sample_hash = "ab" * 32
+    try:
+        _challenge, payload = ticket.hardware_binding(
+            sample_hash, {"wall_time_ms": 1, "monotonic_ms": 2, "boot_count": 1})
+    except Exception as exc:
+        return False, f"the genesis binding refused a phone clock ({exc})"
+    if payload == bytes.fromhex(sample_hash):
+        return False, ("the genesis signature covers only the ticket hash, "
+                       "so the phone clock can be substituted later")
 
     import ledger
     if ledger.CHAIN_VERSION != 2:

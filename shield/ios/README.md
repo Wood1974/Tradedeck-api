@@ -104,13 +104,19 @@ already on file. The Swift for this call is not in this tree. The contract is:
 1. `POST /shield/v2/records/<id>/genesis` with JSON `{ "platform": "ios" }`.
    The response is the ticket, `ticket_hash`, and `server_signature`. Nothing
    is stored yet.
-2. Sign the ticket hash with `generateAssertion`. `clientData` is the UTF-8
-   bytes of `shield-genesis-v1` followed by the raw 32-byte ticket hash (not
-   the hex text). Pass `SHA256(clientData)` to `generateAssertion`, the same
-   way a later capture passes `SHA256(challenge || SHA256(photo))`.
-3. `POST` the same path again with `platform`, `ticket`, `server_signature`,
-   `assertion` (base64), and `attestation_key_id` (base64). A missing or
-   invalid signature is refused and nothing is stored.
+2. Read the phone clocks now (`wall_time_ms`, `monotonic_ms`, and
+   `boot_id` or the boot count). Sign with `generateAssertion`.
+   `clientData` is the UTF-8 bytes of `shield-genesis-v1` followed by
+   SHA-256 of the raw 32-byte ticket hash concatenated with the canonical
+   JSON of that clock (sorted keys, tight separators). Not the hex text,
+   and not the bare ticket hash. Pass `SHA256(clientData)` to
+   `generateAssertion`, the same way a later capture passes
+   `SHA256(challenge || SHA256(photo))`. The server stores this clock.
+   A later batch cannot replace it.
+3. `POST` the same path again with `platform`, `ticket`, `ticket_clock`,
+   `server_signature`, `assertion` (base64), and `attestation_key_id`
+   (base64). A missing or invalid signature, or a clock that is not the
+   one that was signed, is refused and nothing is stored.
 4. Keep `ticket_hash`. The first offline capture record uses it as `ticket_id`
    and as `prev_hash`.
 

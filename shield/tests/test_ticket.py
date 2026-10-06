@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import attestation  # noqa: E402
+import capture_record  # noqa: E402
 import ledger  # noqa: E402
 import ticket  # noqa: E402
 
@@ -121,12 +122,31 @@ def test_a_float_is_rejected():
         ticket.canonical({**_sample(), "expires_at_ms": True})
 
 
+CLOCK = {
+    "wall_time_ms": 1_700_000_000_000,
+    "monotonic_ms": 5_000_000,
+    "boot_id": "boot-a",
+    "boot_count": 4,
+    "flags": 7,
+}
+
+
 def test_ticket_hash_is_sha256_of_those_bytes():
     built = _sample()
     digest = hashlib.sha256(CANONICAL.encode()).hexdigest()
     assert ticket.ticket_hash(built) == digest
-    assert ticket.hardware_binding(digest) == (
-        ticket.GENESIS_CHALLENGE, bytes.fromhex(digest))
+    challenge, payload = ticket.hardware_binding(digest, CLOCK)
+    assert challenge == ticket.GENESIS_CHALLENGE
+    # The payload is not the ticket hash. A batch cannot swap the clock
+    # the phone measured when it countersigned.
+    assert payload != bytes.fromhex(digest)
+    signed_clock = ticket.normalize_clock(CLOCK)
+    assert "flags" not in signed_clock
+    raw_clock = capture_record.canonical_whole(signed_clock)
+    assert payload == hashlib.sha256(bytes.fromhex(digest) + raw_clock).digest()
+    swapped = dict(CLOCK)
+    swapped["wall_time_ms"] = CLOCK["wall_time_ms"] + 1
+    assert ticket.hardware_binding(digest, swapped)[1] != payload
 
 
 def test_checkpoint_list_hash_is_order_independent_and_ignores_status():
@@ -272,31 +292,42 @@ def test_roughtime_off_or_absent_leaves_the_field_out():
 # ------------------------------------------------------- the existing keys --
 def test_an_ios_assertion_over_the_ticket_hash_verifies():
     """The capture verifier, unchanged, over genesis client data."""
-    digest = bytes.fromhex(ticket.ticket_hash(_sample()))
+    digest_hex = ticket.ticket_hash(_sample())
+    challenge, payload = ticket.hardware_binding(digest_hex, CLOCK)
     blob = attest_fixtures.build_assertion(
-        challenge=ticket.GENESIS_CHALLENGE, payload_sha256=digest, counter=1)
+        challenge=challenge, payload_sha256=payload, counter=1)
     out = attest_fixtures.run_assertion(
-        blob, challenge=ticket.GENESIS_CHALLENGE, payload_sha256=digest)
+        blob, challenge=challenge, payload_sha256=payload)
     assert out["verified"] is True, out["reason"]
+    # A signature over the bare ticket hash is not this contract.
+    bare = attest_fixtures.build_assertion(
+        challenge=challenge, payload_sha256=bytes.fromhex(digest_hex), counter=1)
+    assert attest_fixtures.run_assertion(
+        bare, challenge=challenge, payload_sha256=payload)["verified"] is False
     # A capture assertion is not a ticket signature.
     photo = attest_fixtures.build_assertion(
         challenge="some-capture-nonce",
         payload_sha256=hashlib.sha256(b"photo").digest(), counter=1)
     refused = attest_fixtures.run_assertion(
-        photo, challenge=ticket.GENESIS_CHALLENGE, payload_sha256=digest)
+        photo, challenge=challenge, payload_sha256=payload)
     assert refused["verified"] is False
 
 
 def test_an_android_signature_over_the_ticket_hash_verifies():
-    digest = bytes.fromhex(ticket.ticket_hash(_sample()))
-    signature = android_fixtures.sign(ticket.GENESIS_CHALLENGE.encode() + digest)
+    digest_hex = ticket.ticket_hash(_sample())
+    challenge, payload = ticket.hardware_binding(digest_hex, CLOCK)
+    signature = android_fixtures.sign(challenge.encode() + payload)
     out = android_fixtures.android_attest.verify_signature(
-        signature, challenge=ticket.GENESIS_CHALLENGE, payload_sha256=digest,
+        signature, challenge=challenge, payload_sha256=payload,
         public_key=android_fixtures.DEVICE_PUB)
     assert out["verified"] is True, out["reason"]
+    bare = android_fixtures.sign(challenge.encode() + bytes.fromhex(digest_hex))
+    assert android_fixtures.android_attest.verify_signature(
+        bare, challenge=challenge, payload_sha256=payload,
+        public_key=android_fixtures.DEVICE_PUB)["verified"] is False
     capture = android_fixtures.sign(b"nonce" + hashlib.sha256(b"photo").digest())
     refused = android_fixtures.android_attest.verify_signature(
-        capture, challenge=ticket.GENESIS_CHALLENGE, payload_sha256=digest,
+        capture, challenge=challenge, payload_sha256=payload,
         public_key=android_fixtures.DEVICE_PUB)
     assert refused["verified"] is False
 
@@ -388,12 +419,18 @@ def _offer(client, platform="ios", **extra):
     return client.post(f"/shield/v2/records/{api.RECORD_A}/genesis", json=body)
 
 
-def _ios_assertion(ticket_hash_hex, counter=1):
+def _ios_assertion(ticket_hash_hex, counter=1, clock=None):
+    challenge, payload = ticket.hardware_binding(
+        ticket_hash_hex, CLOCK if clock is None else clock)
     blob = attest_fixtures.build_assertion(
-        challenge=ticket.GENESIS_CHALLENGE,
-        payload_sha256=bytes.fromhex(ticket_hash_hex),
-        counter=counter)
+        challenge=challenge, payload_sha256=payload, counter=counter)
     return base64.b64encode(blob).decode()
+
+
+def _android_signature(ticket_hash_hex, clock=None):
+    challenge, payload = ticket.hardware_binding(
+        ticket_hash_hex, CLOCK if clock is None else clock)
+    return android_fixtures.sign(challenge.encode() + payload)
 
 
 def _seal_body(offer, assertion, key_id, platform="ios", **extra):
@@ -403,6 +440,7 @@ def _seal_body(offer, assertion, key_id, platform="ios", **extra):
         "server_signature": offer["server_signature"],
         "assertion": assertion,
         "attestation_key_id": base64.b64encode(key_id).decode(),
+        "ticket_clock": CLOCK,
     }
     body.update(extra)
     return body
@@ -452,6 +490,8 @@ class TestGenesisRoute:
         assert len(rows) == 1
         assert rows[0]["ticket_hash"] == offer["ticket_hash"]
         assert rows[0]["hardware_signature"] == assertion
+        assert rows[0]["ticket_clock"] == ticket.normalize_clock(CLOCK)
+        assert body["ticket_clock"] == rows[0]["ticket_clock"]
         assert ticket.ticket_hash(rows[0]["ticket_json"]) == rows[0]["ticket_hash"]
         assert store.rows["attested_keys"][0]["sign_count"] == 1
         # One ticket. A second seal does not write another row.
@@ -480,6 +520,30 @@ class TestGenesisRoute:
             base64.b64encode(b"not-an-assertion").decode(),
             key_id)
         got = client.post(f"/shield/v2/records/{api.RECORD_A}/genesis", json=bad)
+        assert got.status_code == 422
+        assert _rows(store) == []
+        assert store.rows["attested_keys"][0]["sign_count"] == 0
+
+    def test_a_substituted_clock_stores_nothing(self, app_and_db):
+        flask_app, store, keys, _tenant_api = app_and_db
+        client = api.client_for(flask_app, store, None, api.TENANT_A, keys)
+        key_id = _seed_ios(store)
+        offer = _offer(client).get_json()
+        signed_for = dict(CLOCK)
+        sent = dict(CLOCK)
+        sent["wall_time_ms"] = CLOCK["wall_time_ms"] + 60_000
+        got = client.post(
+            f"/shield/v2/records/{api.RECORD_A}/genesis",
+            json=_seal_body(
+                offer, _ios_assertion(offer["ticket_hash"], clock=signed_for),
+                key_id, ticket_clock=sent))
+        assert got.status_code == 422, got.get_json()
+        assert _rows(store) == []
+        assert store.rows["attested_keys"][0]["sign_count"] == 0
+
+        missing = _seal_body(offer, _ios_assertion(offer["ticket_hash"]), key_id)
+        del missing["ticket_clock"]
+        got = client.post(f"/shield/v2/records/{api.RECORD_A}/genesis", json=missing)
         assert got.status_code == 422
         assert _rows(store) == []
         assert store.rows["attested_keys"][0]["sign_count"] == 0
@@ -579,8 +643,7 @@ class TestGenesisRoute:
         client = api.client_for(flask_app, store, None, api.TENANT_A, keys)
         key_id = _seed_android(store)
         offer = _offer(client, platform="android").get_json()
-        raw = bytes.fromhex(offer["ticket_hash"])
-        signature = android_fixtures.sign(ticket.GENESIS_CHALLENGE.encode() + raw)
+        signature = _android_signature(offer["ticket_hash"])
         # No token: the row records absence, which is not a fail.
         got = client.post(
             f"/shield/v2/records/{api.RECORD_A}/genesis",
@@ -609,8 +672,7 @@ class TestGenesisRoute:
         offered = client.post(
             f"/shield/v2/records/{other_id}/genesis",
             json={"platform": "android"}).get_json()
-        raw = bytes.fromhex(offered["ticket_hash"])
-        signature = android_fixtures.sign(ticket.GENESIS_CHALLENGE.encode() + raw)
+        signature = _android_signature(offered["ticket_hash"])
         strong = {
             "deviceIntegrity": {"deviceRecognitionVerdict": [
                 attestation.STRONG_INTEGRITY]},

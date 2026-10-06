@@ -10,16 +10,22 @@ The rules, in the order a single label is chosen
    observation is missing a clock reading the comparison needs: the monotonic
    interval does not exist, so the label is UNVERIFIED TIME. A reboot is not
    tampering. The bytes can still be intact.
-2. Same boot, and the wall clock disagrees with "ticket wall time plus
+2. Same boot, and monotonic time on the photo is earlier than monotonic
+   time on the ticket: UNVERIFIED TIME. A monotonic clock does not run
+   backward across one boot, so there is no interval to judge. Moving the
+   wall clock by the same amount does not make that interval reappear.
+   This is not a device-clock mismatch and it is not a forgery finding.
+3. Same boot, and the wall clock disagrees with "ticket wall time plus
    monotonic elapsed" by more than ``CLOCK_MISMATCH_LIMIT_MS``: DEVICE CLOCK
    MISMATCH. The comparison is absolute, so a clock set backward is the same
    label as a clock set forward. The boundary is strict: 120.000 seconds
-   agrees, 120.001 seconds does not.
-3. GNSS time present on the photo and more than the same limit away from
+   agrees, 120.001 seconds does not. Elapsed here is never negative; that
+   case was rule 2.
+4. GNSS time present on the photo and more than the same limit away from
    that photo's wall clock: DEVICE CLOCK MISMATCH as well. This applies
    whether or not the boot changed. A measured disagreement is reported
    even when the monotonic interval cannot be checked.
-4. No GNSS time: the verdict from the monotonic clock stands, and the
+5. No GNSS time: the verdict from the monotonic clock stands, and the
    result says GNSS was absent. A basement, a slab, and an indoor job have
    no sky. Missing GNSS is not a mismatch and not unverified time.
 
@@ -178,12 +184,22 @@ def assess(ticket, capture) -> dict:
             "interval cannot be checked.")
     else:
         elapsed = capture_mono - ticket_mono
-        monotonic_delta = abs(capture_wall - (ticket_wall + elapsed))
-        if monotonic_delta > CLOCK_MISMATCH_LIMIT_MS:
-            mismatch_reason = (
-                f"The wall clock differs from the ticket time plus monotonic "
-                f"elapsed by {monotonic_delta} ms, which is more than "
-                f"{CLOCK_MISMATCH_LIMIT_MS} ms.")
+        # elapsedRealtime and mach_continuous_time do not run backward on
+        # one boot. A negative elapsed means the interval is not a duration,
+        # even when the wall clock was moved by the same amount so the
+        # absolute formula would otherwise agree. That is unverified time,
+        # not a device-clock mismatch and not a forgery finding.
+        if elapsed < 0:
+            unverified_reason = (
+                "The monotonic clock moved backward between the ticket and "
+                "the photo, so the monotonic interval cannot be checked.")
+        else:
+            monotonic_delta = abs(capture_wall - (ticket_wall + elapsed))
+            if monotonic_delta > CLOCK_MISMATCH_LIMIT_MS:
+                mismatch_reason = (
+                    f"The wall clock differs from the ticket time plus monotonic "
+                    f"elapsed by {monotonic_delta} ms, which is more than "
+                    f"{CLOCK_MISMATCH_LIMIT_MS} ms.")
 
     gnss_note = None
     if gnss_status == "mismatch":

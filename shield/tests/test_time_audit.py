@@ -198,6 +198,30 @@ def test_gnss_past_120_seconds_is_a_mismatch():
     assert result["monotonic_delta_ms"] == 0
 
 
+def test_a_backward_monotonic_clock_is_unverified_not_a_mismatch():
+    """elapsedRealtime does not run backward on one boot.
+
+    Setting the wall clock back by the same step would make the absolute
+    formula agree. That agreement is not an interval, so the label is
+    unverified time. It is not a device-clock mismatch, and flags do not
+    move it.
+    """
+    result = ta.assess(ticket(), photo(
+        elapsed_ms=-1, wall_slip_ms=0, flags=ALL_FLAGS, location_simulated=True))
+    assert result["verdict"] == ta.VERDICT_UNVERIFIED_TIME
+    assert result["labels"] == (ta.VERDICT_UNVERIFIED_TIME,)
+    assert result["monotonic_delta_ms"] is None
+    assert result["boot_changed"] is False
+    plain = ta.assess(ticket(), photo(elapsed_ms=-5_000, wall_slip_ms=0))
+    assert plain["verdict"] == result["verdict"]
+    # A GNSS disagreement is still reported beside the unverified interval.
+    both = ta.assess(ticket(), photo(
+        elapsed_ms=-1, wall_slip_ms=0, gnss_time_ms=T0 + LIMIT + 5))
+    assert both["verdict"] == ta.VERDICT_DEVICE_CLOCK_MISMATCH
+    assert both["labels"] == (
+        ta.VERDICT_UNVERIFIED_TIME, ta.VERDICT_DEVICE_CLOCK_MISMATCH)
+
+
 def test_gnss_absent_leaves_the_monotonic_verdict_standing():
     consistent = ta.assess(ticket(), photo())
     mismatch = ta.assess(ticket(), photo(wall_slip_ms=180_000))

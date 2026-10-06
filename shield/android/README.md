@@ -75,14 +75,18 @@ tree. The contract is:
 1. `POST /shield/v2/records/<id>/genesis` with JSON `{ "platform": "android" }`.
    The response is the ticket, `ticket_hash`, and `server_signature`. Nothing
    is stored yet.
-2. Sign the ticket hash. `clientData` is the UTF-8 bytes of `shield-genesis-v1`
-   followed by the raw 32-byte ticket hash (not the hex text).
+2. Read the phone clocks now (`wall_time_ms`, `monotonic_ms`, and
+   `boot_id` or `BOOT_COUNT`). `clientData` is the UTF-8 bytes of
+   `shield-genesis-v1` followed by SHA-256 of the raw 32-byte ticket hash
+   concatenated with the canonical JSON of that clock (sorted keys, tight
+   separators). Not the hex text, and not the bare ticket hash.
    `Signature.getInstance("SHA256withECDSA")` over that `clientData`, the same
    key the capture path already uses. Do not pre-hash: the server hashes once,
-   inside ECDSA.
-3. `POST` the same path again with `platform`, `ticket`, `server_signature`,
-   `assertion` (base64 DER signature), and `attestation_key_id`. A missing or
-   invalid signature is refused and nothing is stored.
+   inside ECDSA. The server stores this clock. A later batch cannot replace it.
+3. `POST` the same path again with `platform`, `ticket`, `ticket_clock`,
+   `server_signature`, `assertion` (base64 DER signature), and
+   `attestation_key_id`. A missing or invalid signature, or a clock that
+   is not the one that was signed, is refused and nothing is stored.
 4. Keep `ticket_hash`. The first offline capture record uses it as `ticket_id`
    and as `prev_hash`.
 
