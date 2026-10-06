@@ -665,6 +665,111 @@ def inv_rebroadcast_never_accuses():
     return True, "positives upgrade; negatives never accuse"
 
 
+def inv_capture_flags_never_flip_time_verdict():
+    """A device-integrity flag must not move the time label or the byte verdict.
+
+    Screen capture, a debugger, mock location, and root traces are weak
+    signals the subject can often set or clear. A build that let any of them
+    turn a consistent clock into DEVICE CLOCK MISMATCH, clear a real
+    mismatch, or report an honest record as TAMPERED would be accusing — or
+    exonerating — from a bit. The time decision reads the clocks. The chain
+    decision reads the bytes. The bits ride along.
+    """
+    import capture_record
+    import time_audit
+
+    ticket = {"wall_time_ms": 1_700_000_000_000, "monotonic_ms": 50_000,
+              "boot_count": 3}
+    agreed = {"wall_time_ms": 1_700_000_060_000, "monotonic_ms": 110_000,
+              "boot_count": 3}
+    clean = time_audit.assess(ticket, agreed)
+    if clean["verdict"] != time_audit.VERDICT_CONSISTENT:
+        return False, "a clock that agrees with itself is no longer consistent"
+
+    flags = (capture_record.FLAG_SCREEN_CAPTURED | capture_record.FLAG_DEBUGGER
+             | capture_record.FLAG_MOCK_LOCATION | capture_record.FLAG_ROOT_TRACES
+             | (1 << 10))
+    flagged = dict(agreed, flags=flags, location_simulated=True)
+    out = time_audit.assess(ticket, flagged)
+    if out["verdict"] != clean["verdict"] or out["labels"] != clean["labels"]:
+        return False, "flags changed a consistent time verdict into " \
+                      f"{out['verdict']!r}"
+
+    jumped = dict(agreed, wall_time_ms=agreed["wall_time_ms"] + 180_000)
+    mismatch = time_audit.assess(ticket, jumped)
+    if mismatch["verdict"] != time_audit.VERDICT_DEVICE_CLOCK_MISMATCH:
+        return False, "a three-minute jump is no longer a device-clock mismatch"
+    jumped["flags"] = 0
+    if time_audit.assess(ticket, jumped)["verdict"] != mismatch["verdict"]:
+        return False, "clearing the flags cleared a clock mismatch"
+    jumped["flags"] = flags
+    jumped["location_simulated"] = True
+    if time_audit.assess(ticket, jumped)["verdict"] != mismatch["verdict"]:
+        return False, "setting the flags cleared a clock mismatch"
+
+    record = capture_record.build(
+        checkpoint_id="cp",
+        photo_sha256="ab" * 32,
+        ticket_id="ticket",
+        wall_time_ms=1_700_000_000_000,
+        monotonic_ms=50_000,
+        boot_count=3,
+        flags=flags,
+        location_simulated=True,
+    )
+    prev = "cd" * 32
+    sealed = capture_record.seal(record, prev)
+    verified = capture_record.verify_chain([sealed], prev)
+    if verified["verdict"] != capture_record.VERDICT_INTACT:
+        return False, "a record that honestly carries flags verifies as tampered"
+
+    # A monotonic clock does not run backward on one boot. Matching the wall
+    # clock to that backward step must not come out CONSISTENT, and it must
+    # not be accused as a device-clock mismatch.
+    backward = {
+        "wall_time_ms": ticket["wall_time_ms"] - 1,
+        "monotonic_ms": ticket["monotonic_ms"] - 1,
+        "boot_count": ticket["boot_count"],
+        "flags": flags,
+    }
+    back = time_audit.assess(ticket, backward)
+    if back["verdict"] != time_audit.VERDICT_UNVERIFIED_TIME:
+        return False, ("a monotonic clock that ran backward is "
+                       f"{back['verdict']!r}, not unverified time")
+    if time_audit.VERDICT_DEVICE_CLOCK_MISMATCH in back["labels"]:
+        return False, "a backward monotonic clock was labeled a device-clock mismatch"
+    if time_audit.assess(ticket, dict(backward, flags=0))["verdict"] != back["verdict"]:
+        return False, "clearing the flags changed a backward-clock label"
+    return True, "flags are carried in the bytes and never move the time label"
+
+
+def inv_clock_limit_is_not_the_challenge_ttl():
+    """The 120 s clock limit and the 120 s challenge lifetime are different knobs.
+
+    Both are 120 seconds today. One is how long a capture nonce may be spent.
+    The other is how far a device clock may drift before a capture is labeled.
+    Sharing the constant would make a change to nonce lifetime silently move
+    the clock audit, or the other way around.
+    """
+    import time_audit
+    path = SHIELD / "time_audit.py"
+    src = path.read_text()
+    src = re.sub(r'"""[\s\S]*?"""', "", src)
+    src = re.sub(r"#[^\n]*", "", src)
+    if "CHALLENGE_TTL" in src or "import attestation" in src or "attestation." in src:
+        return False, ("time_audit reads the capture-challenge lifetime; the "
+                       "clock limit has to be its own constant")
+    if "CLOCK_MISMATCH_LIMIT_MS" not in src:
+        return False, "the clock-mismatch limit has no name of its own"
+    if time_audit.CLOCK_MISMATCH_LIMIT_MS != 120_000:
+        return False, (f"CLOCK_MISMATCH_LIMIT_MS is "
+                       f"{time_audit.CLOCK_MISMATCH_LIMIT_MS}, not 120000 ms")
+    import attestation
+    if time_audit.CLOCK_MISMATCH_LIMIT_MS == attestation.CHALLENGE_TTL_S:
+        return False, "the clock limit and the challenge TTL are the same value"
+    return True, "120000 ms for the clock, 120 s for the nonce, different names"
+
+
 def inv_attestation_fails_closed():
     """Unverified or unbound device claims must never reach a trusted tier.
 
@@ -1728,6 +1833,8 @@ INVARIANTS = (
     ("export-is-recomputable", "Hand over a package whose integrity is our assertion", inv_export_carries_recomputable_custody),
     ("spec-matches-service", "Ship a spec that does not produce the hashes we issue", inv_verifier_agrees_with_the_service),
     ("rebroadcast-never-accuses", "Turn a photograph of a flat wall into a fraud finding", inv_rebroadcast_never_accuses),
+    ("capture-flags-never-flip-time", "Use a screen, debugger, mock-location, or root flag to change the time verdict", inv_capture_flags_never_flip_time_verdict),
+    ("clock-limit-is-not-challenge-ttl", "Move the clock-mismatch threshold by changing how long a capture challenge lives", inv_clock_limit_is_not_the_challenge_ttl),
     ("attestation-fails-closed", "Claim hardware trust with an unverified or replayed attestation", inv_attestation_fails_closed),
     ("attestation-labels-not-blocks", "Turn a rooted phone into a subcontractor who cannot document his work", inv_attestation_labels_rather_than_blocks),
     ("fee-neutrality-holds", "Quietly delete the one clause that makes issuer-pays survivable", inv_fee_neutrality_clause_survives),
