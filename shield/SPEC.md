@@ -210,3 +210,210 @@ no chain had ever been written and the migration this section demands had
 nothing to re-chain. The same change after the first real record would have
 invalidated it. A format defect in an evidence product gets more expensive
 every day it is left, and this one had a window where the price was zero.
+
+## 9. Addendum — the on-phone capture record
+
+Sections 1 through 8 are unchanged. `chain_version` is not part of this
+record. It remains 2.
+
+A phone that keeps taking photos with no signal needs its own record, signed
+by the phone, linked to the previous record on that phone. That chain is not
+the custody chain. Putting these bytes into `event_data` would make them look
+like the custody chain vouched for a time the phone declared. It does not.
+The reference implementation is `capture_record.py`. The time labels are
+`time_audit.py`. Neither one is a route, a database migration, or a phone
+app. Those come later, and they have to produce these bytes.
+
+### 9.1 Version
+
+`version` is `1`. It is inside the hashed bytes so this signing contract can
+be told apart from the older one, which signs
+`SHA256(challenge ‖ SHA256(photo))` and has no record of this shape. A later
+change to these bytes increments `version`. It does not increment
+`chain_version`.
+
+### 9.2 Fields
+
+Fixed membership. A field not in this list is metadata the record hash does
+not cover.
+
+| Field | JSON type | Required | What it is |
+|---|---|---|---|
+| `version` | number | yes | `1` |
+| `checkpoint_id` | string | yes | Which checkpoint the photo is for |
+| `photo_sha256` | string | yes | Lowercase hex SHA-256 of the original photo bytes |
+| `ticket_id` | string | yes | The job ticket this capture was made under |
+| `wall_time_ms` | number | yes | Phone wall clock, Unix epoch milliseconds |
+| `monotonic_ms` | number | yes | Monotonic milliseconds since boot, sleep included |
+| `boot_id` | string | no | Boot-session id (iOS `kern.bootsessionuuid`) |
+| `boot_count` | number | no | Boot count (Android `BOOT_COUNT`) |
+| `gnss_time_ms` | number | no | GNSS time, Unix epoch milliseconds. Omit when there is no fix |
+| `location_simulated` | boolean | no | Platform mock-location flag. Omit when the platform did not report one |
+| `sensor_hash` | string | no | Lowercase hex SHA-256 of the sensor snapshot. Omit when no snapshot was taken |
+| `depth_hash` | string | no | Lowercase hex SHA-256 of the depth payload |
+| `depth_present` | boolean | no | `true` only together with `depth_hash`. `false` means the phone reported that depth was not available |
+| `flags` | number | yes | Bitfield below. `0` means no bits set, and it is not the same as omitting the field |
+
+`prev_hash` and `record_hash` travel with the record and are **not** in the
+table. They are the link, same as on a custody entry.
+
+Whole numbers only. There is no float in this record.
+
+| Quantity | Unit | Example |
+|---|---|---|
+| Coordinate | microdegrees | 40.760560° is `40760560` |
+| Angle | hundredths of a degree | 184.50° is `18450` |
+| Duration, wall time, GNSS time, monotonic time | milliseconds | 120.000 s is `120000`. 120.001 s is `120001` |
+| Hash | lowercase hex, 64 characters | SHA-256 |
+
+A number has to be an integer in the range a JSON number can carry exactly,
+which is ±(2^53 − 1). Past that, a JavaScript verifier cannot reproduce the
+hash. Booleans are JSON `true` and `false`. They are not `1` and `0`. Those
+hash differently, and a reader in another language cannot guess which one was
+signed.
+
+`monotonic_ms` is already milliseconds when it is signed. iOS converts
+`mach_continuous_time` through the timebase with integer arithmetic. Android
+uses `elapsedRealtime()`. Raw ticks are not in the record: they are not
+comparable across phones, and a floating timebase would put a float in the
+signed bytes.
+
+The sensor snapshot and the depth payload are not inside the record. Each is
+canonicalised with the rules in §9.3, hashed, and the hex is what the record
+holds. Angles inside a snapshot are hundredths of a degree. Coordinates are
+microdegrees. The canonicalizer does not do that scaling. A float is a
+rejected input, not a value to be converted.
+
+`flags` bits, lowest first:
+
+| Bit | Value | Name |
+|---|---|---|
+| 0 | 1 | screen captured |
+| 1 | 2 | debugger attached |
+| 2 | 4 | mock location |
+| 3 | 8 | root traces |
+
+A higher bit is kept in the integer and shown as unknown. It is not stripped,
+and it does not change a time label or the byte verdict. The mock-location
+**bit** and the `location_simulated` **field** are the same fact written
+twice, once for the flag list and once next to the clock. This record does
+not reconcile them. Neither one is a time label.
+
+`depth_hash` without `depth_present: true` is not a record. `depth_present:
+true` without `depth_hash` is not a record.
+
+### 9.3 Canonical bytes
+
+Build a map from the fields in §9.2, then serialise it with the rules in §1,
+plus one rule §1 does not have:
+
+1. Omit null. Absent and null are the same bytes. `0` and `false` are not
+   null, and they are not omitted.
+2. **Reject floats.** Do not render them with `repr()`. NaN and the
+   infinities are floats and are rejected too. The custody chain still
+   renders `gps_lat` and `gps_lng` with `repr()`, because that chain already
+   has those fields. This record was defined so it would not.
+3. Reject a boolean in a number field, and reject a number in a boolean
+   field.
+4. There are no nested objects in the record itself. A snapshot that is
+   hashed *into* the record is a JSON object, keys sorted, nulls omitted,
+   lists kept in order, same separators, floats rejected.
+5. The map becomes compact JSON, keys sorted, separators `(",", ":")`,
+   non-ASCII escaped as `\uXXXX`, then UTF-8. This is what `json.dumps` does
+   with `sort_keys`, `separators=(",", ":")`, and `allow_nan=False`.
+
+`version`, `checkpoint_id`, `photo_sha256`, `ticket_id`, `wall_time_ms`,
+`monotonic_ms`, and `flags` are required. Omitting one of them is not a
+record.
+
+### 9.4 The phone-chain link
+
+```
+record_hash = SHA256( canonical(record) || "|" || prev_hash )
+```
+
+The `"|"` is one byte, as in §3. `prev_hash` is the previous record's
+`record_hash`. For the first record it is the ticket hash. The ticket hash
+is defined with the ticket, which is not this addendum.
+
+Walk the records in the order they were made. Do not sort them by time.
+
+```
+expected_prev = ticket hash
+for each record:
+    if record.record_hash is missing     -> TAMPERED
+    if record.prev_hash != expected_prev -> TAMPERED (link broken)
+    if link(record, prev_hash) != record.record_hash
+                                         -> TAMPERED (bytes do not reproduce)
+    expected_prev = record.record_hash
+```
+
+A record that fails to parse — a float, a missing required field, a hash
+that is not lowercase hex — is TAMPERED. The bytes do not reproduce.
+
+**INTACT** means every record in the list reproduces its hash and names the
+hash before it. INTACT is not SEALED. SEALED also requires the hardware
+signature, the ticket signature, and the timestamp, which are not checked
+here.
+
+Dropping records off the end leaves a shorter chain that still reports
+INTACT. A head hash the holder already has is what catches that, same as §6.
+A full rewrite that recomputes every link also reports INTACT and moves the
+head. The head is the value worth keeping.
+
+### 9.5 Time labels
+
+`time_audit` reads two observations: the phone's clocks when the ticket was
+issued, and the phone's clocks on the photo. Ticket time here is the phone's
+wall clock at that moment, because monotonic time only means something
+against the same clock. It does not read the custody chain, and it does not
+read `flags`.
+
+The limit is **120 seconds**, stored as `CLOCK_MISMATCH_LIMIT_MS = 120000`.
+The comparison is integer milliseconds and it is strict: a difference of
+`120000` agrees, a difference of `120001` does not, in either direction.
+
+That limit is not the capture-challenge lifetime. The challenge lifetime is
+how long a nonce may be spent. This limit is how far the device clock may
+drift from its own monotonic clock, and from GNSS, before the record is
+labeled. They are both 120 seconds today. They are different constants so
+that changing one does not move the other.
+
+| What happened | Label |
+|---|---|
+| Boot id or boot count differs between ticket and photo, or a boot identifier is present on only one of them, or neither observation has a boot identity | **UNVERIFIED TIME** |
+| A wall or monotonic reading the comparison needs is missing, on the same boot | **UNVERIFIED TIME** |
+| Same boot, and \|wall − (ticket wall + monotonic elapsed)\| > 120 s | **DEVICE CLOCK MISMATCH** |
+| GNSS time is present and \|GNSS − wall\| > 120 s | **DEVICE CLOCK MISMATCH** |
+| GNSS time is absent | No extra label. The monotonic result stands, and the report says GNSS was absent |
+| Same boot, difference ≤ 120 s, and GNSS absent or within 120 s of the wall | **CONSISTENT** |
+
+Monotonic elapsed is `photo.monotonic_ms − ticket.monotonic_ms`. It is only
+computed when the boot is the same. A reboot does not become a clock
+mismatch just because the wall clock also moved: there is no interval to
+check. UNVERIFIED TIME is not TAMPERED. The bytes can still be INTACT.
+
+GNSS is compared to the photo's wall clock, not to the ticket. If the boot
+changed **and** GNSS disagrees with the wall clock, both labels apply. The
+single verdict is **DEVICE CLOCK MISMATCH**, because that disagreement was
+measured, and **UNVERIFIED TIME** stays in the list. GNSS agreeing with the
+wall clock does not clear a monotonic mismatch. GNSS being absent does not
+create one and does not clear one. An indoor job has no sky.
+
+`flags` and `location_simulated` never change these labels. A screen
+capture, a debugger, a mock location, or a root trace is reported beside the
+verdict. It does not turn CONSISTENT into DEVICE CLOCK MISMATCH, it does not
+turn a mismatch back into CONSISTENT, and it does not make an intact chain
+TAMPERED.
+
+### 9.6 What this addendum does not establish
+
+- That a hardware key signed the record. The hash is what that key will sign.
+  The check that it did is later.
+- That the ticket is genuine, or that the first `prev_hash` is the ticket
+  hash the server issued. This addendum checks the link the caller supplies.
+- That the photo came off a camera sensor.
+- That the wall clock is the true time when the label is CONSISTENT. A clock
+  set wrong before the ticket, and left alone, agrees with itself.
+- That a missing timestamp, a missing GNSS fix, or a reboot is forgery.
+- Anything about the custody chain's `chain_version`, which remains 2.
