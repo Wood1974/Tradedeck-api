@@ -1778,6 +1778,88 @@ def inv_capture_app_has_no_library_path():
                            "would prove a moment and not a file")
     return True, "the capture app has no path to a file it did not photograph"
 
+
+def _strip_prose(src):
+    src = re.sub(r'"""[\s\S]*?"""', "", src)
+    return re.sub(r"#[^\n]*", "", src)
+
+
+def inv_job_ticket_is_a_database_row():
+    """A job ticket is a signed database row, not the in-process challenge jar.
+
+    Render runs two gunicorn workers. The capture-challenge jar is per
+    process, so a ticket kept there exists on whichever worker issued it
+    and is invisible to the other. The row has to be written by the
+    service-role client, only after the phone's signature verifies, and
+    the signing key has to be configuration. A key pasted into the source
+    is a key anyone with the repository can use to mint tickets.
+    """
+    import os
+    ticket_path = SHIELD / "ticket.py"
+    if not ticket_path.exists():
+        return False, "ticket.py is gone; genesis has no implementation"
+    raw = ticket_path.read_text()
+    if "BEGIN PRIVATE KEY" in raw or "BEGIN EC PRIVATE KEY" in raw:
+        return False, "ticket.py contains a private key"
+    code = _strip_prose(raw)
+    if "ChallengeStore" in code:
+        return False, "the ticket module uses the in-process challenge jar"
+    if "SHIELD_TICKET_SIGNING_KEY_PEM" not in (SHIELD / "config.py").read_text():
+        return False, "the ticket signing key is no longer configuration"
+
+    import ticket
+    if not os.environ.get("SHIELD_TICKET_SIGNING_KEY_PEM"):
+        if ticket.load_signing_key() is not None:
+            return False, ("a ticket signing key loads with the env var unset, "
+                           "so a key is hardcoded")
+
+    migration = next(iter(sorted(
+        MIGRATIONS.glob("*job_ticket*.sql"))), None)
+    if migration is None:
+        return False, "the job_tickets migration is gone"
+    sql = migration.read_text().lower()
+    for needle, why in (
+        ("create table if not exists shield.job_tickets",
+         "shield.job_tickets is not created"),
+        ("tenant_id", "the ticket table has no tenant_id"),
+        ("unique (record_id)", "two tickets can be stored for one record"),
+        ("force row level security", "RLS is not forced on job tickets"),
+        ("revoke all on shield.job_tickets from anon, authenticated",
+         "the browser roles can reach job tickets"),
+        ("hardware_signature", "a row can be stored with no hardware signature"),
+    ):
+        if needle not in sql:
+            return False, why
+
+    db_src = _strip_prose((SHIELD / "db.py").read_text())
+    if "def insert_job_ticket" not in db_src or 'table("job_tickets")' not in db_src:
+        return False, "db.py is no longer the service-role writer for job tickets"
+
+    import tenant_api
+    for fn in (tenant_api.genesis, tenant_api._offer_genesis,
+               tenant_api._seal_genesis):
+        if "CHALLENGES" in _strip_prose(_source(fn)):
+            return False, f"{fn.__name__} reads the in-process challenge jar"
+    offer = _strip_prose(_source(tenant_api._offer_genesis))
+    if "insert_job_ticket" in offer:
+        return False, "the offer writes a ticket before the phone has signed it"
+    seal = _strip_prose(_source(tenant_api._seal_genesis))
+    verified_at = seal.find('["verified"]')
+    insert_at = seal.find("insert_job_ticket")
+    if verified_at < 0 or insert_at < 0 or verified_at > insert_at:
+        return False, ("the ticket row is written before the hardware "
+                       "signature is checked")
+    play = _strip_prose(_source(tenant_api._play_for))
+    if "verified=False" not in play or "verified=True" in play:
+        return False, ("genesis treats a Play Integrity body as verified; "
+                       "this release does not call Google")
+
+    import ledger
+    if ledger.CHAIN_VERSION != 2:
+        return False, f"chain_version moved to {ledger.CHAIN_VERSION}"
+    return True, "job tickets are signed rows, shared across workers"
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1837,6 +1919,7 @@ INVARIANTS = (
     ("attestation-anchor-is-configuration", "Verify a forged attestation against a root an attacker chose", inv_attestation_anchor_is_configuration),
     ("attestation-covers-the-bytes", "Attest honestly on a real device and upload somebody else's photograph", inv_attestation_covers_the_bytes),
     ("capture-app-has-no-library-path", "Record a photograph the device never took, via the photo library", inv_capture_app_has_no_library_path),
+    ("job-ticket-is-a-database-row", "Keep a job ticket in one worker's memory, or store one the phone did not sign", inv_job_ticket_is_a_database_row),
 )
 
 

@@ -37,6 +37,9 @@ DEFAULTS = {
     # Google's revocation list for attestation certificates.
     "ANDROID_ATTESTATION_STATUS_URL":
         "https://android.googleapis.com/attestation/status",
+    # Outside clock on the job ticket. Off means the field is absent and
+    # genesis still completes. There is no Roughtime client in this service.
+    "SHIELD_ROUGHTIME_ENABLED": "0",
 }
 
 OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
@@ -62,7 +65,12 @@ OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
             # capture is refused.
             "ANDROID_ATTESTATION_ROOTS_PEM",
             "ANDROID_PACKAGE_NAME",
-            "ANDROID_SIGNING_CERT_SHA256")
+            "ANDROID_SIGNING_CERT_SHA256",
+            # ECDSA P-256 private key, PEM, that signs job tickets. The same
+            # posture as the Apple root: configuration, never a constant in
+            # this repository. Unset, and genesis is refused. The public
+            # half is derived from this key when a package needs it.
+            "SHIELD_TICKET_SIGNING_KEY_PEM")
 
 
 def get(key, default=None):
@@ -97,6 +105,15 @@ def android_signing_digests():
 
 def allowed_origins():
     return [o.strip() for o in get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+
+def roughtime_enabled():
+    """True only when the outside-clock flag is explicitly on.
+
+    The default is off. A missing variable is off. Genesis does not wait
+    on an outside clock either way.
+    """
+    return get("SHIELD_ROUGHTIME_ENABLED") == "1"
 
 
 def validate():

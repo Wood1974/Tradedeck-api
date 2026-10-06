@@ -95,6 +95,28 @@ documentation and `node-app-attest`), and how Apple encodes the newer
 category when it can read one and does not require it, because older iOS
 versions do not send it.
 
+## Genesis (job ticket)
+
+While the phone still has a signal, and after the record's checkpoints are
+locked, it asks for a job ticket and countersigns it with the install key
+already on file. The Swift for this call is not in this tree. The contract is:
+
+1. `POST /shield/v2/records/<id>/genesis` with JSON `{ "platform": "ios" }`.
+   The response is the ticket, `ticket_hash`, and `server_signature`. Nothing
+   is stored yet.
+2. Sign the ticket hash with `generateAssertion`. `clientData` is the UTF-8
+   bytes of `shield-genesis-v1` followed by the raw 32-byte ticket hash (not
+   the hex text). Pass `SHA256(clientData)` to `generateAssertion`, the same
+   way a later capture passes `SHA256(challenge || SHA256(photo))`.
+3. `POST` the same path again with `platform`, `ticket`, `server_signature`,
+   `assertion` (base64), and `attestation_key_id` (base64). A missing or
+   invalid signature is refused and nothing is stored.
+4. Keep `ticket_hash`. The first offline capture record uses it as `ticket_id`
+   and as `prev_hash`.
+
+iOS has no Play Integrity API. App Attest does not report whether the device
+is jailbroken. The ticket records that absence; it does not record a pass.
+
 ## Building it
 
 The Xcode project is generated from `project.yml` by

@@ -64,3 +64,30 @@ refused. So is a debug build, unless its signing certificate is configured.
   Signing this is the **app signing key** from the Play Console, not your
   upload key.
 - `ANDROID_ATTESTATION_STATUS_URL`: defaults to Google's revocation list.
+
+## Genesis (job ticket)
+
+While the phone still has a signal, and after the record's checkpoints are
+locked, it asks for a job ticket and countersigns it with the install key
+already in `shield.attested_keys`. There is no Kotlin for this call in this
+tree. The contract is:
+
+1. `POST /shield/v2/records/<id>/genesis` with JSON `{ "platform": "android" }`.
+   The response is the ticket, `ticket_hash`, and `server_signature`. Nothing
+   is stored yet.
+2. Sign the ticket hash. `clientData` is the UTF-8 bytes of `shield-genesis-v1`
+   followed by the raw 32-byte ticket hash (not the hex text).
+   `Signature.getInstance("SHA256withECDSA")` over that `clientData`, the same
+   key the capture path already uses. Do not pre-hash: the server hashes once,
+   inside ECDSA.
+3. `POST` the same path again with `platform`, `ticket`, `server_signature`,
+   `assertion` (base64 DER signature), and `attestation_key_id`. A missing or
+   invalid signature is refused and nothing is stored.
+4. Keep `ticket_hash`. The first offline capture record uses it as `ticket_id`
+   and as `prev_hash`.
+
+Optional `play_integrity` on that second call is the decoded token body, one
+verdict for the job, not one per photo. This server release does not call
+Google to verify it, so a body that arrives is stored as unverifiable, not as
+a pass. Omitting it stores **absent**, which is not a failure. iOS has no
+Play Integrity call. App Attest does not report jailbreak.
