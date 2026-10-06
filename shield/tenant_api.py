@@ -37,6 +37,7 @@ impossible: no route here accepts a value it could derive.
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import logging
 import uuid
@@ -51,8 +52,10 @@ import attestation
 import db as shield_db
 import integrity
 import ledger
+import queue_ingest
 import tenancy
 import ticket
+import tsa
 import verdict as verdict_mod
 from auth import require_record, require_tenant
 from db import db
@@ -633,7 +636,8 @@ def _attestation_for(req, principal, payload_sha256):
     return result
 
 
-def _check_assertion(assertion, key_id_field, principal, *, platform, **kw):
+def _check_assertion(assertion, key_id_field, principal, *, platform,
+                     previous_counter=None, **kw):
     """Look the key up, then verify. Returns (checked, key_row, extra).
 
     `extra` carries `reattest: True` when the refusal is about the key rather
@@ -672,9 +676,14 @@ def _check_assertion(assertion, key_id_field, principal, *, platform, **kw):
         return unknown
 
     if platform == "ios":
+        # A batch checks each assertion against the counter the previous
+        # one in that batch advanced to. One signature still uses the
+        # counter stored for the key.
+        if previous_counter is None:
+            previous_counter = row.get("sign_count") or 0
         checked = app_attest.verify_assertion(
             blob, public_key=_b64(row.get("public_key")),
-            previous_counter=row.get("sign_count") or 0,
+            previous_counter=previous_counter,
             environment=row.get("environment") or "production", **kw)
     else:
         checked = android_attest.verify_signature(
@@ -982,6 +991,393 @@ def genesis(record_id):
     return _seal_genesis(record_id, platform, body, points)
 
 
+# --------------------------------------------------------------- the queue --
+def _queue_signatures(accepted, principal, platform, key_id_field, ticket_key_id):
+    """Every capture in the batch, with the verifiers a photograph already uses.
+
+    Returns ``(key_row, last_counter, error)``. ``last_counter`` is the iOS
+    counter to persist, or None on Android. A failure means nothing in the
+    batch is stored. Counters are not advanced here; the caller does that
+    only after every signature has verified.
+    """
+    previous = None
+    key_row = None
+    last_counter = None
+    allow_dev = config.get("APP_ATTEST_ALLOW_DEVELOPMENT") == "1"
+    app_id = config.get("APP_ATTEST_APP_ID") or ""
+    for index, item in enumerate(accepted):
+        assertion = item.get("assertion")
+        if not isinstance(assertion, str) or not assertion.strip():
+            return None, None, (
+                f"Capture {index + 1} has no hardware signature. "
+                f"Nothing was stored.")
+        try:
+            challenge, payload = queue_ingest.hardware_binding(item["record_hash"])
+        except ValueError:
+            return None, None, (
+                f"Capture {index + 1} has no record hash to bind a signature "
+                f"to. Nothing was stored.")
+        checked, key_row, extra = _check_assertion(
+            assertion.strip(), key_id_field, principal,
+            platform=platform, challenge=challenge, payload_sha256=payload,
+            app_id=app_id, allow_development=allow_dev,
+            previous_counter=previous)
+        if checked["verified"] is not True or key_row is None:
+            return None, None, (
+                f"Capture {index + 1} was not accepted: the hardware "
+                f"signature does not verify. Nothing was stored.")
+        if str(key_row.get("key_id") or "") != str(ticket_key_id or ""):
+            return None, None, (
+                "This batch was signed by a different key than the job "
+                "ticket. Nothing was stored.")
+        if platform == "ios":
+            previous = checked["counter"]
+            last_counter = checked["counter"]
+        # The running counter is what the next assertion in this batch has
+        # to pass. Android has no counter; the chain head stops a replay.
+        _ = extra
+    return key_row, last_counter, None
+
+
+def _store_batch_photos(record_id, accepted, tiers):
+    """Write the photographs. The custody entry for the batch is separate.
+
+    A second photograph of the same checkpoint supersedes the live one, the
+    same way a single upload does, but that supersession is recorded inside
+    the one batch entry rather than as its own custody event. One batch is
+    one link.
+    """
+    photo_ids = []
+    for item, tier in zip(accepted, tiers):
+        raw = item["photo"]
+        mime = integrity.sniff_mime(raw)
+        computed = integrity.sha256(raw)
+        claimed = item["record"].get("photo_sha256")
+        if (not isinstance(claimed, str) or len(claimed) != len(computed)
+                or not hmac.compare_digest(claimed, computed)):
+            return None
+        assessment = integrity.assess(
+            raw, mime, None, None, config.get_int("GPS_TOLERANCE_M"))
+        checkpoint_id = item["checkpoint_id"]
+        try:
+            previous = (_t("photos").select("id")
+                        .eq("checkpoint_id", checkpoint_id)
+                        .eq("record_id", record_id)
+                        .is_("superseded_at", "null")
+                        .execute()).data or []
+        except Exception:
+            log.exception("Live-photo lookup failed for %s", checkpoint_id)
+            previous = []
+        photo_id = str(uuid.uuid4())
+        ext = {"image/jpeg": "jpg", "image/png": "png",
+               "image/webp": "webp", "image/heic": "heic",
+               "image/heif": "heif"}.get(mime, "bin")
+        storage_path = f"{_principal().tenant_id}/{record_id}/{photo_id}.{ext}"
+        try:
+            db().storage.from_(config.get("SHIELD_BUCKET")).upload(
+                storage_path, raw, {"content-type": mime, "upsert": "false"})
+        except Exception:
+            log.exception("Storage write failed for %s", photo_id)
+            return None
+        # Supersede before the insert so two live rows for one checkpoint
+        # are not both claiming the requirement.
+        for old in previous:
+            if old.get("id") == photo_id:
+                continue
+            try:
+                _t("photos").update({"superseded_by": photo_id,
+                                     "superseded_at": _now()}) \
+                    .eq("id", old["id"]).execute()
+            except Exception:
+                log.exception("Could not mark %s superseded", old.get("id"))
+        row = {
+            "id": photo_id,
+            "tenant_id": _principal().tenant_id,
+            "record_id": record_id,
+            "checkpoint_id": checkpoint_id,
+            "storage_path": storage_path,
+            "original_hash": computed,
+            "original_size_bytes": len(raw),
+            "has_exif": assessment.get("has_exif"),
+            "integrity_note": assessment.get("integrity_note"),
+            "attestation_tier": tier,
+            "received_at": _now(),
+        }
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+        if ip:
+            row["upload_ip_hash"] = integrity.hash_ip(
+                ip.split(",")[0].strip(), config.get("IP_HASH_SALT"))
+        try:
+            _t("photos").insert(row).execute()
+        except Exception:
+            log.exception("Photo insert failed for %s", photo_id)
+            return None
+        photo_ids.append(photo_id)
+    return photo_ids
+
+
+def _time_labels(prepared):
+    return [{
+        "record_hash": item["record_hash"],
+        "verdict": item["time"]["verdict"],
+        "labels": list(item["time"]["labels"]),
+        "flags": item["time"]["flags"],
+        "flag_names": list(item["time"]["flag_names"]),
+    } for item in prepared["accepted"]]
+
+
+def _receipt_view(row, token_row):
+    """The receipt and timestamp the package and the batch response share."""
+    if not row:
+        return None, tsa.missing_timestamp("This record has no receipt yet.")
+    body = row.get("receipt_json") if isinstance(row.get("receipt_json"), dict) else {}
+    signed = body.get("signed") if isinstance(body.get("signed"), dict) else {
+        "version": tsa.RECEIPT_VERSION,
+        "record_id": row.get("record_id"),
+        "head_hash": row.get("head_hash"),
+        "accepted_at_ms": row.get("accepted_at_ms"),
+    }
+    receipt = {
+        "signed": signed,
+        "signature": row.get("server_signature"),
+        "phone_chain_head": row.get("phone_chain_head"),
+        "time_labels": body.get("time_labels") or [],
+        "head_hash": row.get("head_hash"),
+        "accepted_at_ms": row.get("accepted_at_ms"),
+        "record_id": row.get("record_id"),
+    }
+    if token_row and token_row.get("status") == "present" and token_row.get("token_b64"):
+        timestamp = {
+            "status": "present",
+            "forged": False,
+            "authority": token_row.get("authority"),
+            "token_b64": token_row.get("token_b64"),
+            "gen_time": token_row.get("gen_time"),
+        }
+    else:
+        timestamp = tsa.missing_timestamp(
+            "No timestamp token is stored for this receipt.")
+    return receipt, timestamp
+
+
+@bp.route("/records/<record_id>/queue", methods=["POST"])
+@require_tenant
+@require_record()
+def ingest_queue(record_id):
+    """Accept a batch of offline captures and sign a receipt for the head.
+
+    The phone sends each photograph, the capture record it signed, and the
+    hardware signature over that record. Every signature is checked. A
+    broken or truncated chain stores nothing. One request carries at most
+    the batch cap; the rest are not stored, and the response says to send
+    the next batch.
+
+    The receipt is signed even when the timestamp authority does not
+    answer. A missing timestamp is reported as missing. It is not forged.
+    """
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return _err("The request body must be a JSON object.", 400)
+
+    refused = _signing_key_or_refuse()
+    if refused:
+        return refused
+
+    try:
+        existing = shield_db.find_job_ticket(_principal().tenant_id, record_id)
+    except Exception:
+        log.exception("Job ticket lookup failed for %s", record_id)
+        return _err("Could not load the job ticket", 500)
+    if not existing:
+        return _err("This record has no job ticket, so an offline batch "
+                    "cannot be accepted. Nothing was stored.", 409)
+
+    platform = existing.get("platform")
+    if platform not in ("ios", "android"):
+        return _err("The job ticket has no platform this service can check. "
+                    "Nothing was stored.", 409)
+    stated = (body.get("platform") or "").strip().lower()
+    if stated and stated != platform:
+        return _err("This batch names a different platform than the job "
+                    "ticket. Nothing was stored.", 422)
+    if str(existing.get("actor_id") or "") != str(_principal().actor_id):
+        return _err("This job ticket was issued to a different actor. "
+                    "Nothing was stored.", 422)
+
+    raw_captures = body.get("captures")
+    if not isinstance(raw_captures, list):
+        return _err("captures must be a list. Nothing was stored.", 422)
+
+    captures = []
+    for item in raw_captures:
+        if not isinstance(item, dict):
+            captures.append(item)
+            continue
+        photo = _b64(item.get("photo_b64") or "")
+        captures.append({
+            "photo": photo if photo is not None else b"",
+            "record": item.get("record"),
+            "assertion": item.get("assertion"),
+        })
+
+    try:
+        points = _checkpoint_rows(record_id)
+    except Exception:
+        log.exception("Checkpoint read failed for queue %s", record_id)
+        return _err("Could not load the checkpoints", 500)
+    allowed = [row.get("id") for row in points if row.get("id")]
+
+    try:
+        previous = shield_db.latest_receipt(_principal().tenant_id, record_id)
+    except Exception:
+        log.exception("Receipt lookup failed for %s", record_id)
+        return _err("Could not load the previous receipt", 500)
+    expected_prev = (previous.get("phone_chain_head") if previous
+                     else existing.get("ticket_hash"))
+    batch_index = (int(previous.get("batch_index") or 0) + 1) if previous else 1
+
+    prepared = queue_ingest.prepare(
+        captures,
+        ticket_hash=existing.get("ticket_hash"),
+        expected_prev=expected_prev,
+        ticket_clock=body.get("ticket_clock"),
+        allowed_checkpoints=allowed,
+        claimed_head=body.get("phone_chain_head"))
+    if not prepared["ok"]:
+        return _err(prepared["error"], 422)
+
+    key_row, last_counter, sig_error = _queue_signatures(
+        prepared["accepted"], _principal(), platform,
+        body.get("attestation_key_id"), existing.get("key_id"))
+    if sig_error:
+        return _err(sig_error, 422)
+
+    # verified is True for every capture before any of this is stored.
+    if key_row is None:
+        return _err("This batch was not accepted: the hardware signature "
+                    "does not verify. Nothing was stored.", 422)
+
+    tiers = []
+    for _item in prepared["accepted"]:
+        if platform == "ios":
+            verdict = attestation.interpret_app_attest(
+                verified=True, receipt_ok=True,
+                token_nonce=queue_ingest.CAPTURE_CHALLENGE,
+                expect_nonce=queue_ingest.CAPTURE_CHALLENGE)
+        else:
+            verdict = attestation.interpret_key_attestation(
+                verified=True, receipt_ok=True,
+                token_nonce=queue_ingest.CAPTURE_CHALLENGE,
+                expect_nonce=queue_ingest.CAPTURE_CHALLENGE,
+                security_level=key_row.get("security_level"))
+        if verdict.get("tier") not in attestation.TRUSTED_TIERS:
+            return _err("This batch was not accepted: the device key is not "
+                        "one this service trusts. Nothing was stored.", 422)
+        tiers.append(verdict["tier"])
+
+    if platform == "ios":
+        if not _advance_counter(key_row["key_id"], last_counter):
+            return _err("This assertion was already used. Nothing was stored.",
+                        422)
+    else:
+        _touch_key(key_row["key_id"])
+
+    photo_ids = _store_batch_photos(record_id, prepared["accepted"], tiers)
+    if photo_ids is None:
+        return _err("Could not store the photographs. Nothing further was "
+                    "recorded.", 502)
+
+    event = queue_ingest.custody_event(
+        prepared, ticket_hash=existing.get("ticket_hash"))
+    if photo_ids:
+        event["event_data"] = dict(event["event_data"], photo_ids=photo_ids)
+    try:
+        head = _head_and_append(record_id, event)
+    except Exception:
+        log.exception("Custody append failed for %s", record_id)
+        return _err("Could not append the batch to the custody chain.", 500)
+
+    accepted_at_ms = ticket.now_ms()
+    try:
+        signed = tsa.sign_receipt(tsa.build_receipt(
+            record_id=record_id, head_hash=head, accepted_at_ms=accepted_at_ms))
+    except ticket.TicketKeyError:
+        return _signing_key_or_refuse() or _err(
+            "This deployment cannot sign a receipt.", 503)
+    except ValueError as exc:
+        log.info("Receipt refused: %s", exc)
+        return _err("The receipt could not be signed. The batch was not "
+                    "left without a record of the failure in the log.", 500)
+
+    labels = _time_labels(prepared)
+    receipt_id = str(uuid.uuid4())
+    receipt_row = {
+        "id": receipt_id,
+        "tenant_id": _principal().tenant_id,
+        "record_id": record_id,
+        "ticket_hash": existing.get("ticket_hash"),
+        "head_hash": head,
+        "phone_chain_head": prepared["phone_chain_head"],
+        "accepted_at_ms": accepted_at_ms,
+        "batch_index": batch_index,
+        "batch_size": prepared["accepted_count"],
+        "server_signature": signed["signature"],
+        "receipt_json": {
+            "signed": signed["signed"],
+            "phone_chain_head": prepared["phone_chain_head"],
+            "time_labels": labels,
+            "ticket_clock": prepared["ticket_clock"],
+        },
+        "created_at": _now(),
+    }
+    try:
+        shield_db.insert_receipt(receipt_row)
+    except Exception:
+        log.exception("Receipt insert failed for %s", record_id)
+        return _err("Could not store the receipt.", 500)
+
+    # The receipt is stored before this call. A failure here does not
+    # remove it, and it does not become a forgery finding.
+    stamped = tsa.stamp(head)
+    token_row = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": _principal().tenant_id,
+        "receipt_id": receipt_id,
+        "record_id": record_id,
+        "head_hash": head,
+        "status": stamped["status"] if stamped["status"] == "present" else "missing",
+        "authority": stamped.get("authority") if stamped["status"] == "present" else None,
+        "token_b64": stamped.get("token_b64") if stamped["status"] == "present" else None,
+        "gen_time": stamped.get("gen_time") if stamped["status"] == "present" else None,
+        "created_at": _now(),
+    }
+    try:
+        shield_db.insert_tsa_token(token_row)
+    except Exception:
+        log.exception("Timestamp row insert failed for %s", record_id)
+        token_row = {"status": "missing", "token_b64": None}
+
+    receipt_view, timestamp_view = _receipt_view(receipt_row, token_row)
+    public = ticket.export_public_key()
+    payload = {
+        "stored": True,
+        "accepted": prepared["accepted_count"],
+        "refused": prepared["refused_count"],
+        "send_next_batch": prepared["send_next_batch"],
+        "phone_chain_head": prepared["phone_chain_head"],
+        "custody_head_hash": head,
+        "chain_version": ledger.CHAIN_VERSION,
+        "receipt": receipt_view,
+        "timestamp": timestamp_view,
+        "signing_key": public,
+        "time_labels": labels,
+        "photo_ids": photo_ids,
+    }
+    if prepared["message"]:
+        payload["message"] = prepared["message"]
+    return jsonify(payload), 201
+
+
 # ------------------------------------------------------------------ photos --
 @bp.route("/records/<record_id>/photos", methods=["POST"])
 @require_tenant
@@ -1243,6 +1639,16 @@ def package(record_id):
     safe_photos = [{k: v for k, v in p.items() if k != "storage_path"}
                    for p in photos]
 
+    ordered = chain_in_order(entries, record_id)
+    receipt_row = token_row = None
+    try:
+        receipt_row = shield_db.latest_receipt(_principal().tenant_id, record_id)
+        if receipt_row:
+            token_row = shield_db.find_tsa_token(
+                _principal().tenant_id, receipt_row.get("id"))
+    except Exception:
+        log.exception("Receipt read failed for package %s", record_id)
+    receipt_view, timestamp_view = _receipt_view(receipt_row, token_row)
     return jsonify({
         "schema": "tradedeck.shield.package.v2",
         "chain_version": ledger.CHAIN_VERSION,
@@ -1250,8 +1656,11 @@ def package(record_id):
         "record": {k: v for k, v in g.record.items() if k != "tenant_id"},
         "checkpoints": points,
         "photos": safe_photos,
-        "custody": chain_in_order(entries, record_id),
-        "head_hash": ledger.head_of(chain_in_order(entries, record_id), record_id),
+        "custody": ordered,
+        "head_hash": ledger.head_of(ordered, record_id),
+        "receipt": receipt_view,
+        "timestamp": timestamp_view,
+        "signing_key": ticket.export_public_key(),
         "verify_with": "https://github.com/Wood1974/Tradedeck-api "
                        "(shield/verifier/shield_verify.py, or "
                        "shield/webapp/shield.html in a browser)",

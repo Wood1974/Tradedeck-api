@@ -1860,6 +1860,108 @@ def inv_job_ticket_is_a_database_row():
     return True, "job tickets are signed rows, shared across workers"
 
 
+def inv_offline_queue_does_not_replace_the_chain():
+    """An offline batch is one custody entry. It is not a new chain.
+
+    The phone already hashed its own captures. Nesting that chain inside
+    one custody entry is the whole design. Replacing the custody chain, or
+    bumping chain_version to make room for it, would make every package
+    already in the field fail to verify. A missing timestamp is the other
+    half: the receipt is the record that the batch was accepted, and a
+    timestamp authority that does not answer does not turn that into a
+    forgery finding or into a token this service minted for itself.
+    """
+    import ledger
+    if ledger.CHAIN_VERSION != 2:
+        return False, f"chain_version moved to {ledger.CHAIN_VERSION}"
+
+    queue_path = SHIELD / "queue_ingest.py"
+    tsa_path = SHIELD / "tsa.py"
+    if not queue_path.exists() or not tsa_path.exists():
+        return False, "the offline queue or the timestamp module is missing"
+    queue_code = _strip_prose(queue_path.read_text())
+    if "chain_version" in queue_code or "CHAIN_VERSION" in queue_code:
+        return False, "queue_ingest assigns a chain version; seal stamps 2"
+    if "urllib" in queue_code:
+        return False, "queue_ingest talks to the network"
+
+    tsa_raw = tsa_path.read_text()
+    if "BEGIN CERTIFICATE" in tsa_raw:
+        return False, "tsa.py contains an embedded certificate"
+    import tsa
+    stamp_code = _strip_prose(_source(tsa.stamp))
+    if "mint_token" in stamp_code:
+        return False, ("stamp() mints a token when the authority does not "
+                       "answer")
+
+    called = {"n": 0}
+    real_post = tsa._urllib_post
+
+    def _boom(url, body, timeout=10):
+        called["n"] += 1
+        raise AssertionError(url)
+
+    tsa._urllib_post = _boom
+    try:
+        out = tsa.stamp("ab" * 32, enabled_flag=False)
+    finally:
+        tsa._urllib_post = real_post
+    if called["n"]:
+        return False, ("stamp() contacted a timestamp authority while the "
+                       "flag was off")
+    if out.get("status") != "missing" or out.get("forged") is not False:
+        return False, ("a disabled timestamp is not reported as missing, "
+                       "or is called forged")
+
+    cfg = (SHIELD / "config.py").read_text()
+    if ("timestamp.digicert.com" not in cfg
+            or "timestamp.sectigo.com" not in cfg):
+        return False, ("DigiCert and Sectigo are no longer the configured "
+                       "authorities")
+
+    migration = next(iter(sorted(MIGRATIONS.glob("*receipts*.sql"))), None)
+    if migration is None:
+        return False, "the receipts migration is gone"
+    sql = migration.read_text().lower()
+    for needle, why in (
+        ("create table if not exists shield.receipts",
+         "shield.receipts is not created"),
+        ("create table if not exists shield.tsa_tokens",
+         "shield.tsa_tokens is not created"),
+        ("force row level security",
+         "RLS is not forced on the receipt tables"),
+        ("revoke all on shield.receipts from anon, authenticated",
+         "the browser roles can reach receipts"),
+        ("revoke all on shield.tsa_tokens from anon, authenticated",
+         "the browser roles can reach timestamp tokens"),
+        ("status in ('present', 'missing')",
+         "a timestamp status other than present or missing is allowed"),
+        ("offline_batch",
+         "the custody log cannot record an offline batch"),
+    ):
+        if needle not in sql:
+            return False, why
+
+    db_src = _strip_prose((SHIELD / "db.py").read_text())
+    if "def insert_receipt" not in db_src or "def insert_tsa_token" not in db_src:
+        return False, "db.py is no longer the service-role writer for receipts"
+
+    import tenant_api
+    ingest = _strip_prose(_source(tenant_api.ingest_queue))
+    sig_at = ingest.find("_queue_signatures")
+    insert_at = ingest.find("insert_receipt")
+    if sig_at < 0 or insert_at < 0 or sig_at > insert_at:
+        return False, ("a receipt is stored before the hardware signatures "
+                       "are checked")
+    if "CHALLENGES" in ingest:
+        return False, "the offline queue reads the in-process challenge jar"
+    checked = _strip_prose(_source(tenant_api._queue_signatures))
+    if '["verified"]' not in checked:
+        return False, "the batch does not require a verified hardware signature"
+    return True, ("offline batches nest under chain_version 2, and a missing "
+                  "timestamp is not forged")
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1920,6 +2022,7 @@ INVARIANTS = (
     ("attestation-covers-the-bytes", "Attest honestly on a real device and upload somebody else's photograph", inv_attestation_covers_the_bytes),
     ("capture-app-has-no-library-path", "Record a photograph the device never took, via the photo library", inv_capture_app_has_no_library_path),
     ("job-ticket-is-a-database-row", "Keep a job ticket in one worker's memory, or store one the phone did not sign", inv_job_ticket_is_a_database_row),
+    ("offline-queue-nests-the-phone-chain", "Replace the custody chain with the phone's chain, or call a missing timestamp forged", inv_offline_queue_does_not_replace_the_chain),
 )
 
 
