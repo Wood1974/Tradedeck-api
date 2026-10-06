@@ -333,8 +333,7 @@ record_hash = SHA256( canonical(record) || "|" || prev_hash )
 ```
 
 The `"|"` is one byte, as in §3. `prev_hash` is the previous record's
-`record_hash`. For the first record it is the ticket hash. The ticket hash
-is defined with the ticket, which is not this addendum.
+`record_hash`. For the first record it is the ticket hash defined in §10.
 
 Walk the records in the order they were made. Do not sort them by time.
 
@@ -416,8 +415,186 @@ TAMPERED.
   The check that it did is later.
 - That the ticket is genuine, or that the first `prev_hash` is the ticket
   hash the server issued. This addendum checks the link the caller supplies.
+  §10 is the ticket. This addendum still does not check it.
 - That the photo came off a camera sensor.
 - That the wall clock is the true time when the label is CONSISTENT. A clock
   set wrong before the ticket, and left alone, agrees with itself.
 - That a missing timestamp, a missing GNSS fix, or a reboot is forgery.
 - Anything about the custody chain's `chain_version`, which remains 2.
+
+## 10. Addendum — the job ticket (genesis)
+
+Sections 1 through 8 are unchanged. `chain_version` is not part of this
+ticket. It remains 2.
+
+A phone that will keep taking photos with no signal needs a ticket first,
+while it still has a signal. The server builds the ticket and signs it.
+The phone's attested install key signs the hash. The row is written only
+after that signature verifies. The reference implementation is `ticket.py`.
+The route is `POST /shield/v2/records/<id>/genesis`. The phone apps do not
+implement the call yet.
+
+### 10.1 Version
+
+`version` is `1`. It is inside the hashed bytes. It is not
+`capture_record` version 1, and it is not `chain_version`. A later change
+to these bytes increments `version`. It does not increment `chain_version`.
+
+### 10.2 Fields
+
+Fixed membership. A field not in this list is not signed and is not stored.
+
+| Field | JSON type | Required | What it is |
+|---|---|---|---|
+| `version` | number | yes | `1` |
+| `record_id` | string | yes | The record this ticket is for |
+| `checkpoint_list_sha256` | string | yes | Lowercase hex SHA-256 of the locked checkpoint list, §10.5 |
+| `actor_id` | string | yes | The authenticated actor. Taken from the credential, not the body |
+| `expires_at_ms` | number | yes | Server clock plus 7 days, Unix milliseconds. `expires_at_ms` is after `server_time_ms` |
+| `server_time_ms` | number | yes | Server clock when the ticket was offered, Unix milliseconds |
+| `roughtime_ms` | number | no | Outside clock, Unix milliseconds. Omit when it is absent |
+
+Whole numbers only. The same rule as §9.2. A float is rejected. `0` is not
+absent. Null and absent are the same bytes.
+
+`server_time_ms` is the server's clock. It is not the phone's wall clock.
+§9.5 compares the phone's clocks with each other. The phone's own clocks
+at the moment it countersigns are `ticket_clock`. They are not fields of
+this signed ticket, because the server builds the ticket before the phone
+measures them. They are covered by the hardware signature in §10.4 and
+stored on the row. A later batch reads that row. It does not get to
+supply a different baseline.
+
+`ticket_id` on a capture record is the ticket hash from §10.3, not a
+separate identifier. The database row also has its own id. That id is not
+in the signed bytes.
+
+### 10.3 Canonical bytes and the ticket hash
+
+Same rules as §9.3: omit null, reject floats, reject a boolean in a number
+field, compact JSON, keys sorted, separators `(",", ":")`, non-ASCII
+escaped, UTF-8.
+
+```
+ticket_hash = SHA256( canonical(ticket) )
+```
+
+Lowercase hex, 64 characters. There is no `"|"` in this hash. The `"|"`
+in §9.4 is how a capture record links to this hash, not how the hash is
+made.
+
+### 10.4 Who signs
+
+**The server.** ECDSA on curve P-256, SHA-256, over the canonical bytes.
+The signature is DER, then base64. The private key is the environment
+variable `SHIELD_TICKET_SIGNING_KEY_PEM`. It is not in this repository.
+Unset, genesis is refused and nothing is stored. The public half is
+exported as PEM and as the uncompressed point (`0x04 || X || Y`, base64)
+for an evidence package. The private key is not in that export.
+
+**The phone.** The install key already in `shield.attested_keys`. The
+signed message carries the ticket hash and the phone clock, in the same
+slot the capture path already uses:
+
+```
+ticket_clock = canonical JSON of wall_time_ms, monotonic_ms, and boot_id and/or boot_count
+clientData = UTF-8("shield-genesis-v1") || SHA256(ticket_hash_raw || ticket_clock)
+```
+
+`ticket_hash_raw` is the 32-byte digest, not the hex text. `ticket_clock`
+is UTF-8 JSON with sorted keys and tight separators, the same whole-number
+rules as §9.3. The SHA-256 is 32 bytes. iOS passes `SHA-256(clientData)` to
+`generateAssertion`. Android signs `clientData` with `SHA256withECDSA` and
+does not pre-hash it. Both are checked by the existing verifiers. Those
+verifiers are not changed. A signature over the bare ticket hash does not
+verify: the clock would otherwise be free to change at sync.
+
+A capture assertion uses a server nonce as its challenge. A ticket
+assertion uses the fixed challenge `shield-genesis-v1`. One does not
+verify as the other.
+
+The hardware signature has to be present and valid. If it is missing or
+does not verify, the route refuses and writes no row. That is the same
+rule as a photograph.
+
+### 10.5 The checkpoint list
+
+Genesis requires the record's checkpoints to be locked. The hash covers
+each checkpoint's id, point number, label, and, when present, description,
+code reference, and what the photo must show. Rows are sorted by point
+number. Status is not in the hash: status changes as photos are graded,
+and the commitment is the list that was locked.
+
+The server computes the hash. A hash in the request body is ignored on
+the offer, and on the seal it has to match the list now. A list that
+moved does not get a stored ticket.
+
+### 10.6 What is refused
+
+The route refuses, and stores nothing, when:
+
+- the hardware signature is missing or does not verify, including a
+  signature that does not cover the `ticket_clock` sent with it
+- `ticket_clock` is missing, or it has no wall time, no monotonic time,
+  or no boot identity
+- the server signature does not verify (the ticket was altered)
+- `record_id` is not the record in the URL
+- `actor_id` is not the authenticated actor
+- the checkpoint hash is not the locked list
+- `now` is past `expires_at_ms` (`expires_at_ms` itself is still current)
+- the record already has a ticket
+- the checkpoints are not locked
+- no signing key is configured
+
+iOS assertions advance the stored counter with the same compare-and-set
+a photograph uses. A replayed assertion does not verify.
+
+### 10.7 Play Integrity, once per job
+
+Android only, and once, on this row, not on each photograph. The reading
+is `attestation.interpret_play_integrity`.
+
+| What was presented | Status stored |
+|---|---|
+| Nothing | **absent**. Not a pass and not a fail |
+| A token this service has not cryptographically checked | **unverifiable**. Not a pass |
+| A checked token with `MEETS_STRONG_INTEGRITY` or `MEETS_DEVICE_INTEGRITY`, bound to this ticket | **pass** |
+| A checked token the platform rejected (no label, unrecognized app, emulator, basic only) | **fail** |
+
+This release does not call Google. A token that arrives on the wire is
+stored as unverifiable. Pass and fail are what the same function returns
+for a fixture once `verified` is true. The route does not set that.
+
+iOS has no Play Integrity API. A Play Integrity body on an iOS request is
+ignored. The stored reason says so, and it says that App Attest does not
+report whether the device is jailbroken. An iOS pass from App Attest is
+a statement about the app and the Secure Enclave. It is not a statement
+that the phone is not jailbroken.
+
+### 10.8 Roughtime
+
+`SHIELD_ROUGHTIME_ENABLED` defaults to off. There is no Roughtime client
+in this release. When the flag is off, or the outside clock does not
+answer, or the reading is not a whole number of milliseconds, `roughtime_ms`
+is omitted. Genesis still completes. The ticket records the absence by
+not having the field.
+
+### 10.9 Two workers
+
+The offer is not kept in the per-process challenge jar. Render runs two
+gunicorn workers, and that jar is not shared. The phone sends the ticket
+and the server signature back. Any worker can check the signature, because
+the key is configuration, not memory. The stored ticket is a row in
+`shield.job_tickets`, written by the service role. One row per record.
+
+### 10.10 What this addendum does not establish
+
+- That a real Apple device produced the assertion. The verifiers are the
+  ones the capture tests already run, against keys those tests mint.
+- That Google Play Integrity was called. It was not.
+- That an iOS device is not jailbroken.
+- That the phone's wall clock matches the server clock. The stored
+  `ticket_clock` is the phone's own clocks at countersign. §9.5 compares
+  later photos to that observation. A clock set wrong before the ticket,
+  and left alone, still reads CONSISTENT.
+- Anything about `chain_version`, which remains 2.

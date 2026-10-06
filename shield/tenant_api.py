@@ -48,9 +48,11 @@ import config
 import android_attest
 import app_attest
 import attestation
+import db as shield_db
 import integrity
 import ledger
 import tenancy
+import ticket
 import verdict as verdict_mod
 from auth import require_record, require_tenant
 from db import db
@@ -730,6 +732,267 @@ def _register_key(checked, principal, platform):
         log.exception("Could not store an attested key")
         return False
     return True
+
+
+# --------------------------------------------------------------- job ticket --
+def _signing_key_or_refuse():
+    """503 when this deployment cannot sign a ticket. Stores nothing."""
+    if ticket.load_signing_key() is None:
+        log.error("SHIELD_TICKET_SIGNING_KEY_PEM is not set; genesis is closed")
+        return _err("This deployment cannot issue a job ticket.", 503)
+    return None
+
+
+def _checkpoint_rows(record_id):
+    query = (_t("checkpoints")
+             .select("id,point_number,label,description,code_reference,must_show")
+             .eq("record_id", record_id))
+    return (tenancy.scope(query, _principal()).execute()).data or []
+
+
+def _play_for(platform, body, ticket_hash_hex):
+    """The one Play Integrity reading stored beside this ticket.
+
+    ``verified`` is false here on purpose. Checking a Play Integrity token
+    means a call to Google, and this release does not make one. A body the
+    client sends is therefore unverifiable, never a pass. iOS ignores a
+    body entirely: there is no Play Integrity API, and App Attest does not
+    report jailbreak.
+    """
+    if platform == "android" and body.get("play_integrity") is not None:
+        classified = ticket.classify_play_integrity(
+            body.get("play_integrity"),
+            verified=False,
+            expect_nonce=ticket_hash_hex,
+            expect_package=config.get("ANDROID_PACKAGE_NAME") or None,
+            platform="android")
+    else:
+        classified = ticket.classify_play_integrity(None, platform=platform)
+    return classified
+
+
+def _offer_genesis(record_id, platform, points):
+    """Hand the phone a signed ticket. Do not write a row.
+
+    The phone has to see the bytes before it can sign their hash. The
+    signature on the way back is what makes a row. Keeping the offer in
+    the per-process challenge jar would hide it from the other gunicorn
+    worker; the server signature is what the other worker checks instead.
+    """
+    principal = _principal()
+    try:
+        listed = ticket.checkpoint_list_hash(points)
+        rough = ticket.outside_clock_ms(
+            enabled=config.roughtime_enabled(), fetch=ticket.roughtime_fetch)
+        built = ticket.build_ticket(
+            record_id=record_id,
+            checkpoint_list_sha256=listed,
+            actor_id=str(principal.actor_id),
+            server_time_ms=ticket.now_ms(),
+            roughtime_ms=rough)
+        signed = ticket.sign_ticket(built)
+    except ticket.TicketKeyError:
+        return _signing_key_or_refuse() or _err(
+            "This deployment cannot issue a job ticket.", 503)
+    except ValueError as exc:
+        log.info("Job ticket offer refused: %s", exc)
+        return _err("The checkpoint list cannot be committed to.", 409)
+
+    public = ticket.export_public_key()
+    return jsonify({
+        "stored": False,
+        "ticket_id": signed["ticket_hash"],
+        "ticket_hash": signed["ticket_hash"],
+        "ticket": signed["ticket"],
+        "server_signature": signed["server_signature"],
+        "server_public_key": public,
+        "sign_with_attested_key": {
+            "challenge": ticket.GENESIS_CHALLENGE,
+            "ticket_hash": signed["ticket_hash"],
+            "note": (
+                "Measure the phone clocks now and send them back as "
+                "ticket_clock: wall_time_ms, monotonic_ms, and boot_id "
+                "and/or boot_count. clientData is the UTF-8 bytes of the "
+                "challenge followed by SHA-256 of the raw 32-byte ticket "
+                "hash concatenated with the canonical JSON of that clock. "
+                "The clock JSON uses sorted keys and tight separators. "
+                "iOS passes SHA-256(clientData) to generateAssertion. "
+                "Android signs clientData with SHA256withECDSA and does not "
+                "pre-hash it. Send the ticket, ticket_clock, and this "
+                "server_signature back with that signature. Nothing is "
+                "stored until that signature verifies."),
+        },
+    })
+
+
+def _seal_genesis(record_id, platform, body, points):
+    """Store the ticket only after both signatures verify.
+
+    A missing or invalid hardware signature stores nothing. The same rule
+    as a photograph: an unverified capture is not a row.
+    """
+    presented = body.get("ticket")
+    assertion = (body.get("assertion") or "").strip()
+    server_sig = body.get("server_signature")
+    if not isinstance(presented, dict):
+        return _err("The job ticket was not presented.", 422)
+    try:
+        signed = ticket.verify_server_signature(presented, server_sig)
+    except ticket.TicketKeyError:
+        return _signing_key_or_refuse() or _err(
+            "This deployment cannot issue a job ticket.", 503)
+    except ValueError as exc:
+        log.info("Job ticket rejected: %s", exc)
+        return _err("This ticket is not one this service can accept. "
+                    "Nothing was stored.", 422)
+    if not signed["ok"]:
+        log.info("Job ticket signature refused: %s", signed["reason"])
+        return _err("This ticket does not match the server signature. "
+                    "Nothing was stored.", 422)
+
+    canonical_ticket = signed["ticket"]
+    try:
+        listed = ticket.checkpoint_list_hash(points)
+    except ValueError:
+        return _err("The checkpoint list cannot be committed to.", 409)
+    blocked = ticket.seal_blocks(
+        canonical_ticket,
+        record_id=record_id,
+        actor_id=_principal().actor_id,
+        checkpoint_list_sha256=listed,
+        now_ms=ticket.now_ms())
+    if blocked:
+        return _err(blocked + " Nothing was stored.", 422)
+    if not assertion:
+        return _err("A hardware signature over the ticket hash is required. "
+                    "Nothing was stored.", 422)
+    try:
+        clock = ticket.normalize_clock(body.get("ticket_clock"))
+    except ValueError as exc:
+        return _err("The phone clock at ticket time could not be read "
+                    f"({exc}). Nothing was stored.", 422)
+
+    challenge, payload_sha256 = ticket.hardware_binding(
+        signed["ticket_hash"], clock)
+    allow_dev = config.get("APP_ATTEST_ALLOW_DEVELOPMENT") == "1"
+    checked, key_row, extra = _check_assertion(
+        assertion, body.get("attestation_key_id"), _principal(),
+        platform=platform, challenge=challenge,
+        payload_sha256=payload_sha256,
+        app_id=config.get("APP_ATTEST_APP_ID") or "",
+        allow_development=allow_dev)
+    if checked["verified"] is not True or key_row is None:
+        return jsonify({
+            "error": (
+                "This job ticket was not accepted: the hardware signature "
+                "does not verify. Nothing was stored."),
+            "reattest": bool(extra.get("reattest")),
+            "stored": False,
+        }), 422
+
+    if platform == "ios":
+        # Compare-and-set, same as a capture assertion. A failure here means
+        # the assertion was already used. Do it before the insert so a lost
+        # race does not leave a ticket whose signature can be replayed.
+        if not _advance_counter(key_row["key_id"], checked["counter"]):
+            return _err("This assertion was already used. Nothing was stored.",
+                        422)
+    else:
+        _touch_key(key_row["key_id"])
+
+    play = _play_for(platform, body, signed["ticket_hash"])
+    row = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": _principal().tenant_id,
+        "record_id": record_id,
+        "actor_id": str(_principal().actor_id),
+        "platform": platform,
+        "key_id": key_row["key_id"],
+        "ticket_hash": signed["ticket_hash"],
+        "checkpoint_list_sha256": canonical_ticket["checkpoint_list_sha256"],
+        "server_time_ms": canonical_ticket["server_time_ms"],
+        "expires_at_ms": canonical_ticket["expires_at_ms"],
+        "roughtime_ms": canonical_ticket.get("roughtime_ms"),
+        "ticket_json": canonical_ticket,
+        "ticket_clock": clock,
+        "server_signature": server_sig.strip() if isinstance(server_sig, str) else server_sig,
+        "hardware_signature": assertion,
+        "created_at": _now(),
+    }
+    row.update(ticket.play_integrity_columns(play))
+    try:
+        shield_db.insert_job_ticket(row)
+    except Exception:
+        log.exception("Job ticket insert failed for %s", record_id)
+        return _err("Could not store the job ticket.", 500)
+    return jsonify({
+        "stored": True,
+        "id": row["id"],
+        "ticket_id": row["ticket_hash"],
+        "ticket_hash": row["ticket_hash"],
+        "ticket": canonical_ticket,
+        "ticket_clock": clock,
+        "server_signature": row["server_signature"],
+        "server_public_key": ticket.export_public_key(),
+        "play_integrity": {
+            "status": play["status"],
+            "tier": play["tier"],
+            "reason": play["reason"],
+        },
+        "chain_version": ledger.CHAIN_VERSION,
+    }), 201
+
+
+@bp.route("/records/<record_id>/genesis", methods=["POST"])
+@require_tenant
+@require_record()
+def genesis(record_id):
+    """Issue a job ticket, then store it once the phone has signed it.
+
+    Two calls, one route. The first carries no signature and returns the
+    ticket to sign; it writes nothing. The second carries the ticket, the
+    server signature, and the hardware signature. A missing or invalid
+    hardware signature is refused and writes nothing, the same rule as
+    ``upload_photo``.
+
+    The attested install key must already be on file. This route does not
+    attest a new key.
+    """
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return _err("The request body must be a JSON object.", 400)
+    platform = (body.get("platform") or "").strip().lower()
+    if platform not in ("ios", "android"):
+        return _err("platform must be ios or android", 400)
+    if not g.record.get("checkpoints_locked_at"):
+        return _err("Checkpoints must be locked before a job ticket can be "
+                    "issued.", 409)
+
+    refused = _signing_key_or_refuse()
+    if refused:
+        return refused
+
+    try:
+        existing = shield_db.find_job_ticket(_principal().tenant_id, record_id)
+    except Exception:
+        log.exception("Job ticket lookup failed for %s", record_id)
+        return _err("Could not load the job ticket", 500)
+    if existing:
+        return _err("This record already has a job ticket.", 409)
+
+    try:
+        points = _checkpoint_rows(record_id)
+    except Exception:
+        log.exception("Checkpoint read failed for genesis %s", record_id)
+        return _err("Could not load the checkpoints", 500)
+    if not points:
+        return _err("This record has no checkpoints to commit to.", 409)
+
+    presented = body.get("ticket")
+    assertion = (body.get("assertion") or "").strip()
+    if presented is None and not assertion:
+        return _offer_genesis(record_id, platform, points)
+    return _seal_genesis(record_id, platform, body, points)
 
 
 # ------------------------------------------------------------------ photos --
