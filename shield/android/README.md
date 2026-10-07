@@ -1,8 +1,20 @@
-# Shield Capture — the Android client (not written yet)
+# Shield Capture — the Android client
 
 The server half is built: `shield/android_attest.py` verifies Android Key
-Attestation, and `tenant_api.py` accepts it. This is the contract an Android
-app has to meet. There is no app code here yet.
+Attestation, and `tenant_api.py` accepts it. The app under `app/` is that
+contract, written in Kotlin.
+
+**This code has not been run on a device.** `./gradlew :app:assembleDebug`
+was run once on Linux, with the Android SDK, and it produced a debug APK.
+That compile did not install the app, talk to a keystore, or take a
+photograph. The GitHub Actions workflow compiles the same APK again. It
+does not install it either. `device_acceptance.sh` prints the run a person
+does on a phone. The script does not perform it.
+
+The package name is `com.tradedeck.shield`. `ANDROID_PACKAGE_NAME` and
+`ANDROID_SIGNING_CERT_SHA256` have to name this app and the certificate
+that actually signs it. A debug build's certificate is not the Play signing
+key, and the server refuses a certificate it was not given.
 
 ## The one rule
 
@@ -69,8 +81,9 @@ refused. So is a debug build, unless its signing certificate is configured.
 
 While the phone still has a signal, and after the record's checkpoints are
 locked, it asks for a job ticket and countersigns it with the install key
-already in `shield.attested_keys`. There is no Kotlin for this call in this
-tree. The contract is:
+already in `shield.attested_keys`. `ShieldClient.establishTicket` is that
+call. It has been compiled when the Android workflow runs, and it has not
+been run on a device. The contract is:
 
 1. `POST /shield/v2/records/<id>/genesis` with JSON `{ "platform": "android" }`.
    The response is the ticket, `ticket_hash`, and `server_signature`. Nothing
