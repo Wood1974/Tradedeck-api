@@ -98,11 +98,32 @@ struct RecordsView: View {
 struct RecordView: View {
     @EnvironmentObject var app: AppState
     let recordID: String
+    @StateObject private var locator = Locator()
     @State private var detail: RecordDetail?
     @State private var capturing: CheckpointWithPhoto?
+    @State private var sealing = false
+    @State private var ticketNote: String?
+    @State private var queueNote: String?
 
     var body: some View {
         List {
+            Section {
+                Button(sealing ? "Sealing the job ticket…" : "Seal job ticket") {
+                    Task { await sealTicket() }
+                }
+                .disabled(sealing)
+                Text("Do this while the phone still has a signal, after one " +
+                     "photograph has attested this install. Later photographs " +
+                     "can be taken with no signal. They stay on this phone " +
+                     "until Shield is reachable again.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if let ticketNote {
+                    Text(ticketNote).font(.footnote)
+                }
+                if let queueNote {
+                    Text(queueNote).font(.footnote)
+                }
+            }
             if let detail {
                 ForEach(detail.checkpoints) { point in
                     CheckpointRow(point: point) { capturing = point }
@@ -113,13 +134,54 @@ struct RecordView: View {
             }
         }
         .navigationTitle(detail?.record.external_ref ?? "Record")
-        .task { detail = await app.record(recordID) }
-        .refreshable { detail = await app.record(recordID) }
+        .task {
+            locator.start()
+            detail = await app.record(recordID)
+            await sendWaiting()
+        }
+        .refreshable {
+            detail = await app.record(recordID)
+            await sendWaiting()
+        }
+        .onDisappear { locator.stop() }
         .fullScreenCover(item: $capturing) { point in
             CaptureView(recordID: recordID, checkpoint: point) {
                 capturing = nil
-                Task { detail = await app.record(recordID) }
+                Task {
+                    detail = await app.record(recordID)
+                    await sendWaiting()
+                }
             }
+        }
+    }
+
+    /// Online. The ticket hash is what the first offline photograph chains from.
+    private func sealTicket() async {
+        sealing = true
+        defer { sealing = false }
+        do {
+            let hash = try await app.establishTicket(
+                recordID: recordID, location: locator.lastFix)
+            ticketNote = "Job ticket sealed. Offline photographs chain from \(hash.prefix(12))…"
+            app.problem = nil
+        } catch {
+            app.problem = error.localizedDescription
+        }
+    }
+
+    /// Reconnect. Opening the record is what sends a queue that was taken
+    /// in airplane mode. A failure here leaves the files where they are.
+    private func sendWaiting() async {
+        let waiting = (try? await Outbox.shared.pending(recordID: recordID, limit: 64)) ?? []
+        guard !waiting.isEmpty else { return }
+        do {
+            _ = try await app.flushOutbox(recordID: recordID)
+            queueNote = "Photographs saved on this phone were sent to Shield."
+            detail = await app.record(recordID)
+        } catch {
+            let count = waiting.count
+            let noun = count == 1 ? "photograph is" : "photographs are"
+            queueNote = "\(count) \(noun) saved on this phone. They will be sent when Shield is reachable."
         }
     }
 }
@@ -189,6 +251,8 @@ struct CaptureView: View {
     @State private var busy = false
     @State private var problem: String?
     @State private var stored: StoredPhoto?
+    @State private var queuedHash: String?
+    @State private var sent = false
 
     var body: some View {
         ZStack {
@@ -212,6 +276,20 @@ struct CaptureView: View {
                 if let stored {
                     ResultCard(photo: stored) { camera.stop(); done() }
                         .padding()
+                } else if let queuedHash {
+                    if let problem {
+                        Text(problem)
+                            .font(.callout).foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .padding()
+                            .background(.red.opacity(0.85),
+                                        in: RoundedRectangle(cornerRadius: 10))
+                            .padding(.horizontal)
+                    }
+                    QueuedCard(recordHash: queuedHash, sent: sent) {
+                        camera.stop(); done()
+                    }
+                    .padding()
                 } else {
                     if let problem {
                         Text(problem)
@@ -234,7 +312,7 @@ struct CaptureView: View {
                             // round trip to Apple), then upload. Saying which
                             // step is running beats a spinner that looks
                             // stuck.
-                            Text("Attesting…").foregroundStyle(.white)
+                            Text("Sealing…").foregroundStyle(.white)
                                 .padding(.bottom, 120)
                         }
                     }
@@ -255,14 +333,63 @@ struct CaptureView: View {
         Task {
             defer { busy = false }
             do {
-                let bytes = try await camera.capture()
-                stored = try await app.upload(photo: bytes, record: recordID,
-                                              checkpoint: checkpoint.id,
-                                              location: locator.current)
+                let frame = try await camera.capture()
+                // A sealed ticket means this photograph is part of the
+                // offline chain, even when the phone happens to have a
+                // signal. Airplane mode then just delays the upload.
+                // No ticket yet: the online path, which is also how the
+                // install attests its key the first time.
+                if (try? await Outbox.shared.ticketHash(recordID: recordID)) != nil {
+                    queuedHash = try await app.storeOffline(
+                        frame: frame, recordID: recordID,
+                        checkpointID: checkpoint.id, location: locator.lastFix)
+                    do {
+                        _ = try await app.flushOutbox(recordID: recordID)
+                        sent = true
+                    } catch let error as ClientError {
+                        sent = false
+                        if case .transport = error {
+                            // The file is on the phone. That is the point.
+                        } else {
+                            problem = error.localizedDescription
+                        }
+                    }
+                } else {
+                    stored = try await app.upload(
+                        photo: frame.jpeg, record: recordID,
+                        checkpoint: checkpoint.id, location: locator.current)
+                }
             } catch {
                 problem = error.localizedDescription
             }
         }
+    }
+}
+
+/// A photograph that has not reached the server yet, or has just been sent
+/// from the outbox. The record hash is the phone's own commitment. The
+/// server recomputes it. This card does not invent a custody verdict.
+struct QueuedCard: View {
+    let recordHash: String
+    let sent: Bool
+    let done: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(sent ? "Sent" : "Saved on this phone",
+                  systemImage: sent ? "paperplane.fill" : "iphone")
+                .font(.headline)
+            Text(sent
+                 ? "Shield accepted this photograph from the queue on this phone."
+                 : "There is no signal, or Shield could not be reached. This photograph stays on this phone and is sent when the record is opened again.")
+                .font(.footnote).foregroundStyle(.secondary)
+            Text(recordHash.prefix(16) + "…")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Button("Done", action: done).buttonStyle(.borderedProminent)
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -296,6 +423,7 @@ struct ResultCard: View {
 final class Locator: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     @Published private(set) var current: (lat: Double, lng: Double)?
+    @Published private(set) var lastFix: CLLocation?
 
     override init() {
         super.init()
@@ -315,6 +443,7 @@ final class Locator: NSObject, ObservableObject, CLLocationManagerDelegate {
         guard let last = locations.last else { return }
         Task { @MainActor in
             current = (last.coordinate.latitude, last.coordinate.longitude)
+            lastFix = last
         }
     }
 

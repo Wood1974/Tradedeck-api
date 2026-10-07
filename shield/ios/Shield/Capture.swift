@@ -22,6 +22,15 @@ import AVFoundation
 import Foundation
 import SwiftUI
 
+/// The bytes a capture produced, the digest of those bytes, and depth when
+/// the device attached a depth map. The digest is computed here in chunks.
+struct CapturedFrame {
+    let jpeg: Data
+    let sha256Hex: String
+    let depthPresent: Bool
+    let depthHash: String?
+}
+
 @MainActor
 final class CaptureModel: NSObject, ObservableObject {
     @Published var isReady = false
@@ -29,7 +38,7 @@ final class CaptureModel: NSObject, ObservableObject {
 
     let session = AVCaptureSession()
     private let output = AVCapturePhotoOutput()
-    private var pending: CheckedContinuation<Data, Error>?
+    private var pending: CheckedContinuation<CapturedFrame, Error>?
 
     enum CaptureError: LocalizedError {
         case denied, unavailable, failed(String)
@@ -75,6 +84,11 @@ final class CaptureModel: NSObject, ObservableObject {
         session.sessionPreset = .photo
         if session.canAddInput(input) { session.addInput(input) }
         if session.canAddOutput(output) { session.addOutput(output) }
+        // Depth is hashed when the device has it. Enabling it on a device
+        // that does not support it throws, so the check is the guard.
+        if output.isDepthDataDeliverySupported {
+            output.isDepthDataDeliveryEnabled = true
+        }
         session.commitConfiguration()
 
         // Off the main actor: starting the session blocks, and blocking here
@@ -89,14 +103,19 @@ final class CaptureModel: NSObject, ObservableObject {
         Task.detached { session.stopRunning() }
     }
 
-    /// One photograph, as JPEG bytes. These exact bytes are what the
-    /// attestation commits to and what the server hashes.
-    func capture() async throws -> Data {
+    /// One photograph. The JPEG is hashed in 64 KiB chunks as it sits in
+    /// memory, so the digest does not require a second full-buffer pass
+    /// written as one shot. These exact bytes are what a later record's
+    /// photo_sha256 names, and what the server hashes again.
+    func capture() async throws -> CapturedFrame {
         try await withCheckedThrowingContinuation {
-            (cont: CheckedContinuation<Data, Error>) in
+            (cont: CheckedContinuation<CapturedFrame, Error>) in
             pending = cont
             let settings = AVCapturePhotoSettings(
                 format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+            if output.isDepthDataDeliverySupported {
+                settings.isDepthDataDeliveryEnabled = true
+            }
             // EXIF is left exactly as the camera wrote it. The server reads it
             // and treats it as a claim rather than as proof — it is forgeable
             // in about twelve lines — so stripping or rewriting it here would
@@ -116,7 +135,12 @@ extension CaptureModel: AVCapturePhotoCaptureDelegate {
             if let error {
                 cont.resume(throwing: CaptureError.failed(error.localizedDescription))
             } else if let data = photo.fileDataRepresentation() {
-                cont.resume(returning: data)
+                let depth = DepthDigest.hash(photo)
+                cont.resume(returning: CapturedFrame(
+                    jpeg: data,
+                    sha256Hex: Digests.sha256Hex(data),
+                    depthPresent: depth.present,
+                    depthHash: depth.hash))
             } else {
                 cont.resume(throwing: CaptureError.failed("no image data was produced"))
             }

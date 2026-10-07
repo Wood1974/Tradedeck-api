@@ -17,7 +17,11 @@ test that fails for each one removed. Here there is nothing of the kind, and
 saying otherwise would be the exact drift this project's CLAUDE.md warns about.
 
 Treat it as a specification you can build, not as a shipped app. The first
-real device run is the first real test.
+real device run is the first real test. `device_acceptance.sh` is that run
+written down: genesis while online, airplane mode, 5 photos, reboot, 1
+photo, reconnect, then a wall clock set 3 minutes ahead. The script prints
+the steps. It does not perform them, and CI does not either. CI compiles
+the sources for the iPhone SDK and stops there.
 
 Specifically unverified: the exact `DCAppAttestService` error cases, the CBOR
 shape Apple returns (the server parses it, so a mismatch shows up as a refusal
@@ -99,7 +103,8 @@ versions do not send it.
 
 While the phone still has a signal, and after the record's checkpoints are
 locked, it asks for a job ticket and countersigns it with the install key
-already on file. The Swift for this call is not in this tree. The contract is:
+already on file. `ShieldClient.establishTicket` is that call. It has been
+compiled in CI and has not been run on a device. The contract is:
 
 1. `POST /shield/v2/records/<id>/genesis` with JSON `{ "platform": "ios" }`.
    The response is the ticket, `ticket_hash`, and `server_signature`. Nothing
@@ -167,7 +172,13 @@ must stay absent** — see above.
 | `ShieldApp.swift` | Entry point and navigation |
 | `Attestor.swift` | `DCAppAttestService` — attests a key once, then asserts; the only source of proof |
 | `ShieldClient.swift` | The API. Sends bytes and attestations, derives nothing |
-| `Capture.swift` | `AVCapturePhotoOutput`. The only thing that produces bytes |
+| `Capture.swift` | `AVCapturePhotoOutput`. The only thing that produces bytes. SHA-256 is updated in 64 KiB chunks |
+| `Time.swift` | Wall clock, `mach_continuous_time` via `mach_timebase_info`, `kern.bootsessionuuid`, GNSS time, simulated-location bit |
+| `Sensors.swift` | IMU and barometer snapshot hash when a sample exists; depth hash when the photo has depth |
+| `Flags.swift` | Screen capture, debugger, mock location. Jailbreak is a best-effort note and does not change a label |
+| `Outbox.swift` | One file per capture, append-only manifest, Data Protection, upload in batches of 8 |
+| `CanonicalJSON.swift` | Sorted keys, tight separators, whole numbers, Python's `\u` escapes |
+| `CaptureRecord.swift` | Canonical capture-record bytes. The strings are checked against `capture_record.py` |
 | `Models.swift` | What the API returns |
 | `Screens.swift` | Connect, records, checkpoints, capture, result |
 | `Info.plist.template` | Camera yes, photo library deliberately absent |
