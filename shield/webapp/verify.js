@@ -7,10 +7,11 @@
  * a terminal and the wrong one for everybody else, and "verifiable without
  * trusting us" means nothing if verifying requires installing Python.
  *
- * It imports nothing. No framework, no bundler, no network, no Shield code.
- * Open the page with the wifi off and it still works, which is the point: a
- * recipient checking our package by calling our API is asking the accused to
- * re-examine themselves.
+ * The custody check below imports nothing. The offline seal, in seal.js,
+ * imports one local module: the pinned timestamp roots. No framework, no
+ * bundler, no network, no Shield service code. Open the page with the wifi
+ * off and it still works, which is the point: a recipient checking our
+ * package by calling our API is asking the accused to re-examine themselves.
  *
  * The part that is actually hard
  * ------------------------------
@@ -440,8 +441,13 @@ export async function verifyChain(entries, shieldJobId, { expectHead = null } = 
  * broken chain, so it is reported separately rather than folded in.
  */
 export async function verifyPackage(manifest, { expectHead = null } = {}) {
-  const jobId = manifest?.job?.shield_job_id;
-  const entries = manifest?.custody_entries;
+  // An evidence manifest names the job. The record package from the API
+  // names the record, and the chain was sealed under that id. `custody` on
+  // a manifest is an object; on the API package it is the entry list.
+  const jobId = manifest?.job?.shield_job_id || manifest?.record?.id || null;
+  const entries = Array.isArray(manifest?.custody_entries)
+    ? manifest.custody_entries
+    : (Array.isArray(manifest?.custody) ? manifest.custody : null);
   const findings = [];
 
   if (!jobId) {

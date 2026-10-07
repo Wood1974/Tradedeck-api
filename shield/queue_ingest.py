@@ -261,6 +261,12 @@ def custody_event(prepared, *, ticket_hash):
                 stored[key] = record[key]
         stored["prev_hash"] = record.get("prev_hash")
         stored["record_hash"] = record.get("record_hash")
+        # The hardware signature is not a signed field of the capture
+        # record. It sits beside the record so a package can be checked
+        # without asking this service. The custody hash covers it because
+        # it lives in event_data. It is not a second chain.
+        if item.get("assertion"):
+            stored["hardware_signature"] = item["assertion"]
         phone_chain.append(stored)
         summaries.append({
             "record_hash": item["record_hash"],

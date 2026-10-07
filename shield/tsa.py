@@ -52,6 +52,10 @@ ECDSA_SHA256_OID = "1.2.840.10045.4.3.2"
 ECDSA_SHA384_OID = "1.2.840.10045.4.3.3"
 RSA_SHA256_OID = "1.2.840.113549.1.1.11"
 RSA_SHA384_OID = "1.2.840.113549.1.1.12"
+# rsaEncryption. DigiCert and Sectigo both put this OID in SignerInfo and
+# name the hash separately (SHA-256 at DigiCert, SHA-384 at Sectigo). It is
+# PKCS#1 v1.5, not a second hash hiding in the parameters.
+RSA_ENCRYPTION_OID = "1.2.840.113549.1.1.1"
 # id-RSASSA-PSS. Sectigo signs some tokens this way. The hash is the one
 # named in SignerInfo, not a second algorithm hiding in the parameters.
 RSA_PSS_OID = "1.2.840.113549.1.1.10"
@@ -60,8 +64,10 @@ RSA_PSS_OID = "1.2.840.113549.1.1.10"
 # algorithms that may carry each one. SHA-1 is absent on purpose.
 _ACCEPTED_DIGESTS = (SHA256_OID, SHA384_OID)
 _SIG_OIDS = {
-    SHA256_OID: frozenset((ECDSA_SHA256_OID, RSA_SHA256_OID, RSA_PSS_OID)),
-    SHA384_OID: frozenset((ECDSA_SHA384_OID, RSA_SHA384_OID, RSA_PSS_OID)),
+    SHA256_OID: frozenset((
+        ECDSA_SHA256_OID, RSA_SHA256_OID, RSA_PSS_OID, RSA_ENCRYPTION_OID)),
+    SHA384_OID: frozenset((
+        ECDSA_SHA384_OID, RSA_SHA384_OID, RSA_PSS_OID, RSA_ENCRYPTION_OID)),
 }
 SIGNED_DATA_OID = "1.2.840.113549.1.7.2"
 TST_INFO_OID = "1.2.840.113549.1.9.16.1.4"
@@ -652,10 +658,17 @@ def _parse_response(token):
     if not status_fields or status_fields[0][0] != 0x02:
         raise ValueError("status is not an integer")
     status = _parse_int(status_fields[0][1])
-    if len(fields) < 2 or fields[1][0] != 0xA0:
+    if len(fields) < 2:
         raise ValueError("no token")
-    # [0] EXPLICIT ContentInfo, so the content is the ContentInfo TLV.
-    content_info = fields[1][1]
+    # RFC 3161 TimeStampResp carries ContentInfo directly, a SEQUENCE.
+    # mint_token wraps that SEQUENCE in an explicit [0] tag. Both are a
+    # token. A real DigiCert or Sectigo answer is the SEQUENCE form.
+    if fields[1][0] == 0xA0:
+        content_info = fields[1][1]
+    elif fields[1][0] == 0x30:
+        content_info = fields[1][2]
+    else:
+        raise ValueError("no token")
     info_fields = _one_seq(content_info)
     if len(info_fields) < 2 or info_fields[0][0] != 0x06:
         raise ValueError("token content type is missing")

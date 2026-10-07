@@ -9,6 +9,7 @@
  */
 import { ShieldClient, ShieldError } from "./api.js";
 import { verifyPackage, checkPhoto } from "./verify.js";
+import { judgeOfflineSeal } from "./seal.js";
 
 const $ = (id) => document.getElementById(id);
 const client = () => new ShieldClient($("baseUrl").value, $("token").value || null);
@@ -45,12 +46,50 @@ const money = (cents) => `$${(cents / 100).toLocaleString("en-US",
 
 let loadedPackage = null;
 
-function renderVerification({ verifiable, chain, findings }) {
+function sealClass(label) {
+  if (label === "SEALED") return "good";
+  if (label === "UNVERIFIED TIME" || label === "receipt present, timestamp absent") {
+    return "partial";
+  }
+  if (label === "TAMPERED" || label === "FORGED" || label === "DEVICE CLOCK MISMATCH") {
+    return "bad";
+  }
+  return "unknown";
+}
+
+function renderSeal(seal) {
+  const label = seal && seal.label;
+  if (!label) {
+    return `<div class="card unknown" id="sealCard">
+      <p class="kicker">Offline seal</p>
+      <h3>No offline seal</h3>
+      <p>${esc((seal && seal.detail) || "This package has no offline seal.")}</p>
+    </div>`;
+  }
+  const flags = seal.flags && seal.flags.length
+    ? `Flags: ${seal.flags.join(", ")}.`
+    : "No flags are set.";
+  const notes = (seal.notes || []).map((note) =>
+    `<p class="caveat">${esc(note)}</p>`).join("");
+  return `<div class="card ${sealClass(label)}" id="sealCard">
+    <p class="kicker">Offline seal</p>
+    <h3>${esc(label)}</h3>
+    <p>${esc(seal.detail || "")}</p>
+    ${notes}
+    <p>${esc(flags)} Flags do not change this label.</p>
+    <p class="limits">Computed in this page from the package bytes. No request
+      was made. A timestamp, when one is present, is checked against the
+      DigiCert and Sectigo certificates pinned in this page.</p>
+  </div>`;
+}
+
+function renderVerification({ verifiable, chain, findings }, seal) {
   const node = $("verifyResult");
+  const sealHtml = renderSeal(seal);
 
   if (!verifiable) {
-    return show(node, `<div class="card bad"><h3>Not verifiable</h3>
-      ${findings.map((f) => `<p>${esc(f.text)}</p>`).join("")}</div>`);
+    return show(node, `<div class="card bad" id="custodyCard"><h3>Not verifiable</h3>
+      ${findings.map((f) => `<p>${esc(f.text)}</p>`).join("")}</div>${sealHtml}`);
   }
 
   const lying = findings.filter((f) => f.severity === "lying");
@@ -88,7 +127,7 @@ function renderVerification({ verifiable, chain, findings }) {
   ];
 
   show(node, `
-    <div class="card ${cls}">
+    <div class="card ${cls}" id="custodyCard">
       <h3>${esc(head)}</h3>
       ${detail}
       ${lying.length ? `<div class="lying"><h4>The package misdescribes itself</h4>
@@ -99,7 +138,7 @@ function renderVerification({ verifiable, chain, findings }) {
         That a photograph came off a camera rather than a file picker; that
         entries were never omitted <em>before</em> the chain was written; or
         that any assessment in the record is correct.</p>` : ""}
-    </div>`);
+    </div>${sealHtml}`);
 }
 
 async function loadPackage(file) {
@@ -118,7 +157,9 @@ async function runVerification() {
   if (!loadedPackage) return;
   try {
     const expectHead = $("expectHead").value.trim() || null;
-    renderVerification(await verifyPackage(loadedPackage, { expectHead }));
+    const custody = await verifyPackage(loadedPackage, { expectHead });
+    const seal = await judgeOfflineSeal(loadedPackage);
+    renderVerification(custody, seal);
   } catch (err) {
     fail($("verifyResult"), err);
   }

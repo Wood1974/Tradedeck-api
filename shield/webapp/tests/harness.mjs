@@ -13,6 +13,7 @@
  */
 import { canonical, pyJson, pyRepr, verifyChain, genesisHash, link }
   from "../verify.js";
+import { judgeOfflineSeal } from "../seal.js";
 
 const stdin = await new Promise((resolve) => {
   let buf = "";
@@ -64,6 +65,10 @@ switch (req.op) {
   case "verify":
     out = await verifyChain(req.entries, req.shield_job_id,
                             { expectHead: req.expect_head ?? null });
+    break;
+
+  case "seal":
+    out = await judgeOfflineSeal(req.package, { rootsPem: req.roots_pem || undefined });
     break;
 
   default:
