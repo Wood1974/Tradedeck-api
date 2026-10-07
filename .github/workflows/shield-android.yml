@@ -26,12 +26,12 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # Do not ask for the old "tools" package. Current cmdline-tools
+      # no longer ship it, and setup-android's default list still does,
+      # which fails the job before Gradle starts.
       - uses: android-actions/setup-android@v3
-
-      - name: Install the platform this project compiles against
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
       - name: Compile the debug APK
         working-directory: shield/android
