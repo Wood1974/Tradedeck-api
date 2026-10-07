@@ -25,6 +25,9 @@ struct CaptureRecordBody {
     var sensorHash: String?
     var depthHash: String?
     var depthPresent: Bool?
+    /// Set only when the tenant opted in. Nil leaves the field out of the record.
+    var gnssFixHash: String?
+    var clipSHA256: String?
 
     func canon() -> Canon {
         var fields: [String: Canon] = [
@@ -42,6 +45,8 @@ struct CaptureRecordBody {
         if let sensorHash { fields["sensor_hash"] = .string(sensorHash) }
         if let depthHash { fields["depth_hash"] = .string(depthHash) }
         if let depthPresent { fields["depth_present"] = .bool(depthPresent) }
+        if let gnssFixHash { fields["gnss_fix_hash"] = .string(gnssFixHash) }
+        if let clipSHA256 { fields["clip_sha256"] = .string(clipSHA256) }
         return .object(fields)
     }
 
@@ -73,6 +78,8 @@ struct CaptureRecordBody {
         if let sensorHash { body["sensor_hash"] = sensorHash }
         if let depthHash { body["depth_hash"] = depthHash }
         if let depthPresent { body["depth_present"] = depthPresent }
+        if let gnssFixHash { body["gnss_fix_hash"] = gnssFixHash }
+        if let clipSHA256 { body["clip_sha256"] = clipSHA256 }
         return body
     }
 }

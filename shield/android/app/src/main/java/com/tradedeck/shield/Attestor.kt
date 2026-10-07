@@ -23,8 +23,9 @@ import java.math.BigInteger
  * clientData for a photograph is the challenge bytes followed by the raw
  * SHA-256 of the photograph. clientData for an offline record is
  * "shield-capture-v1" followed by the raw record hash. clientData for a
- * job ticket is "shield-genesis-v1" followed by SHA-256 of the raw ticket
- * hash concatenated with the canonical clock JSON.
+ * second phone is "shield-countersign-v1" followed by that same raw record
+ * hash. clientData for a job ticket is "shield-genesis-v1" followed by
+ * SHA-256 of the raw ticket hash concatenated with the canonical clock JSON.
  *
  * Compiled when the Android workflow runs. Not run on a device. Keystore,
  * StrongBox, and the attestation extension are the parts a device has to
