@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import capture_record  # noqa: E402
+import extras  # noqa: E402
 import evidence  # noqa: E402
 import integrity  # noqa: E402
 import ledger  # noqa: E402
@@ -36,7 +37,7 @@ from cryptography import x509  # noqa: E402
 from cryptography.hazmat.primitives import hashes  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec, rsa  # noqa: E402
 from cryptography.hazmat.primitives.serialization import (  # noqa: E402
-    Encoding, NoEncryption, PrivateFormat, load_pem_public_key)
+    Encoding, NoEncryption, PrivateFormat, PublicFormat, load_pem_public_key)
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID  # noqa: E402
 
 import test_tenant_api as api  # noqa: E402
@@ -926,3 +927,151 @@ class TestTheManifest:
             {"record_id": api.RECORD_A, **event},
             ledger.genesis_hash(api.RECORD_A))
         assert sealed["chain_version"] == 2
+
+
+class TestOptInExtras:
+    """A GNSS fix and a clip are checked when the record signs them.
+    A countersignature is stored only when the tenant turned it on, and
+    only from a second key of that tenant. None of this is SEALED."""
+
+    def test_a_matching_fix_and_clip_are_stored_beside_the_photo(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = api.client_for(flask_app, store, tenant_api, api.TENANT_A, keys)
+        store.rows["tenants"][0]["opt_in_gnss_fix"] = True
+        store.rows["tenants"][0]["opt_in_micro_clip"] = True
+        key_raw = _seed_ios(store)
+        _seed_ticket(store, key_raw)
+        fix = {"time_ms": WALL, "sat_count": 8, "accuracy_mm": 3500, "mock": False}
+        clip = b"about-one-second"
+        built = capture_record.build(
+            checkpoint_id="cp-1", photo_sha256=PHOTO_HASH, ticket_id=TICKET_HASH,
+            wall_time_ms=WALL + STEP, monotonic_ms=MONO + STEP, boot_id=BOOT,
+            flags=0, gnss_fix_hash=extras.gnss_fix_hash(fix),
+            clip_sha256=extras.clip_sha256(clip))
+        sealed = capture_record.seal(built, TICKET_HASH)
+        captures = _captures([sealed], [_ios_assertion(sealed["record_hash"], 1)])
+        captures[0]["gnss_fix"] = fix
+        captures[0]["clip_b64"] = base64.b64encode(clip).decode()
+        got = _post(client, captures, attestation_key_id=_key_b64(key_raw))
+        assert got.status_code == 201, got.get_json()
+        paths = [path for path, _size in store.uploads]
+        assert any("/clips/" in path and path.endswith(".mp4") for path in paths)
+        assert any(path.endswith(".jpg") and "/clips/" not in path for path in paths)
+
+    def test_a_fix_that_does_not_match_stores_nothing(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = api.client_for(flask_app, store, tenant_api, api.TENANT_A, keys)
+        store.rows["tenants"][0]["opt_in_gnss_fix"] = True
+        key_raw = _seed_ios(store)
+        _seed_ticket(store, key_raw)
+        fix = {"time_ms": WALL, "sat_count": 8, "accuracy_mm": 3500, "mock": False}
+        built = capture_record.build(
+            checkpoint_id="cp-1", photo_sha256=PHOTO_HASH, ticket_id=TICKET_HASH,
+            wall_time_ms=WALL + STEP, monotonic_ms=MONO + STEP, boot_id=BOOT,
+            flags=0, gnss_fix_hash=extras.gnss_fix_hash(fix))
+        sealed = capture_record.seal(built, TICKET_HASH)
+        captures = _captures([sealed], [_ios_assertion(sealed["record_hash"], 1)])
+        captures[0]["gnss_fix"] = dict(fix, sat_count=1)
+        got = _post(client, captures, attestation_key_id=_key_b64(key_raw))
+        assert got.status_code == 422
+        assert store.rows["photos"] == []
+        assert _receipts(store) == []
+
+    def test_extras_stay_off_until_the_tenant_turns_them_on(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = api.client_for(flask_app, store, tenant_api, api.TENANT_A, keys)
+        key_raw = _seed_ios(store)
+        _seed_ticket(store, key_raw)
+        fix = {"time_ms": WALL, "sat_count": 8, "accuracy_mm": 3500, "mock": False}
+        clip = b"about-one-second"
+        built = capture_record.build(
+            checkpoint_id="cp-1", photo_sha256=PHOTO_HASH, ticket_id=TICKET_HASH,
+            wall_time_ms=WALL + STEP, monotonic_ms=MONO + STEP, boot_id=BOOT,
+            flags=0, gnss_fix_hash=extras.gnss_fix_hash(fix),
+            clip_sha256=extras.clip_sha256(clip))
+        sealed = capture_record.seal(built, TICKET_HASH)
+        captures = _captures([sealed], [_ios_assertion(sealed["record_hash"], 1)])
+        captures[0]["gnss_fix"] = fix
+        captures[0]["clip_b64"] = base64.b64encode(clip).decode()
+        got = _post(client, captures, attestation_key_id=_key_b64(key_raw))
+        assert got.status_code == 409
+        assert store.rows["photos"] == []
+        assert store.uploads == []
+        assert _receipts(store) == []
+
+    def test_countersign_is_off_until_the_tenant_turns_it_on(self, app_and_db):
+        flask_app, store, keys, tenant_api = app_and_db
+        client = api.client_for(flask_app, store, tenant_api, api.TENANT_A, keys)
+        who = client.get("/shield/v2/whoami")
+        assert who.status_code == 200
+        assert who.get_json()["opt_in"] == {
+            "gnss_fix": False, "micro_clip": False, "countersign": False}
+        key_raw = _seed_ios(store)
+        _seed_ticket(store, key_raw)
+        record_hash = "ab" * 32
+        store.rows["custody_log"].append({
+            "tenant_id": api.TENANT_A, "record_id": api.RECORD_A,
+            "event_data": {"phone_chain": [{"record_hash": record_hash}]},
+        })
+        second = ec.generate_private_key(ec.SECP256R1())
+        second_pub = second.public_key().public_bytes(
+            Encoding.X962, PublicFormat.UncompressedPoint)
+        second_raw = hashlib.sha256(second_pub).digest()
+        store.rows["attested_keys"].append({
+            "key_id": _key_b64(second_raw),
+            "tenant_id": api.TENANT_A,
+            "actor_id": "someone-else",
+            "platform": "ios",
+            "public_key": base64.b64encode(second_pub).decode(),
+            "environment": "production",
+            "sign_count": 0,
+            "revoked_at": None,
+        })
+        blob = base64.b64encode(attest_fixtures.build_assertion(
+            key=second, challenge=extras.COUNTERSIGN_CHALLENGE,
+            payload_sha256=bytes.fromhex(record_hash), counter=1)).decode()
+        body = {
+            "platform": "ios",
+            "record_hash": record_hash,
+            "assertion": blob,
+            "attestation_key_id": _key_b64(second_raw),
+        }
+        off = client.post(f"/shield/v2/records/{api.RECORD_A}/countersign", json=body)
+        assert off.status_code == 409
+        assert store.rows.get("capture_countersigns") in (None, [])
+
+        same = dict(body, assertion=base64.b64encode(attest_fixtures.build_assertion(
+            challenge=extras.COUNTERSIGN_CHALLENGE,
+            payload_sha256=bytes.fromhex(record_hash), counter=1)).decode(),
+            attestation_key_id=_key_b64(key_raw))
+        store.rows["tenants"][0]["opt_in_countersign"] = True
+        refused = client.post(
+            f"/shield/v2/records/{api.RECORD_A}/countersign", json=same)
+        assert refused.status_code == 422
+        assert store.rows.get("capture_countersigns") in (None, [])
+
+        other = dict(body)
+        other_key = hashlib.sha256(b"other-tenant-key").digest()
+        store.rows["attested_keys"].append({
+            "key_id": _key_b64(other_key),
+            "tenant_id": api.TENANT_B,
+            "actor_id": _actor(store),
+            "platform": "ios",
+            "public_key": base64.b64encode(second_pub).decode(),
+            "environment": "production",
+            "sign_count": 0,
+            "revoked_at": None,
+        })
+        other["attestation_key_id"] = _key_b64(other_key)
+        cross = client.post(
+            f"/shield/v2/records/{api.RECORD_A}/countersign", json=other)
+        assert cross.status_code == 422
+
+        got = client.post(
+            f"/shield/v2/records/{api.RECORD_A}/countersign", json=body)
+        assert got.status_code == 201, got.get_json()
+        assert got.get_json()["stored"] is True
+        row = store.rows["capture_countersigns"][0]
+        assert row["tenant_id"] == api.TENANT_A
+        assert row["capture_key_id"] != row["countersign_key_id"]
+        assert row["countersign_key_id"] == _key_b64(second_raw)

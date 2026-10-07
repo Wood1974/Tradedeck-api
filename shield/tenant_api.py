@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, g, jsonify, request
 
 import config
+import extras
 import android_attest
 import app_attest
 import attestation
@@ -258,18 +259,18 @@ def whoami():
     """What this credential is, so an integrator can check their wiring."""
     principal = _principal()
     try:
-        res = (_t("tenants").select("name,slug,status")
-               .eq("id", principal.tenant_id).limit(1).execute())
-        tenant = (res.data or [{}])[0]
+        tenant = _tenant_row(principal)
     except Exception:
         log.exception("Tenant lookup failed")
         return _err("Could not load the tenant", 500)
 
+    opt_in = extras.flags_from_row(tenant)
     return jsonify({
         "tenant": {"id": principal.tenant_id, **tenant},
         "credential": "api_key" if principal.is_api_key else "member",
         "role": principal.role,
         "chain_version": ledger.CHAIN_VERSION,
+        "opt_in": opt_in,
     })
 
 
@@ -1132,6 +1133,19 @@ def _store_batch_photos(record_id, accepted, tiers):
         except Exception:
             log.exception("Photo insert failed for %s", photo_id)
             return None
+        clip = item.get("clip")
+        if clip:
+            # A separate object. The photograph's path is the evidence
+            # image. The clip is not that image and is not graded as one.
+            clip_path = extras.clip_path(
+                _principal().tenant_id, record_id, item["record_hash"])
+            try:
+                db().storage.from_(config.get("SHIELD_BUCKET")).upload(
+                    clip_path, clip,
+                    {"content-type": "video/mp4", "upsert": "false"})
+            except Exception:
+                log.exception("Clip write failed for %s", item.get("record_hash"))
+                return None
         photo_ids.append(photo_id)
     return photo_ids
 
@@ -1295,11 +1309,28 @@ def ingest_queue(record_id):
             captures.append(item)
             continue
         photo = _b64(item.get("photo_b64") or "")
+        clip = _b64(item.get("clip_b64") or "") if item.get("clip_b64") else None
         captures.append({
             "photo": photo if photo is not None else b"",
             "record": item.get("record"),
             "assertion": item.get("assertion"),
+            "gnss_fix": item.get("gnss_fix"),
+            "clip": clip,
         })
+
+    opted = _tenant_opt_in()
+    for item in captures:
+        record = item.get("record") if isinstance(item, dict) else None
+        if not isinstance(record, dict):
+            continue
+        if record.get("gnss_fix_hash") and not opted["gnss_fix"]:
+            return _err(
+                "A GNSS fix was signed into a capture, and this tenant has "
+                "that extra off. Nothing was stored.", 409)
+        if record.get("clip_sha256") and not opted["micro_clip"]:
+            return _err(
+                "A micro-clip was signed into a capture, and this tenant has "
+                "that extra off. Nothing was stored.", 409)
 
     try:
         points = _checkpoint_rows(record_id)
@@ -1918,3 +1949,172 @@ def complete(record_id):
                      "that lets you detect a later rewrite, or entries removed "
                      "from the end of the chain.",
     })
+
+
+def _tenant_row(principal):
+    """The tenant row. Opt-in columns that are not migrated yet stay off."""
+    # tenants is keyed by id, not by a tenant_id column. Filtering on id
+    # is the scope. scope() looks for tenant_id and would miss the row.
+    try:
+        res = (_t("tenants").select(
+                   "name,slug,status,opt_in_gnss_fix,opt_in_micro_clip,"
+                   "opt_in_countersign")
+               .eq("id", principal.tenant_id).limit(1).execute())
+        return (res.data or [{}])[0]
+    except Exception:
+        log.exception("Opt-in columns are not readable yet; extras stay off")
+        res = (_t("tenants").select("name,slug,status")
+               .eq("id", principal.tenant_id).limit(1).execute())
+        return (res.data or [{}])[0]
+
+
+def _tenant_opt_in():
+    """The three extras for this tenant. Missing columns are off."""
+    try:
+        row = _tenant_row(_principal())
+    except Exception:
+        log.exception("Opt-in lookup failed")
+        row = {}
+    return extras.flags_from_row(row)
+
+
+def _capture_was_stored(record_id, record_hash):
+    """True when this record's custody log already carries that hash."""
+    try:
+        res = (tenancy.scope(
+            _t("custody_log").select("event_data").eq("record_id", record_id),
+            _principal()).execute())
+    except Exception:
+        log.exception("Custody read failed while checking a countersign")
+        return False
+    for row in res.data or []:
+        blob = json.dumps(row.get("event_data") or {}, default=str)
+        if record_hash in blob:
+            return True
+    return False
+
+
+@bp.route("/records/<record_id>/countersign", methods=["POST"])
+@require_tenant
+@require_record()
+def countersign(record_id):
+    """A second phone signs a capture record hash this tenant already stored.
+
+    Off unless the tenant opted in. Off stores nothing. The second key has
+    to be an attested key of this same tenant, and it has to be a different
+    key from the one that signed the capture. A missing signature stores
+    nothing. This is not a seal requirement: a batch with no countersignature
+    is still eligible for SEALED.
+    """
+    if not _tenant_opt_in()["countersign"]:
+        return _err("Countersign is off for this tenant. Nothing was stored.",
+                    409)
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return _err("The request body must be a JSON object.", 400)
+    record_hash = (body.get("record_hash") or "").strip()
+    try:
+        challenge, payload = extras.countersign_binding(record_hash)
+    except ValueError:
+        return _err("The record hash is not one this service can countersign. "
+                    "Nothing was stored.", 422)
+    try:
+        ticket_row = shield_db.find_job_ticket(_principal().tenant_id, record_id)
+    except Exception:
+        log.exception("Job ticket lookup failed for countersign %s", record_id)
+        return _err("Could not load the job ticket.", 500)
+    if not ticket_row:
+        return _err("This record has no job ticket, so there is nothing to "
+                    "countersign. Nothing was stored.", 409)
+    capture_key = str(ticket_row.get("key_id") or "")
+    if not _capture_was_stored(record_id, record_hash):
+        return _err("That capture is not on this record. Nothing was stored.",
+                    404)
+
+    platform = (body.get("platform") or "").strip().lower()
+    if platform not in ("ios", "android"):
+        return _err("platform must be ios or android", 400)
+    assertion = (body.get("assertion") or "").strip()
+    if not assertion:
+        return _err("A hardware signature over the record hash is required. "
+                    "Nothing was stored.", 422)
+
+    raw_key_id = _b64(body.get("attestation_key_id"))
+    blob = _b64(assertion)
+    if raw_key_id is None or blob is None:
+        return _err("The signature or its key id is not valid base64. "
+                    "Nothing was stored.", 422)
+    key_id = base64.b64encode(raw_key_id).decode()
+    if not extras.distinct_keys(capture_key, key_id):
+        return _err("The countersignature has to come from a different key "
+                    "than the one that signed the capture. Nothing was stored.",
+                    422)
+    try:
+        rows = (tenancy.scope(
+            _t("attested_keys").select("*").eq("key_id", key_id),
+            _principal()).limit(1).execute()).data or []
+    except Exception:
+        log.exception("Countersign key lookup failed")
+        return _err("The device key could not be looked up. Nothing was stored.",
+                    500)
+    key_row = rows[0] if rows else None
+    if (key_row is None or key_row.get("revoked_at")
+            or (key_row.get("platform") or "ios") != platform):
+        return _err("This key is not an attested key of this tenant. "
+                    "Nothing was stored.", 422)
+
+    allow_dev = config.get("APP_ATTEST_ALLOW_DEVELOPMENT") == "1"
+    if platform == "ios":
+        checked = app_attest.verify_assertion(
+            blob, challenge=challenge, payload_sha256=payload,
+            app_id=config.get("APP_ATTEST_APP_ID") or "",
+            public_key=_b64(key_row.get("public_key")),
+            previous_counter=key_row.get("sign_count") or 0,
+            environment=key_row.get("environment") or "production",
+            allow_development=allow_dev)
+    else:
+        checked = android_attest.verify_signature(
+            blob, challenge=challenge, payload_sha256=payload,
+            public_key=_b64(key_row.get("public_key")))
+    if checked.get("verified") is not True:
+        return _err("This countersignature does not verify. Nothing was stored.",
+                    422)
+
+    try:
+        already = shield_db.find_countersign(_principal().tenant_id, record_hash)
+    except Exception:
+        log.exception("Countersign lookup failed")
+        already = None
+    if already:
+        if str(already.get("countersign_key_id") or "") == key_id:
+            return jsonify({"stored": True, "id": already.get("id"),
+                            "record_hash": record_hash}), 200
+        return _err("This capture was already countersigned by a different key. "
+                    "Nothing was stored.", 409)
+
+    row = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": _principal().tenant_id,
+        "record_id": record_id,
+        "record_hash": record_hash,
+        "capture_key_id": capture_key,
+        "countersign_key_id": key_id,
+        "platform": platform,
+        "hardware_signature": assertion,
+        "created_at": _now(),
+    }
+    try:
+        shield_db.insert_countersign(row)
+    except Exception:
+        log.exception("Countersign insert failed for %s", record_id)
+        return _err("Could not store the countersignature.", 500)
+    if platform == "ios":
+        _advance_counter(key_id, checked["counter"])
+    else:
+        _touch_key(key_id)
+    return jsonify({
+        "stored": True,
+        "id": row["id"],
+        "record_hash": record_hash,
+        "countersign_key_id": key_id,
+    }), 201

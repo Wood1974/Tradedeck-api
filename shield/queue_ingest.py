@@ -34,6 +34,7 @@ import hmac
 
 import capture_record
 import config
+import extras
 import integrity
 import time_audit
 
@@ -159,6 +160,8 @@ def prepare(captures, *, ticket_hash, expected_prev, ticket_clock,
             return _no("A capture must be an object. Nothing was stored.")
         photo = item.get("photo")
         record = item.get("record")
+        clip = item.get("clip")
+        gnss_fix = item.get("gnss_fix")
         if not isinstance(photo, (bytes, bytearray)) or not photo:
             return _no(f"Capture {index + 1} has no photograph. Nothing was stored.")
         if not isinstance(record, dict):
@@ -180,6 +183,9 @@ def prepare(captures, *, ticket_hash, expected_prev, ticket_clock,
         if str(record.get("ticket_id") or "") != ticket_hash:
             return _no(f"Capture {index + 1} was not made under this record's "
                        f"job ticket. Nothing was stored.")
+        extra_problem = extras.check_record_extras(record, gnss_fix, clip)
+        if extra_problem:
+            return _no(f"Capture {index + 1}: {extra_problem}")
         checkpoint_id = str(record.get("checkpoint_id") or "")
         if checkpoint_id not in allowed:
             return _no(f"Capture {index + 1} names a checkpoint that is not "
@@ -191,6 +197,8 @@ def prepare(captures, *, ticket_hash, expected_prev, ticket_clock,
             "assertion": item.get("assertion"),
             "checkpoint_id": checkpoint_id,
             "photo_sha256": computed,
+            "gnss_fix": gnss_fix,
+            "clip": clip if clip else None,
         })
 
     chain = capture_record.verify_chain(

@@ -147,6 +147,25 @@ enum Attestor {
         return (keyID, try await signAssertion(keyID: keyID, hash: hash))
     }
 
+    /// A second phone signs the same record hash. clientData is
+    /// `shield-countersign-v1` followed by the raw 32-byte record hash.
+    /// That challenge is not the capture challenge, so this assertion does
+    /// not verify as the photograph's signature. The server accepts it only
+    /// from a different attested key of the same tenant. Showing or scanning
+    /// the QR is a device step this build does not perform.
+    static func assertCountersign(recordHash: Data) async throws -> (keyID: String, blob: Data) {
+        guard DCAppAttestService.shared.isSupported else { throw AttestError.unsupported }
+        guard let keyID = registeredKeyID else {
+            throw AttestError.attestation(
+                "This install has no attested key yet. Connect once before " +
+                "countersigning a capture.")
+        }
+        var client = Data("shield-countersign-v1".utf8)
+        client.append(recordHash)
+        let hash = Data(SHA256.hash(data: client))
+        return (keyID, try await signAssertion(keyID: keyID, hash: hash))
+    }
+
     /// An assertion over the job ticket and the clocks measured now.
     /// clientData is `shield-genesis-v1` followed by SHA256(ticket hash raw
     /// || canonical clock JSON). generateAssertion receives SHA256 of that.
