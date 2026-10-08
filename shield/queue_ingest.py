@@ -242,14 +242,55 @@ def prepare(captures, *, ticket_hash, expected_prev, ticket_clock,
     }
 
 
-def custody_event(prepared, *, ticket_hash):
+def sealed_photo_bindings(prepared, photo_ids):
+    """One ``{photo_id, photo_sha256, checkpoint_id}`` object per capture.
+
+    The three fields are the pairing. A verifier matches a stored photograph
+    to the hash the phone signed, and to the checkpoint, by reading the
+    object. It does not zip ``photo_ids[i]`` with ``captures[i]``.
+
+    ``photo_ids`` is required and must be one id per accepted capture, in
+    the order the photographs were stored. A missing or extra id is refused
+    here so the route cannot fall back to pairing by position.
+    """
+    accepted = prepared.get("accepted") if isinstance(prepared, dict) else None
+    if not isinstance(accepted, list):
+        raise ValueError("sealed photos require the accepted captures")
+    if isinstance(photo_ids, (str, bytes)) or not isinstance(photo_ids, (list, tuple)):
+        raise ValueError("photo_ids must be one id for each accepted capture")
+    if len(photo_ids) != len(accepted):
+        raise ValueError(
+            "sealed photos require one photo_id for each accepted capture")
+    bindings = []
+    for item, photo_id in zip(accepted, photo_ids):
+        if not isinstance(photo_id, str) or not photo_id.strip():
+            raise ValueError("photo_id must be a non-empty string")
+        digest = item.get("photo_sha256")
+        checkpoint_id = item.get("checkpoint_id")
+        if not isinstance(digest, str) or not digest:
+            raise ValueError("each sealed photo needs the hash of its bytes")
+        if not isinstance(checkpoint_id, str) or not checkpoint_id:
+            raise ValueError("each sealed photo needs its checkpoint")
+        bindings.append({
+            "photo_id": photo_id,
+            "photo_sha256": digest,
+            "checkpoint_id": checkpoint_id,
+        })
+    return bindings
+
+
+def custody_event(prepared, *, ticket_hash, photo_ids):
     """The one custody entry for this batch.
 
     ``file_hash`` and ``event_data.phone_chain_head`` are the phone-chain
     head. Both are signed fields of the custody entry (``file_hash`` itself,
     and ``event_data``). The phone chain is nested there. It is not a new
-    custody chain, and this dict does not carry ``chain_version``. ``seal``
+    custody chain, and this dict does not carry a chain version. ``seal``
     stamps version 2 when the route appends the entry.
+
+    ``event_data.sealed_photos`` names each stored photograph. The object
+    carries the id, the hash the phone signed, and the checkpoint. That
+    object is the pairing. There is no parallel ``photo_ids`` array.
     """
     phone_chain = []
     summaries = []
@@ -285,6 +326,7 @@ def custody_event(prepared, *, ticket_hash):
             "ticket_hash": ticket_hash,
             "phone_chain": phone_chain,
             "captures": summaries,
+            "sealed_photos": sealed_photo_bindings(prepared, photo_ids),
             "ticket_clock": prepared["ticket_clock"],
         },
     }

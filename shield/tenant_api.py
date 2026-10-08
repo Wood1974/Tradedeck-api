@@ -1377,10 +1377,15 @@ def ingest_queue(record_id):
         return _err("Could not store the photographs. Nothing further was "
                     "recorded.", 502)
 
-    event = queue_ingest.custody_event(
-        prepared, ticket_hash=existing.get("ticket_hash"))
-    if photo_ids:
-        event["event_data"] = dict(event["event_data"], photo_ids=photo_ids)
+    try:
+        event = queue_ingest.custody_event(
+            prepared, ticket_hash=existing.get("ticket_hash"),
+            photo_ids=photo_ids)
+    except ValueError:
+        log.exception("Could not pair stored photos with the batch for %s",
+                      record_id)
+        return _err("Could not seal the photograph pairing. The batch was "
+                    "not left half-recorded as a custody entry.", 500)
     try:
         head = _head_and_append(record_id, event)
     except Exception:

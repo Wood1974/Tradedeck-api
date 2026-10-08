@@ -239,6 +239,26 @@ def _batches(store):
             if row.get("event_type") == "offline_batch"]
 
 
+def _assert_sealed_photo_pairing(entry, records, photos):
+    """The pairing is three fields on one object, and the hash covers it."""
+    bindings = entry["event_data"]["sealed_photos"]
+    assert "photo_ids" not in entry["event_data"]
+    assert len(bindings) == len(records) == len(photos)
+    by_id = {photo["id"]: photo for photo in photos}
+    for binding, record in zip(bindings, records):
+        assert set(binding) == {"photo_id", "photo_sha256", "checkpoint_id"}
+        assert binding["photo_sha256"] == record["photo_sha256"]
+        assert binding["checkpoint_id"] == record["checkpoint_id"]
+        stored = by_id[binding["photo_id"]]
+        assert stored["original_hash"] == binding["photo_sha256"]
+        assert stored["checkpoint_id"] == binding["checkpoint_id"]
+    # Same objects, different list order, is a different signed entry.
+    # The fields inside each object are what a verifier reads.
+    reordered = json.loads(json.dumps(entry))
+    reordered["event_data"]["sealed_photos"] = list(reversed(bindings))
+    assert ledger.link(reordered, entry["prev_hash"]) != entry["entry_hash"]
+
+
 def _consistent(checkpoint_id, flags=0):
     return {
         "checkpoint_id": checkpoint_id,
@@ -338,6 +358,9 @@ class TestAValidBatch:
         assert len(store.rows["photos"]) == 2
         assert {p["attestation_tier"] for p in store.rows["photos"]} == {
             "hardware_attested"}
+        _assert_sealed_photo_pairing(batches[0], records, store.rows["photos"])
+        assert body["photo_ids"] == [
+            item["photo_id"] for item in batches[0]["event_data"]["sealed_photos"]]
 
         package = client.get(
             f"/shield/v2/records/{api.RECORD_A}/package").get_json()
@@ -918,11 +941,39 @@ class TestTheManifest:
             ticket_hash=TICKET_HASH, expected_prev=TICKET_HASH,
             ticket_clock=TICKET_CLOCK, allowed_checkpoints={"cp-1"})
         assert prepared["ok"] is True
-        event = queue_ingest.custody_event(prepared, ticket_hash=TICKET_HASH)
+        event = queue_ingest.custody_event(
+            prepared, ticket_hash=TICKET_HASH, photo_ids=["ph-1"])
         assert "chain_version" not in event
         assert event["event_type"] == "offline_batch"
         assert event["file_hash"] == prepared["phone_chain_head"]
+        assert event["event_data"]["sealed_photos"] == [{
+            "photo_id": "ph-1",
+            "photo_sha256": PHOTO_HASH,
+            "checkpoint_id": "cp-1",
+        }]
+        assert "photo_ids" not in event["event_data"]
         sealed = ledger.seal(
             {"record_id": api.RECORD_A, **event},
             ledger.genesis_hash(api.RECORD_A))
         assert sealed["chain_version"] == 2
+
+    def test_a_sealed_photo_binding_is_part_of_the_custody_hash(self):
+        prepared = queue_ingest.prepare(
+            [{"photo": api.JPEG, "record": _record(
+                "cp-1", TICKET_HASH, wall=WALL + STEP, mono=MONO + STEP)}],
+            ticket_hash=TICKET_HASH, expected_prev=TICKET_HASH,
+            ticket_clock=TICKET_CLOCK, allowed_checkpoints={"cp-1"})
+        event = queue_ingest.custody_event(
+            prepared, ticket_hash=TICKET_HASH, photo_ids=["ph-1"])
+        event.update({
+            "record_id": api.RECORD_A,
+            "recorded_at": "2026-09-14T10:31:00+00:00",
+        })
+        sealed = ledger.seal(event, ledger.genesis_hash(api.RECORD_A))
+        ordered = [sealed]
+        assert ledger.verify_chain(ordered, api.RECORD_A)["intact"] is True
+        edited = json.loads(json.dumps(sealed))
+        edited["event_data"]["sealed_photos"][0]["photo_sha256"] = "ef" * 32
+        broken = ledger.verify_chain([edited], api.RECORD_A)
+        assert broken["intact"] is False
+        assert broken["broken_at_index"] == 0
