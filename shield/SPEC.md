@@ -716,15 +716,31 @@ not a second expiry check.
 
 The route appends one entry, `event_type` `offline_batch`. `file_hash`
 is the phone-chain head. `event_data` carries that same head, the ticket
-hash, the phone chain, the per-capture labels, and `ticket_clock`.
-`ledger.seal` stamps `chain_version` 2, as it does for every other entry.
-The phone chain is nested under the custody chain. It does not replace
-it, and it does not get its own `chain_version`.
+hash, the phone chain, the per-capture labels, `ticket_clock`, and
+`sealed_photos`. `ledger.seal` stamps `chain_version` 2, as it does for
+every other entry. The phone chain is nested under the custody chain. It
+does not replace it, and it does not get its own `chain_version`.
+
+`sealed_photos` is a list of objects, one per photograph stored for the
+batch:
+
+| Field | What it is |
+|---|---|
+| `photo_id` | The id assigned when the bytes were stored |
+| `photo_sha256` | The hash of those bytes. The same hash is on the capture record, which the phone's key signed |
+| `checkpoint_id` | The checkpoint named on that capture record |
+
+A verifier pairs a photograph to its hash and its checkpoint by reading
+those three fields on one object. It does not zip a `photo_ids` array
+with `captures` or with `phone_chain` by position. There is no sealed
+`photo_ids` array. The list sits in `event_data`, so editing one object,
+or reordering the list, changes the custody head.
 
 The photographs are stored the way a single upload stores one: the hash
 is recomputed, the file is sniffed, and a second live photo of the same
 checkpoint supersedes the previous one. Those writes are not separate
-custody events. The batch is one link.
+custody events. The batch is one link. The id written on the photo row
+is the `photo_id` in `sealed_photos`.
 
 ### 11.6 The receipt
 
