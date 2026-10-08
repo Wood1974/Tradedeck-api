@@ -19,7 +19,7 @@
   have to change it, which is the point.
 -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-8GDkGAmK7OKrQ/pSW1gB8nkhuDdv46DSDlaNKf4JrmY=';
+      content="default-src 'none'; script-src 'sha256-YPIWtxJ19iVn82GmJj09VDpnX7NthdCVrkAgPDvhZwo=';
                style-src 'sha256-H0O6Z8OCx2XrSRzgcphS4dqumDO6Z7EyOf9qhZRcEIs='; img-src 'self' data: blob:;
                connect-src *; base-uri 'none'; form-action 'none'">
 <style>
@@ -928,9 +928,9 @@ async function verifyPackage(manifest, { expectHead = null } = {}) {
   return { verifiable: true, chain, findings, notes: anchor.notes };
 }
 
-const RECEIPT_FIELDS = ["accepted_at_ms", "head_hash", "record_id", "version"];
+const ANCHOR_RECEIPT_KEYS = ["accepted_at_ms", "head_hash", "record_id", "version"];
 
-function b64ToBytes(value) {
+function anchorB64(value) {
   if (typeof value !== "string" || !value.trim()) return null;
   const text = value.trim().replace(/-/g, "+").replace(/_/g, "/");
   const padded = text + "=".repeat((4 - (text.length % 4)) % 4);
@@ -944,7 +944,7 @@ function b64ToBytes(value) {
   }
 }
 
-function derWalk(data) {
+function anchorDer(data) {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
   const items = [];
   let i = 0;
@@ -967,7 +967,7 @@ function derWalk(data) {
   return items;
 }
 
-function oidToStr(content) {
+function anchorOid(content) {
   if (!content.length) throw new Error("empty oid");
   const parts = [String(Math.floor(content[0] / 40)), String(content[0] % 40)];
   let i = 1;
@@ -985,7 +985,7 @@ function oidToStr(content) {
   return parts.join(".");
 }
 
-function unpadInt(bytes, size) {
+function anchorUnpad(bytes, size) {
   let i = 0;
   while (i < bytes.length - 1 && bytes[i] === 0) i += 1;
   const rest = bytes.subarray(i);
@@ -995,14 +995,14 @@ function unpadInt(bytes, size) {
   return out;
 }
 
-function derToP1363(der) {
+function anchorP1363(der) {
   try {
-    const items = derWalk(der);
+    const items = anchorDer(der);
     if (items.length !== 1 || items[0].tag !== 0x30) return null;
-    const inner = derWalk(items[0].value);
+    const inner = anchorDer(items[0].value);
     if (inner.length < 2 || inner[0].tag !== 0x02 || inner[1].tag !== 0x02) return null;
-    const r = unpadInt(inner[0].value, 32);
-    const s = unpadInt(inner[1].value, 32);
+    const r = anchorUnpad(inner[0].value, 32);
+    const s = anchorUnpad(inner[1].value, 32);
     if (!r || !s) return null;
     const out = new Uint8Array(64);
     out.set(r, 0);
@@ -1021,18 +1021,18 @@ function pointFromSigning(manifest) {
   ];
   for (const source of sources) {
     if (!source || typeof source !== "object") continue;
-    const raw = b64ToBytes(source.uncompressed_point_b64 || "");
+    const raw = anchorB64(source.uncompressed_point_b64 || "");
     if (raw && raw.length === 65 && raw[0] === 4) return raw;
     const pem = typeof source.pem === "string" ? source.pem : "";
     if (!pem.includes("BEGIN PUBLIC KEY") || pem.includes("PRIVATE")) continue;
     const body = pem.replace(/-----BEGIN PUBLIC KEY-----/g, "")
       .replace(/-----END PUBLIC KEY-----/g, "").replace(/\s+/g, "");
-    const der = b64ToBytes(body);
+    const der = anchorB64(body);
     if (!der) continue;
     try {
-      const outer = derWalk(der);
+      const outer = anchorDer(der);
       if (outer.length !== 1 || outer[0].tag !== 0x30) continue;
-      for (const item of derWalk(outer[0].value)) {
+      for (const item of anchorDer(outer[0].value)) {
         if (item.tag === 0x03 && item.value.length === 66
             && item.value[0] === 0 && item.value[1] === 4) {
           return item.value.subarray(1);
@@ -1060,7 +1060,7 @@ function receiptCanonical(signed) {
     record_id: signed.record_id,
     version: signed.version,
   };
-  const body = `{${RECEIPT_FIELDS.map((key) =>
+  const body = `{${ANCHOR_RECEIPT_KEYS.map((key) =>
     `${pyJson(key)}:${typeof fields[key] === "string" ? pyJson(fields[key]) : String(fields[key])}`
   ).join(",")}}`;
   return encoder.encode(body);
@@ -1068,8 +1068,8 @@ function receiptCanonical(signed) {
 
 async function receiptSignatureOk(manifest, signed, signatureB64) {
   const point = pointFromSigning(manifest);
-  const signature = b64ToBytes(signatureB64 || "");
-  const raw = derToP1363(signature || new Uint8Array());
+  const signature = anchorB64(signatureB64 || "");
+  const raw = anchorP1363(signature || new Uint8Array());
   if (!point || !raw) return false;
   try {
     const key = await crypto.subtle.importKey(
@@ -1090,53 +1090,53 @@ async function receiptSignatureOk(manifest, signed, signatureB64) {
  * bytes have to be the third field of TSTInfo.
  */
 function timestampImprint(token) {
-  const outer = derWalk(token);
+  const outer = anchorDer(token);
   if (outer.length !== 1 || outer[0].tag !== 0x30) throw new Error("no timestamp");
-  const fields = derWalk(outer[0].value);
+  const fields = anchorDer(outer[0].value);
   if (!fields.length || fields[0].tag !== 0x30) throw new Error("no status");
-  const statusFields = derWalk(fields[0].value);
+  const statusFields = anchorDer(fields[0].value);
   if (!statusFields.length || statusFields[0].tag !== 0x02) throw new Error("status");
   if (fields.length < 2) throw new Error("no token");
   // [0] EXPLICIT wraps the ContentInfo SEQUENCE. A live authority sends the
   // SEQUENCE itself. Either way the OID and SignedData are inside it.
   let info;
   if (fields[1].tag === 0xa0) {
-    const wrapped = derWalk(fields[1].value);
+    const wrapped = anchorDer(fields[1].value);
     if (wrapped.length !== 1 || wrapped[0].tag !== 0x30) throw new Error("no token");
-    info = derWalk(wrapped[0].value);
+    info = anchorDer(wrapped[0].value);
   } else if (fields[1].tag === 0x30) {
-    info = derWalk(fields[1].value);
+    info = anchorDer(fields[1].value);
   } else throw new Error("no token");
-  if (info.length < 2 || info[0].tag !== 0x06 || oidToStr(info[0].value) !== "1.2.840.113549.1.7.2") {
+  if (info.length < 2 || info[0].tag !== 0x06 || anchorOid(info[0].value) !== "1.2.840.113549.1.7.2") {
     throw new Error("not SignedData");
   }
   if (info[1].tag !== 0xa0) throw new Error("SignedData is missing");
-  const signedOuter = derWalk(info[1].value);
+  const signedOuter = anchorDer(info[1].value);
   if (signedOuter.length !== 1 || signedOuter[0].tag !== 0x30) {
     throw new Error("SignedData is missing");
   }
   let encap = null;
-  for (const item of derWalk(signedOuter[0].value)) {
+  for (const item of anchorDer(signedOuter[0].value)) {
     if (item.tag === 0x02) continue;
     if (item.tag === 0x31 && encap === null) continue;
     if (item.tag === 0x30 && encap === null) { encap = item.value; break; }
   }
   if (!encap) throw new Error("TSTInfo is missing");
-  const encapFields = derWalk(encap);
+  const encapFields = anchorDer(encap);
   if (encapFields.length < 2 || encapFields[1].tag !== 0xa0) throw new Error("TSTInfo is missing");
-  const octet = derWalk(encapFields[1].value);
+  const octet = anchorDer(encapFields[1].value);
   if (octet.length !== 1 || octet[0].tag !== 0x04) throw new Error("TSTInfo wrapper");
-  const tstOuter = derWalk(octet[0].value);
+  const tstOuter = anchorDer(octet[0].value);
   if (tstOuter.length !== 1 || tstOuter[0].tag !== 0x30) throw new Error("TSTInfo wrapper");
-  const tst = derWalk(tstOuter[0].value);
+  const tst = anchorDer(tstOuter[0].value);
   if (tst.length < 3 || tst[2].tag !== 0x30) throw new Error("no imprint");
-  const imprint = derWalk(tst[2].value);
+  const imprint = anchorDer(tst[2].value);
   let oid = null;
   let hashed = null;
   for (const item of imprint) {
     if (item.tag === 0x30 && oid === null) {
-      const alg = derWalk(item.value);
-      if (alg.length && alg[0].tag === 0x06) oid = oidToStr(alg[0].value);
+      const alg = anchorDer(item.value);
+      if (alg.length && alg[0].tag === 0x06) oid = anchorOid(alg[0].value);
     } else if (item.tag === 0x04) hashed = item.value;
   }
   if (!hashed || oid !== "2.16.840.1.101.3.4.2.1" || hashed.length !== 32) {
@@ -1145,7 +1145,7 @@ function timestampImprint(token) {
   return hashed;
 }
 
-function hexToBytes(hex) {
+function anchorHex(hex) {
   if (typeof hex !== "string" || !/^[0-9a-f]{64}$/.test(hex)) return null;
   const out = new Uint8Array(32);
   for (let i = 0; i < 32; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
@@ -1198,8 +1198,8 @@ async function checkAnchor(manifest, headHash, jobId) {
     notes.push("timestamp missing");
     return { findings, notes };
   }
-  const raw = b64ToBytes(token);
-  const expected = hexToBytes(headHash || "");
+  const raw = anchorB64(token);
+  const expected = anchorHex(headHash || "");
   if (!raw || !expected) {
     findings.push({
       kind: "anchor", severity: "fatal",
