@@ -859,16 +859,19 @@ class TestTimestamp:
         assert out["token_b64"] is None
 
 
-def _cert(subject, subject_key, issuer, issuer_key, *, ca, hash_alg=None, extra=()):
+def _cert(subject, subject_key, issuer, issuer_key, *, ca, hash_alg=None, extra=(),
+          not_before=None, not_after=None):
     now = datetime.now(timezone.utc)
     name = lambda cn: x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    start = not_before or (now - timedelta(days=1)).replace(tzinfo=None)
+    end = not_after or (now + timedelta(days=30)).replace(tzinfo=None)
     builder = (x509.CertificateBuilder()
                .subject_name(name(subject))
                .issuer_name(name(issuer))
                .public_key(subject_key.public_key())
                .serial_number(x509.random_serial_number())
-               .not_valid_before((now - timedelta(days=1)).replace(tzinfo=None))
-               .not_valid_after((now + timedelta(days=30)).replace(tzinfo=None))
+               .not_valid_before(start)
+               .not_valid_after(end)
                .add_extension(x509.BasicConstraints(ca=ca, path_length=None),
                               critical=True))
     for ext, critical in extra:
@@ -879,14 +882,22 @@ def _cert(subject, subject_key, issuer, issuer_key, *, ca, hash_alg=None, extra=
 class TestARealTimestampShape:
     def test_sha384_and_an_intermediate_verify_and_a_gap_does_not(self):
         head = "ab" * 32
+        # The token below is stamped 2026-10-06, including a fraction of a
+        # second. The certificate has to be valid at that instant, not merely
+        # at whatever day the suite happens to run.
+        stamped = datetime(2026, 10, 6, tzinfo=timezone.utc).replace(tzinfo=None)
         root_key = ec.generate_private_key(ec.SECP256R1())
         mid_key = ec.generate_private_key(ec.SECP256R1())
         leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        root = _cert("Root", root_key, "Root", root_key, ca=True)
-        mid = _cert("Mid", mid_key, "Root", root_key, ca=True, hash_alg=hashes.SHA384())
+        window = {"not_before": stamped - timedelta(days=1),
+                  "not_after": stamped + timedelta(days=30)}
+        root = _cert("Root", root_key, "Root", root_key, ca=True, **window)
+        mid = _cert("Mid", mid_key, "Root", root_key, ca=True,
+                    hash_alg=hashes.SHA384(), **window)
         leaf = _cert(
             "TSA", leaf_key, "Mid", mid_key, ca=False, hash_alg=hashes.SHA384(),
-            extra=((x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), True),))
+            extra=((x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), True),),
+            **window)
         pem = root.public_bytes(Encoding.PEM).decode()
         token = tsa.mint_token(
             hashed_message=bytes.fromhex(head), nonce=7, key=leaf_key, cert=leaf,
