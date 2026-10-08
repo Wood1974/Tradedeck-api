@@ -195,10 +195,17 @@ async function sha256Hex(bytes) {
     .map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** SHA-256 of a File/Blob/ArrayBuffer, for checking supplied photo bytes. */
+/** SHA-256 of a File/Blob, ArrayBuffer, or typed array. */
 export async function hashBytes(input) {
-  const buf = input instanceof ArrayBuffer ? input : await input.arrayBuffer();
-  return sha256Hex(new Uint8Array(buf));
+  let bytes;
+  if (input instanceof ArrayBuffer) {
+    bytes = new Uint8Array(input);
+  } else if (ArrayBuffer.isView(input)) {
+    bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  } else {
+    bytes = new Uint8Array(await input.arrayBuffer());
+  }
+  return sha256Hex(bytes);
 }
 
 /* ----------------------------------------------------------- python parity -- */
@@ -340,9 +347,13 @@ export async function link(entry, prevHash) {
  * "Entry 7 of 12 fails, and here is why" is actionable. "Invalid" sends
  * somebody back to us to ask what happened, which defeats the purpose.
  */
-export async function verifyChain(entries, shieldJobId, { expectHead = null } = {}) {
-  const ordered = [...entries].sort((a, b) =>
+function orderedEntries(entries) {
+  return [...entries].sort((a, b) =>
     String(a.recorded_at ?? "").localeCompare(String(b.recorded_at ?? "")));
+}
+
+export async function verifyChain(entries, shieldJobId, { expectHead = null } = {}) {
+  const ordered = orderedEntries(entries);
 
   const genesis = await genesisHash(shieldJobId);
   const result = {
@@ -432,78 +443,394 @@ export async function verifyChain(entries, shieldJobId, { expectHead = null } = 
 }
 
 /**
- * SPEC.md §5 — verify a package and cross-check what it claims about itself.
+ * The id the genesis value was derived from.
+ *
+ * An evidence manifest names `job.shield_job_id`. The v2 API package names
+ * `record.id` and seals the chain under that id.
+ */
+export function jobIdOf(manifest) {
+  return manifest?.job?.shield_job_id || manifest?.record?.id || null;
+}
+
+/**
+ * Custody rows in chain order. Evidence exports use `custody_entries` and
+ * put a summary object in `custody`. The API package puts the rows in
+ * `custody`.
+ */
+export function entriesOf(manifest) {
+  if (Array.isArray(manifest?.custody_entries)) return manifest.custody_entries;
+  if (Array.isArray(manifest?.custody)) return manifest.custody;
+  return null;
+}
+
+function claimedOf(manifest) {
+  const custody = manifest?.custody;
+  if (custody && typeof custody === "object" && !Array.isArray(custody)) {
+    return custody;
+  }
+  const claimed = {};
+  if (manifest?.head_hash) claimed.head_hash = manifest.head_hash;
+  if (Object.prototype.hasOwnProperty.call(manifest ?? {}, "chain_intact")) {
+    claimed.chain_intact = manifest.chain_intact;
+  }
+  return claimed;
+}
+
+/** Checkpoint number as a comparable string, or null when it is absent. */
+export function checkpointToken(value) {
+  if (value === null || value === undefined || typeof value === "boolean") {
+    return null;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    return Number.isInteger(value) ? String(value) : String(value);
+  }
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^-?\d+$/.test(text)) return String(parseInt(text, 10));
+  if (/^-?\d+\.0+$/.test(text)) return String(parseInt(text, 10));
+  return text;
+}
+
+function eventDataOf(entry) {
+  let data = entry?.event_data;
+  if (typeof data === "string") {
+    try { data = JSON.parse(data); } catch { return {}; }
+  }
+  return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+}
+
+function sealedPoint(entry) {
+  const data = eventDataOf(entry);
+  if (!Object.prototype.hasOwnProperty.call(data, "point_number")) return null;
+  return checkpointToken(data.point_number);
+}
+
+/**
+ * Every photo the manifest asks a recipient to trust.
+ *
+ * Evidence exports list the live hash on `checkpoints[].sha256_original`
+ * and earlier attempts on `superseded_attempts`. API packages list
+ * `photos[].original_hash`. `sha256_original` is what tells the two apart.
+ */
+export function photoClaims(manifest) {
+  const checkpoints = Array.isArray(manifest?.checkpoints) ? manifest.checkpoints : [];
+  const evidence = checkpoints.some((item) =>
+    item && Object.prototype.hasOwnProperty.call(item, "sha256_original"));
+  if (evidence) {
+    const claims = [];
+    for (const item of checkpoints) {
+      if (!item || typeof item !== "object") continue;
+      const checkpoint = checkpointToken(item.checkpoint_number);
+      const photoId = item.photo_id ?? null;
+      const manifestHash = item.sha256_original ?? null;
+      if (!photoId && !manifestHash) {
+        claims.push({ photo_id: null, manifest_hash: null, checkpoint, empty: true });
+      } else {
+        claims.push({
+          photo_id: photoId, manifest_hash: manifestHash, checkpoint, empty: false,
+        });
+      }
+      for (const attempt of item.superseded_attempts || []) {
+        if (!attempt || typeof attempt !== "object") continue;
+        claims.push({
+          photo_id: attempt.photo_id ?? null,
+          manifest_hash: attempt.sha256_original ?? null,
+          checkpoint,
+          empty: false,
+        });
+      }
+    }
+    return claims;
+  }
+
+  const byId = new Map();
+  for (const item of checkpoints) {
+    if (item && item.id != null) byId.set(item.id, item);
+  }
+  const photos = Array.isArray(manifest?.photos) ? manifest.photos : [];
+  return photos.filter((photo) => photo && typeof photo === "object").map((photo) => {
+    const row = byId.get(photo.checkpoint_id) || {};
+    return {
+      photo_id: photo.id != null ? photo.id : (photo.photo_id ?? null),
+      manifest_hash: photo.original_hash ?? null,
+      checkpoint: checkpointToken(row.point_number),
+      empty: false,
+    };
+  });
+}
+
+function photoLabel(photoId) {
+  return photoId ? String(photoId) : "without an id";
+}
+
+/**
+ * Bind every photo to the sealed `uploaded` entry for that photo_id.
+ *
+ * `fileHashes` maps photo_id -> hex SHA-256 of supplied bytes. A photo with
+ * no sealed upload is UNVERIFIED, not a match and not an accusation. A hash
+ * or a checkable checkpoint that disagrees with the seal is a failure.
+ *
+ * `ordered` is the same order `verifyChain` walked. Entries at or after
+ * `brokeAt` did not verify, so their file_hash is not a seal.
+ */
+export function assessPhotos(manifest, ordered, { intact = false, brokeAt = null } = {}, fileHashes = {}) {
+  const verifiedCount = intact ? ordered.length : (brokeAt ?? 0);
+  const prefix = ordered.slice(0, verifiedCount);
+  const results = [];
+  const problems = [];
+  const unverified = [];
+  const notes = [];
+
+  for (const claim of photoClaims(manifest)) {
+    const photoId = claim.photo_id;
+    const checkpoint = claim.checkpoint;
+    if (claim.empty || (!photoId && !claim.manifest_hash)) {
+      results.push({
+        checkpoint, photo_id: photoId, status: "no photo in package",
+      });
+      continue;
+    }
+
+    const label = photoLabel(photoId);
+    const wanted = photoId == null ? null : String(photoId);
+    const uploads = prefix.filter((entry) =>
+      entry?.event_type === "uploaded" && entry.photo_id != null
+      && String(entry.photo_id) === wanted);
+    const hashes = [];
+    for (const entry of uploads) {
+      const digest = entry.file_hash || null;
+      if (!hashes.includes(digest)) hashes.push(digest);
+    }
+    const points = [];
+    for (const entry of uploads) {
+      const point = sealedPoint(entry);
+      if (point != null && !points.includes(point)) points.push(point);
+    }
+    const usable = hashes.filter(Boolean);
+    if (!uploads.length || !usable.length) {
+      const text = `photo ${label} has no sealed upload record`;
+      unverified.push(text);
+      results.push({
+        checkpoint, photo_id: photoId, status: "UNVERIFIED",
+        manifest_hash: claim.manifest_hash, sealed_hash: null,
+        sealed_checkpoint: null,
+      });
+      continue;
+    }
+    if (hashes.length !== 1 || points.length > 1) {
+      const text = `photo ${label} has sealed upload records that disagree`;
+      problems.push(text);
+      results.push({
+        checkpoint, photo_id: photoId, status: "MISMATCH",
+        manifest_hash: claim.manifest_hash, sealed_hash: null,
+        sealed_checkpoint: null,
+      });
+      continue;
+    }
+
+    const sealed = hashes[0];
+    const sealedCheckpoint = points.length ? points[0] : null;
+    const rowProblems = [];
+    if (claim.manifest_hash !== sealed) {
+      rowProblems.push(
+        `photo ${label} manifest hash does not match the sealed upload record`);
+    }
+    if (sealedCheckpoint != null && checkpoint != null && sealedCheckpoint !== checkpoint) {
+      rowProblems.push(
+        `photo ${label} is filed under checkpoint ${checkpoint} but the sealed ` +
+        `upload records checkpoint ${sealedCheckpoint}`);
+    } else if (sealedCheckpoint == null) {
+      notes.push(
+        `photo ${label} has a sealed upload hash, but that entry does not ` +
+        `seal a checkpoint number, so which checkpoint it belongs to was not checked`);
+    }
+
+    let actual = null;
+    const hasFile = wanted != null && Object.prototype.hasOwnProperty.call(fileHashes, wanted);
+    if (hasFile) {
+      actual = fileHashes[wanted];
+      if (actual !== sealed) {
+        rowProblems.push(`photo ${label} does not match the sealed upload record`);
+      }
+    }
+    problems.push(...rowProblems);
+    let status;
+    if (rowProblems.length) status = "MISMATCH";
+    else if (!hasFile) status = "file not supplied";
+    else status = "match";
+    results.push({
+      checkpoint, photo_id: photoId, status,
+      expected: sealed, actual, manifest_hash: claim.manifest_hash,
+      sealed_hash: sealed, sealed_checkpoint: sealedCheckpoint,
+    });
+  }
+  return { files: results, problems, unverified, notes };
+}
+
+/**
+ * SPEC.md §5 — verify a package, then bind every photo to its sealed upload.
  *
  * A package whose own `head_hash` disagrees with the computed head, or which
  * asserts `chain_intact: true` over a chain that breaks, is lying about
  * itself. The spec is explicit that this is a more serious finding than a
  * broken chain, so it is reported separately rather than folded in.
+ *
+ * Photo bytes are optional. `files` maps photo_id -> bytes (Uint8Array,
+ * ArrayBuffer, or a Blob). The manifest hash is checked against the sealed
+ * `uploaded.file_hash` whether or not the bytes were supplied.
  */
-export async function verifyPackage(manifest, { expectHead = null } = {}) {
-  const jobId = manifest?.job?.shield_job_id;
-  const entries = manifest?.custody_entries;
+export async function evaluatePackage(manifest, { expectHead = null, files = null } = {}) {
+  const jobId = jobIdOf(manifest);
+  const entries = entriesOf(manifest);
   const findings = [];
+  const problems = [];
 
   if (!jobId) {
+    const text = "No job.shield_job_id or record.id in the package. The " +
+      "genesis value derives from it, so the chain cannot be checked at all.";
     return {
-      verifiable: false, chain: null, findings: [{
-        severity: "fatal",
-        text: "No job.shield_job_id in the package. The genesis value derives " +
-          "from it, so the chain cannot be checked at all.",
-      }],
+      ok: false, verdict: "FAIL", verifiable: false, chain: null,
+      problems: [text], unverified: [], notes: [], files: [],
+      findings: [{ severity: "fatal", text }],
     };
   }
   if (!Array.isArray(entries) || entries.length === 0) {
+    const text = "No custody_entries in the package. SPEC.md §5: a package " +
+      "without them is not verifiable, and its integrity is the " +
+      "producer's assertion rather than something you can check.";
     return {
-      verifiable: false, chain: null, findings: [{
-        severity: "fatal",
-        text: "No custody_entries in the package. SPEC.md §5: a package " +
-          "without them is not verifiable, and its integrity is the " +
-          "producer's assertion rather than something you can check.",
-      }],
+      ok: false, verdict: "FAIL", verifiable: false, chain: null,
+      problems: [text], unverified: [], notes: [], files: [],
+      findings: [{ severity: "fatal", text }],
     };
   }
 
   const chain = await verifyChain(entries, jobId, { expectHead });
+  const ordered = orderedEntries(entries);
+  const claimed = claimedOf(manifest);
 
-  const claimedHead = manifest?.custody?.head_hash;
-  if (claimedHead && chain.headHash && claimedHead !== chain.headHash) {
-    findings.push({
-      severity: "lying",
-      text: "The package states a head hash that is not the head of the " +
-        "chain it contains. It is misdescribing itself.",
-    });
+  if (!chain.intact) problems.push(chain.reason);
+  if (claimed.head_hash && chain.headHash && claimed.head_hash !== chain.headHash) {
+    const text = "The package states a head hash that is not the head of the " +
+      "chain it contains. It is misdescribing itself.";
+    problems.push(text);
+    findings.push({ severity: "lying", text });
   }
-  if (manifest?.custody?.chain_intact === true && !chain.intact) {
-    findings.push({
-      severity: "lying",
-      text: "The package asserts chain_intact: true over a chain that does " +
-        "not verify. Per SPEC.md §5 this is a more serious finding than a " +
-        "broken chain on its own.",
-    });
+  if (claimed.chain_intact === true && !chain.intact) {
+    const text = "The package asserts chain_intact: true over a chain that does " +
+      "not verify. Per SPEC.md §5 this is a more serious finding than a " +
+      "broken chain on its own.";
+    problems.push(text);
+    findings.push({ severity: "lying", text });
   }
   if (chain.headMatchesExpected === false) {
-    findings.push({
-      severity: "fatal",
-      text: "The chain does not end at the head hash you supplied.",
-    });
+    const text = "The chain does not end at the head hash you supplied.";
+    problems.push(text);
+    findings.push({ severity: "fatal", text });
   }
   if (!chain.intact) {
     findings.push({ severity: "fatal", text: chain.reason });
   }
 
-  return { verifiable: true, chain, findings };
+  const fileHashes = {};
+  for (const [id, bytes] of Object.entries(files || {})) {
+    fileHashes[String(id)] = await hashBytes(bytes);
+  }
+  const photos = assessPhotos(manifest, ordered, {
+    intact: chain.intact, brokeAt: chain.brokeAt,
+  }, fileHashes);
+  for (const text of photos.problems) {
+    problems.push(text);
+    findings.push({ severity: "fatal", text, photo: true });
+  }
+  for (const text of photos.unverified) {
+    findings.push({ severity: "unverified", text, photo: true });
+  }
+
+  let verdict;
+  if (problems.length) verdict = "FAIL";
+  else if (photos.unverified.length) verdict = "UNVERIFIED";
+  else verdict = "PASS";
+
+  return {
+    ok: verdict === "PASS", verdict, verifiable: true, chain, findings,
+    problems, unverified: photos.unverified, notes: photos.notes,
+    files: photos.files,
+  };
+}
+
+export async function verifyPackage(manifest, { expectHead = null } = {}) {
+  const report = await evaluatePackage(manifest, { expectHead });
+  return {
+    verifiable: report.verifiable,
+    chain: report.chain,
+    findings: report.findings,
+    verdict: report.verdict,
+    photos: report.files,
+  };
 }
 
 /**
- * Check supplied photo bytes against the hash the package recorded.
- *
- * Deliberately separate from chain verification: the chain establishes that
- * the recorded hash was not altered, and this establishes that a file you were
- * handed is the file that hash describes. Neither says the photograph is of
- * what anyone claims, and nothing here says it came off a camera.
+ * SHA-256 of supplied bytes. The hash a caller compares must be the sealed
+ * upload `file_hash`, not an unsealed manifest hash on its own.
  */
 export async function checkPhoto(file, expectedSha256) {
   const actual = await hashBytes(file);
   return { matches: actual === expectedSha256, actual, expected: expectedSha256 };
+}
+
+/**
+ * Decide what one dropped file is, against the sealed upload records.
+ *
+ * Matching some manifest hash in the package is not a match. The file has
+ * to equal the sealed `file_hash` for a photo whose manifest hash equals
+ * that same value, on the checkpoint the seal records when it records one.
+ */
+export async function judgePhoto(manifest, file) {
+  const actual = await hashBytes(file);
+  const report = await evaluatePackage(manifest);
+  const rows = (report.files || []).filter((row) => row.photo_id);
+  const good = rows.filter((row) =>
+    row.sealed_hash && row.sealed_hash === actual && row.manifest_hash === actual
+    && row.status !== "MISMATCH");
+  if (good.length) {
+    const text = good.map((row) => {
+      const where = row.checkpoint != null ? `, checkpoint ${row.checkpoint}` : "";
+      return `This file matches the sealed upload record for photo ${row.photo_id}${where}.`;
+    }).join(" ");
+    return {
+      verdict: "match", actual, text,
+      matched: good.map((row) => ({ photo_id: row.photo_id, checkpoint: row.checkpoint })),
+    };
+  }
+
+  const hit = rows.find((row) => row.manifest_hash === actual || row.sealed_hash === actual);
+  if (hit) {
+    let text;
+    if (hit.sealed_hash && actual !== hit.sealed_hash) {
+      text = `photo ${photoLabel(hit.photo_id)} does not match the sealed upload record`;
+    } else if (hit.manifest_hash !== hit.sealed_hash) {
+      text = `photo ${photoLabel(hit.photo_id)} manifest hash does not match the sealed upload record`;
+    } else if (hit.sealed_checkpoint != null && hit.checkpoint != null
+        && hit.sealed_checkpoint !== hit.checkpoint) {
+      text = `photo ${photoLabel(hit.photo_id)} is filed under checkpoint ${hit.checkpoint} ` +
+        `but the sealed upload records checkpoint ${hit.sealed_checkpoint}`;
+    } else {
+      text = `photo ${photoLabel(hit.photo_id)} does not match the sealed upload record`;
+    }
+    return { verdict: "FAIL", actual, text, matched: [] };
+  }
+
+  const legacy = rows.find((row) => row.status === "UNVERIFIED" && row.manifest_hash === actual);
+  if (legacy) {
+    return {
+      verdict: "UNVERIFIED", actual, matched: [],
+      text: `photo ${photoLabel(legacy.photo_id)} has no sealed upload record`,
+    };
+  }
+  return {
+    verdict: "FAIL", actual, matched: [],
+    text: "This file does not match a sealed photo hash in the package.",
+  };
 }

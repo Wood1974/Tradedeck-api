@@ -8,7 +8,7 @@
  * do with an overstated result is quote it.
  */
 import { ShieldClient, ShieldError } from "./api.js";
-import { verifyPackage, checkPhoto } from "./verify.js";
+import { verifyPackage, judgePhoto } from "./verify.js";
 
 const $ = (id) => document.getElementById(id);
 const client = () => new ShieldClient($("baseUrl").value, $("token").value || null);
@@ -45,7 +45,7 @@ const money = (cents) => `$${(cents / 100).toLocaleString("en-US",
 
 let loadedPackage = null;
 
-function renderVerification({ verifiable, chain, findings }) {
+function renderVerification({ verifiable, chain, findings, photos }) {
   const node = $("verifyResult");
 
   if (!verifiable) {
@@ -81,6 +81,28 @@ function renderVerification({ verifiable, chain, findings }) {
       <p class="caveat">${esc(chain.reason)}</p>`;
   }
 
+  const photoFatal = findings.filter((f) => f.photo && f.severity === "fatal");
+  const photoUnverified = findings.filter((f) => f.photo && f.severity === "unverified");
+  if (chain.intact && !chain.ambiguous && chain.headMatchesExpected !== false) {
+    if (photoFatal.length) {
+      cls = "bad";
+      head = "Chain verifies, but a photo does not match its sealed upload record";
+      detail = photoFatal.map((f) => `<p>${esc(f.text)}</p>`).join("");
+    } else if (photoUnverified.length) {
+      cls = "unknown";
+      head = "Chain verifies, but a photo cannot be tied to a sealed upload record";
+      detail = `<p>This is not a pass, and it is not a finding that the photo
+        was swapped. There is no sealed upload entry to compare it to.</p>`
+        + photoUnverified.map((f) => `<p>${esc(f.text)}</p>`).join("");
+    }
+  }
+  const photoRows = photos || [];
+  const photosBound = photoRows.some((p) =>
+    p.status === "match" || p.status === "file not supplied");
+  const photoNote = photosBound && !photoFatal.length && !photoUnverified.length
+    ? `<p>Each photo hash in the manifest matches the sealed upload record.</p>`
+    : "";
+
   const rows = [
     ["Entries", chain.entries],
     ["Genesis", chain.genesis],
@@ -95,6 +117,7 @@ function renderVerification({ verifiable, chain, findings }) {
         ${lying.map((f) => `<p>${esc(f.text)}</p>`).join("")}</div>` : ""}
       <dl class="facts">${rows.map(([k, v]) =>
         `<dt>${esc(k)}</dt><dd class="mono">${esc(v)}</dd>`).join("")}</dl>
+      ${photoNote}
       ${chain.intact ? `<p class="limits"><strong>What this does not show.</strong>
         That a photograph came off a camera rather than a file picker; that
         entries were never omitted <em>before</em> the chain was written; or
@@ -147,15 +170,12 @@ $("photoFile").addEventListener("change", async (e) => {
     return show($("photoResult"),
       `<p class="muted">Load a package first.</p>`);
   }
-  const hashes = (loadedPackage.checkpoints || [])
-    .map((c) => c.sha256_original).filter(Boolean);
-  const { actual } = await checkPhoto(file, null);
-  const match = hashes.includes(actual);
-  show($("photoResult"), `<div class="card ${match ? "good" : "bad"}">
-    <p>${match
-      ? "This file matches a photo hash recorded in the package."
-      : "This file does not match any photo hash in the package."}</p>
-    <dl class="facts"><dt>SHA-256</dt><dd class="mono">${esc(actual)}</dd></dl>
+  const judged = await judgePhoto(loadedPackage, file);
+  const cls = judged.verdict === "match" ? "good"
+    : judged.verdict === "UNVERIFIED" ? "unknown" : "bad";
+  show($("photoResult"), `<div class="card ${cls}">
+    <p>${esc(judged.text)}</p>
+    <dl class="facts"><dt>SHA-256</dt><dd class="mono">${esc(judged.actual)}</dd></dl>
   </div>`);
 });
 
