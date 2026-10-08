@@ -72,7 +72,78 @@ def _note_records(rows):
     return out
 
 
-def build_manifest(*, job, points, photos, custody, report=None, notes=None):
+def public_signing_key(signing_key):
+    """The public half only. A PEM that says PRIVATE is not exported."""
+    if not isinstance(signing_key, dict):
+        return None
+    out = {}
+    for key in ("algorithm", "pem", "uncompressed_point_b64"):
+        value = signing_key.get(key)
+        if isinstance(value, str) and value:
+            out[key] = value
+    pem = out.get("pem") or ""
+    if "PRIVATE" in pem or not out:
+        return None
+    return out
+
+
+def timestamp_block(timestamp=None):
+    """What the package says about the RFC 3161 token.
+
+    A missing token stays missing. This function will not report that as
+    forged. ``forged`` is false in both states: a timestamp is an anchor
+    for the custody head, not a finding about the photograph.
+    """
+    raw = timestamp if isinstance(timestamp, dict) else {}
+    token = raw.get("token_b64")
+    present = raw.get("status") == "present" and isinstance(token, str) and token
+    if present:
+        return {
+            "status": "present",
+            "forged": False,
+            "authority": raw.get("authority"),
+            "token_b64": token,
+            "gen_time": raw.get("gen_time"),
+            "note": ("An RFC 3161 timestamp covers the custody head named "
+                     "on the receipt. It does not say the photograph is real."),
+        }
+    return {
+        "status": "missing",
+        "forged": False,
+        "authority": None,
+        "token_b64": None,
+        "gen_time": None,
+        "note": ("The timestamp is missing. A missing timestamp is not a "
+                 "forgery. The receipt, when there is one, still covers "
+                 "the custody head."),
+    }
+
+
+def receipt_block(receipt, signing_key=None):
+    """The signed receipt plus the public half of the key that signed it.
+
+    ``time_labels`` are the labels ``time_audit`` produced for the batch.
+    They ride along so a reader of the package sees them beside the
+    receipt. They are not a separate signature. The custody head the
+    receipt signs already covers the entry that stores them.
+    """
+    if not isinstance(receipt, dict):
+        return None
+    signed = receipt.get("signed") if isinstance(receipt.get("signed"), dict) else receipt
+    return {
+        "version": signed.get("version"),
+        "record_id": signed.get("record_id"),
+        "head_hash": signed.get("head_hash"),
+        "accepted_at_ms": signed.get("accepted_at_ms"),
+        "signature": receipt.get("signature") or receipt.get("server_signature"),
+        "phone_chain_head": receipt.get("phone_chain_head"),
+        "time_labels": list(receipt.get("time_labels") or []),
+        "signing_key": public_signing_key(signing_key),
+    }
+
+
+def build_manifest(*, job, points, photos, custody, report=None, notes=None,
+                   receipt=None, timestamp=None, signing_key=None):
     """The hash manifest plus an independent verification of the custody chain.
 
     Every item a recipient needs in order to check the package themselves,
@@ -169,6 +240,12 @@ def build_manifest(*, job, points, photos, custody, report=None, notes=None):
             "score":         (report or {}).get("completion_score"),
             "packet_sha256": (report or {}).get("report_sha256"),
         },
+        # The custody block above is unchanged, including chain_version.
+        # The receipt signs that chain's head. The phone chain is nested
+        # inside a custody entry; it is not a second chain_version.
+        "receipt": receipt_block(receipt, signing_key),
+        "timestamp": timestamp_block(timestamp),
+        "signing_key": public_signing_key(signing_key),
     }
 
 
@@ -316,4 +393,14 @@ def verification_instructions(manifest):
         "3. If you were given a chain head digest at an earlier date, compare it",
         "   to the head above. A head that has changed for entries you already",
         "   hold means the history was rewritten after you received it.",
+        "",
+        "4. The receipt, when this package has one, is an ECDSA P-256 signature",
+        "   over the record id, the custody head, and the time the batch was",
+        "   accepted. The public half of that key is `signing_key`. Check the",
+        "   signature over the canonical receipt bytes. `chain_version` is not",
+        "   part of the receipt and is not changed by it.",
+        "",
+        "   The timestamp block is an RFC 3161 token over that same custody",
+        "   head, or a statement that the token is missing. A missing timestamp",
+        "   is not a forgery. The receipt still covers the head.",
     ])
