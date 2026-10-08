@@ -29,6 +29,8 @@ an integral latitude fails. These tests sweep the awkward values on purpose.
 Skipped, not failed, when node is unavailable — CI has it; a contributor's
 laptop might not, and a test that cannot run is worse than one that says why.
 """
+import base64
+import hashlib
 import json
 import os
 import shutil
@@ -38,8 +40,10 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "verifier"))
 
 import ledger  # noqa: E402
+import shield_verify  # noqa: E402
 
 HARNESS = os.path.join(os.path.dirname(__file__), "..", "webapp", "tests",
                        "harness.mjs")
@@ -394,3 +398,140 @@ class TestTheJsonFloatAmbiguity:
         entries.append(sealed)
         got = js(op="verify", entries=entries, shield_job_id="job-abc")
         assert got["intact"] is True
+
+
+def _b64(blob):
+    return base64.b64encode(blob).decode()
+
+
+def _photo_problems(problems):
+    return [p for p in problems if p.startswith("photo ")]
+
+
+JOB = "job-photo-bind"
+P1 = b"photo-one-bytes"
+P2 = b"photo-two-bytes"
+H1 = hashlib.sha256(P1).hexdigest()
+H2 = hashlib.sha256(P2).hexdigest()
+
+
+def _bound_package():
+    """Evidence-shaped package whose uploaded entries seal the real hashes."""
+    entries, prev = [], ledger.genesis_hash(JOB)
+    specs = [
+        {"event_type": "uploaded", "photo_id": "ph1", "file_hash": H1,
+         "event_data": {"point_number": 1, "note": "sill"},
+         "recorded_at": "2026-09-02T15:00:00+00:00"},
+        {"event_type": "uploaded", "photo_id": "ph2", "file_hash": H2,
+         "event_data": {"point_number": 2, "note": "studs"},
+         "recorded_at": "2026-09-03T09:00:00+00:00"},
+    ]
+    for spec in specs:
+        sealed = ledger.seal({
+            "shield_job_id": JOB, "actor_type": "contractor", "actor_id": "user-1",
+            "gps_lat": 40.76056, "gps_lng": -111.89083, **spec,
+        }, prev)
+        entries.append(sealed)
+        prev = sealed["entry_hash"]
+    manifest = {
+        "job": {"shield_job_id": JOB},
+        "custody_entries": entries,
+        "custody": {"head_hash": prev, "chain_intact": True, "entries": len(entries)},
+        "checkpoints": [
+            {"checkpoint_number": 1, "photo_id": "ph1", "sha256_original": H1,
+             "superseded_attempts": []},
+            {"checkpoint_number": 2, "photo_id": "ph2", "sha256_original": H2,
+             "superseded_attempts": []},
+        ],
+    }
+    return json.loads(json.dumps(manifest)), prev
+
+
+def _same_photo_verdict(manifest, files):
+    py = shield_verify.verify_package(manifest, files)
+    got = js(op="package", manifest=manifest,
+             files={k: _b64(v) for k, v in files.items()})
+    assert got["verdict"] == py["verdict"], (got, py["problems"], py["unverified"])
+    assert _photo_problems(got["problems"]) == _photo_problems(py["problems"])
+    assert got["unverified"] == py["unverified"]
+    assert [(f.get("photo_id"), f.get("status")) for f in got["files"]] == \
+        [(f.get("photo_id"), f.get("status")) for f in py["files"]]
+    return py, got
+
+
+class TestPhotoBindingAgreesWithThePythonVerifier:
+    def test_an_honest_package_passes_in_both(self):
+        manifest, _ = _bound_package()
+        py, _ = _same_photo_verdict(manifest, {"ph1": P1, "ph2": P2})
+        assert py["verdict"] == "PASS"
+
+    def test_a_swap_that_rewrites_the_manifest_fails_in_both(self):
+        """On 827a9df the Python verifier returned PASS for this package."""
+        manifest, _ = _bound_package()
+        swapped = b"a completely different image"
+        manifest["checkpoints"][0]["sha256_original"] = hashlib.sha256(swapped).hexdigest()
+        py, _ = _same_photo_verdict(manifest, {"ph1": swapped, "ph2": P2})
+        assert py["verdict"] == "FAIL"
+        assert "photo ph1 does not match the sealed upload record" in py["problems"]
+
+    def test_a_missing_upload_is_unverified_in_both(self):
+        manifest, head = _bound_package()
+        manifest["custody_entries"] = [manifest["custody_entries"][0]]
+        manifest["custody"]["head_hash"] = manifest["custody_entries"][-1]["entry_hash"]
+        manifest["custody"]["entries"] = 1
+        # Keeping only the first entry leaves a chain that still links: its
+        # prev_hash is the genesis value. ph2 no longer has an upload.
+        py, _ = _same_photo_verdict(manifest, {"ph1": P1, "ph2": P2})
+        assert py["verdict"] == "UNVERIFIED"
+        assert py["problems"] == []
+        assert "photo ph2 has no sealed upload record" in py["unverified"]
+        assert head  # the original head is not this package's head
+
+    def test_the_wrong_checkpoint_fails_in_both(self):
+        manifest, _ = _bound_package()
+        manifest["checkpoints"][0]["photo_id"] = "ph2"
+        manifest["checkpoints"][0]["sha256_original"] = H2
+        manifest["checkpoints"][1]["photo_id"] = None
+        manifest["checkpoints"][1]["sha256_original"] = None
+        py, _ = _same_photo_verdict(manifest, {"ph2": P2})
+        assert py["verdict"] == "FAIL"
+        assert any("filed under checkpoint 1" in p for p in py["problems"])
+
+    def test_a_dropped_file_is_not_accepted_for_matching_any_hash(self):
+        """The old page passed a file that matched any checkpoint hash."""
+        manifest, _ = _bound_package()
+        swapped = b"a completely different image"
+        manifest["checkpoints"][0]["sha256_original"] = hashlib.sha256(swapped).hexdigest()
+        judged = js(op="judge", manifest=manifest, file_b64=_b64(swapped))
+        assert judged["verdict"] == "FAIL"
+        assert judged["matched"] == []
+        assert "ph1" in judged["text"]
+        assert "does not match the sealed upload record" in judged["text"]
+
+        honest = js(op="judge", manifest=manifest, file_b64=_b64(P2))
+        assert honest["verdict"] == "match"
+        assert honest["matched"] == [{"photo_id": "ph2", "checkpoint": "2"}]
+        assert "checkpoint 1" not in honest["text"]
+
+    def test_an_api_package_uses_original_hash_in_both(self):
+        entries, prev = [], ledger.genesis_hash(JOB)
+        sealed = ledger.seal({
+            "record_id": JOB, "event_type": "uploaded", "photo_id": "ph1",
+            "actor_ref": "key-1", "actor_kind": "api_key", "file_hash": H1,
+            "event_data": {"point_number": 1, "bytes": len(P1)},
+            "recorded_at": "2026-09-02T15:00:00+00:00",
+        }, prev)
+        entries.append(sealed)
+        manifest = json.loads(json.dumps({
+            "record": {"id": JOB},
+            "checkpoints": [{"id": "p1", "point_number": 1, "label": "Sill"}],
+            "photos": [{"id": "ph1", "checkpoint_id": "p1", "original_hash": H1}],
+            "custody": entries,
+            "head_hash": sealed["entry_hash"],
+        }))
+        py, _ = _same_photo_verdict(manifest, {"ph1": P1})
+        assert py["verdict"] == "PASS"
+        manifest["photos"][0]["original_hash"] = hashlib.sha256(b"nope").hexdigest()
+        py, _ = _same_photo_verdict(manifest, {"ph1": b"nope"})
+        assert py["verdict"] == "FAIL"
+        assert "photo ph1 does not match the sealed upload record" in py["problems"]

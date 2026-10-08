@@ -29,7 +29,12 @@ What it establishes
   * Each custody entry hashes to the value it stores, given its predecessor.
   * The chain runs unbroken from a genesis value derived from the job id.
   * The head hash you were handed matches the head this chain computes.
-  * Where photo files are supplied, their SHA-256 matches the manifest.
+  * For every photo, the sealed `uploaded` entry with that photo_id has a
+    file_hash equal to the manifest hash and, where the file is supplied,
+    equal to the SHA-256 of those bytes. The manifest hash is not sealed.
+    Matching it alone is not a pass.
+  * Where that sealed entry records a checkpoint number, the photo is filed
+    under that checkpoint.
 
 What it cannot establish
 ------------------------
@@ -42,6 +47,8 @@ What it cannot establish
   * That the chain has not been TRUNCATED. Dropping entries from the end
     leaves a shorter chain in which every remaining link still verifies.
     Only a head hash you were given earlier detects it — pass --expect-head.
+  * That the chain was not rewritten in full. A swap that also recomputes
+    every link still verifies on its own. The same held head detects it.
 
 A package can verify perfectly and still describe work that was never done.
 This tool checks integrity, not truth.
@@ -147,31 +154,289 @@ def _break(index, entries, head, reason):
             "broken_at_index": index, "reason": reason, "head_hash": head}
 
 
-def verify_files(manifest, file_bytes):
-    """Match supplied bytes against the manifest's hashes.
+def _job_id(manifest):
+    """The id the genesis value was derived from.
 
-    `file_bytes` maps photo_id -> bytes. Anything absent is reported as not
-    supplied rather than as a failure — a recipient may hold only some files.
+    An evidence manifest names `job.shield_job_id`. The v2 API package names
+    `record.id` and seals the chain under that id. Both are the same input.
     """
-    results = []
-    for item in manifest.get("checkpoints", []):
-        photo_id, expected = item.get("photo_id"), item.get("sha256_original")
-        if not photo_id or not expected:
-            results.append({"checkpoint": item.get("checkpoint_number"),
-                            "photo_id": photo_id, "status": "no photo in package"})
+    job = manifest.get("job")
+    if isinstance(job, dict) and job.get("shield_job_id"):
+        return job.get("shield_job_id")
+    record = manifest.get("record")
+    if isinstance(record, dict) and record.get("id"):
+        return record.get("id")
+    return None
+
+
+def _entries(manifest):
+    """The custody rows, in chain order, from either package shape.
+
+    Evidence exports put them in `custody_entries` and a summary object in
+    `custody`. The API package puts the rows themselves in `custody`.
+    """
+    raw = manifest.get("custody_entries")
+    if isinstance(raw, list):
+        return raw
+    custody = manifest.get("custody")
+    if isinstance(custody, list):
+        return custody
+    return None
+
+
+def _claimed(manifest):
+    """The producer's own claims about the chain, from either package shape."""
+    custody = manifest.get("custody")
+    if isinstance(custody, dict):
+        return custody
+    claimed = {}
+    if manifest.get("head_hash"):
+        claimed["head_hash"] = manifest.get("head_hash")
+    if "chain_intact" in manifest:
+        claimed["chain_intact"] = manifest.get("chain_intact")
+    return claimed
+
+
+def _checkpoint_token(value):
+    """A checkpoint number as a comparable string, or None when it is absent."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        if value == int(value):
+            return str(int(value))
+        return repr(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return text
+        if number == int(number):
+            return str(int(number))
+        return text
+    return str(value)
+
+
+def _event_data(entry):
+    data = entry.get("event_data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (ValueError, TypeError):
+            return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _sealed_point(entry):
+    """Checkpoint number sealed on an upload, when the entry recorded one.
+
+    v2 API uploads seal `event_data.point_number`. Legacy `/shield` uploads
+    do not, and a missing number is not a disagreement — there is nothing
+    to compare.
+    """
+    data = _event_data(entry)
+    if "point_number" not in data:
+        return None
+    return _checkpoint_token(data.get("point_number"))
+
+
+def _photo_claims(manifest):
+    """Every photo the manifest asks a recipient to trust, in package order.
+
+    Evidence exports list the live photo on `checkpoints[].sha256_original`
+    and earlier attempts on `superseded_attempts`. API packages list the
+    same bytes' hash as `photos[].original_hash` and name the checkpoint by
+    id. The presence of `sha256_original` is what tells the two apart: an
+    API checkpoint row does not have that key.
+    """
+    checkpoints = manifest.get("checkpoints") or []
+    if not isinstance(checkpoints, list):
+        checkpoints = []
+    evidence_shape = any(isinstance(item, dict) and "sha256_original" in item
+                         for item in checkpoints)
+    claims = []
+    if evidence_shape:
+        for item in checkpoints:
+            if not isinstance(item, dict):
+                continue
+            checkpoint = _checkpoint_token(item.get("checkpoint_number"))
+            photo_id = item.get("photo_id")
+            manifest_hash = item.get("sha256_original")
+            if not photo_id and not manifest_hash:
+                claims.append({"photo_id": None, "manifest_hash": None,
+                               "checkpoint": checkpoint, "empty": True})
+            else:
+                claims.append({"photo_id": photo_id,
+                               "manifest_hash": manifest_hash,
+                               "checkpoint": checkpoint, "empty": False})
+            for attempt in item.get("superseded_attempts") or []:
+                if not isinstance(attempt, dict):
+                    continue
+                claims.append({
+                    "photo_id": attempt.get("photo_id"),
+                    "manifest_hash": attempt.get("sha256_original"),
+                    "checkpoint": checkpoint,
+                    "empty": False,
+                })
+        return claims
+
+    by_id = {}
+    for item in checkpoints:
+        if isinstance(item, dict) and item.get("id") is not None:
+            by_id[item.get("id")] = item
+    photos = manifest.get("photos") or []
+    if not isinstance(photos, list):
+        return claims
+    for photo in photos:
+        if not isinstance(photo, dict):
             continue
-        if photo_id not in file_bytes:
-            results.append({"checkpoint": item.get("checkpoint_number"),
-                            "photo_id": photo_id, "status": "file not supplied"})
-            continue
-        actual = hashlib.sha256(file_bytes[photo_id]).hexdigest()
-        results.append({
-            "checkpoint": item.get("checkpoint_number"),
-            "photo_id": photo_id,
-            "status": "match" if actual == expected else "MISMATCH",
-            "expected": expected, "actual": actual,
+        row = by_id.get(photo.get("checkpoint_id")) or {}
+        claims.append({
+            "photo_id": photo.get("id") if photo.get("id") is not None
+            else photo.get("photo_id"),
+            "manifest_hash": photo.get("original_hash"),
+            "checkpoint": _checkpoint_token(row.get("point_number")),
+            "empty": False,
         })
-    return results
+    return claims
+
+
+def _verified_prefix(entries, chain):
+    """Entries whose links actually verified.
+
+    An uploaded entry at or after the break is not a seal. Its file_hash
+    is exactly the field an editor would change, and the break is the
+    evidence that the change did not recompute the chain.
+    """
+    if not entries or not chain:
+        return []
+    if chain.get("intact"):
+        return list(entries)
+    broke = chain.get("broken_at_index")
+    if broke is None:
+        return []
+    return list(entries[:broke])
+
+
+def _photo_label(photo_id):
+    return photo_id if photo_id else "without an id"
+
+
+def verify_files(manifest, file_bytes, entries=None, chain=None):
+    """Bind every photo to the sealed upload record for that photo_id.
+
+    `file_bytes` maps photo_id -> bytes. A file that was not supplied is
+    reported as not supplied rather than as a failure — a recipient may
+    hold only some files. The manifest hash is still checked against the
+    sealed `file_hash` whether or not the bytes are here.
+
+    A photo with no sealed `uploaded` entry is UNVERIFIED. That is weaker
+    than a match and it is not an accusation: legacy rows predate the seal.
+    A hash that disagrees with the seal, or a checkpoint the seal lets us
+    check and that does not match, is a failure.
+
+    Returns (results, problems, unverified, notes).
+    """
+    if entries is None:
+        entries = _entries(manifest) or []
+    prefix = _verified_prefix(entries, chain)
+    supplied = file_bytes or {}
+    results, problems, unverified, notes = [], [], [], []
+
+    for claim in _photo_claims(manifest):
+        photo_id = claim["photo_id"]
+        checkpoint = claim["checkpoint"]
+        if claim["empty"] or (not photo_id and not claim["manifest_hash"]):
+            results.append({"checkpoint": checkpoint, "photo_id": photo_id,
+                            "status": "no photo in package"})
+            continue
+
+        label = _photo_label(photo_id)
+        wanted = str(photo_id) if photo_id is not None else None
+        uploads = [e for e in prefix
+                   if e.get("event_type") == "uploaded"
+                   and e.get("photo_id") is not None
+                   and str(e.get("photo_id")) == wanted]
+        hashes = []
+        for entry in uploads:
+            digest = entry.get("file_hash")
+            if digest not in hashes:
+                hashes.append(digest)
+        points = []
+        for entry in uploads:
+            point = _sealed_point(entry)
+            if point is not None and point not in points:
+                points.append(point)
+
+        usable = [h for h in hashes if h]
+        if not uploads or not usable:
+            text = "photo %s has no sealed upload record" % label
+            unverified.append(text)
+            results.append({
+                "checkpoint": checkpoint, "photo_id": photo_id,
+                "status": "UNVERIFIED", "manifest_hash": claim["manifest_hash"],
+                "sealed_hash": None, "sealed_checkpoint": None,
+            })
+            continue
+
+        if len(hashes) != 1 or len(points) > 1:
+            text = "photo %s has sealed upload records that disagree" % label
+            problems.append(text)
+            results.append({
+                "checkpoint": checkpoint, "photo_id": photo_id,
+                "status": "MISMATCH", "manifest_hash": claim["manifest_hash"],
+                "sealed_hash": None, "sealed_checkpoint": None,
+            })
+            continue
+
+        sealed = hashes[0]
+        sealed_checkpoint = points[0] if points else None
+        row_problems = []
+        if claim["manifest_hash"] != sealed:
+            row_problems.append(
+                "photo %s manifest hash does not match the sealed upload record"
+                % label)
+        if (sealed_checkpoint is not None and checkpoint is not None
+                and sealed_checkpoint != checkpoint):
+            row_problems.append(
+                "photo %s is filed under checkpoint %s but the sealed upload "
+                "records checkpoint %s" % (label, checkpoint, sealed_checkpoint))
+        elif sealed_checkpoint is None:
+            notes.append(
+                "photo %s has a sealed upload hash, but that entry does not "
+                "seal a checkpoint number, so which checkpoint it belongs to "
+                "was not checked" % label)
+
+        actual = None
+        has_file = photo_id in supplied or (
+            wanted is not None and wanted in supplied)
+        if has_file:
+            blob = supplied[photo_id] if photo_id in supplied else supplied[wanted]
+            actual = hashlib.sha256(blob).hexdigest()
+            if actual != sealed:
+                row_problems.append(
+                    "photo %s does not match the sealed upload record" % label)
+
+        problems.extend(row_problems)
+        if row_problems:
+            status = "MISMATCH"
+        elif not has_file:
+            status = "file not supplied"
+        else:
+            status = "match"
+        results.append({
+            "checkpoint": checkpoint, "photo_id": photo_id, "status": status,
+            "expected": sealed, "actual": actual,
+            "manifest_hash": claim["manifest_hash"], "sealed_hash": sealed,
+            "sealed_checkpoint": sealed_checkpoint,
+        })
+    return results, problems, unverified, notes
 
 
 def verify_package(manifest, file_bytes=None, expect_head=None):
@@ -184,12 +449,14 @@ def verify_package(manifest, file_bytes=None, expect_head=None):
     a head you already held catches truncation and rewrite both.
     """
     problems = []
-    job_id = (manifest.get("job") or {}).get("shield_job_id")
+    notes = []
+    job_id = _job_id(manifest)
     if not job_id:
-        return {"ok": False, "problems": ["manifest has no job.shield_job_id"],
-                "chain": None, "files": []}
+        return {"ok": False, "verdict": "FAIL",
+                "problems": ["manifest has no job.shield_job_id or record.id"],
+                "unverified": [], "notes": [], "chain": None, "files": []}
 
-    entries = manifest.get("custody_entries")
+    entries = _entries(manifest)
     if entries is None:
         problems.append(
             "package carries no custody_entries — the chain cannot be "
@@ -202,7 +469,7 @@ def verify_package(manifest, file_bytes=None, expect_head=None):
             problems.append("custody chain breaks at entry %d of %d: %s" % (
                 chain["broken_at_index"] + 1, chain["entries"], chain["reason"]))
 
-        claimed = manifest.get("custody") or {}
+        claimed = _claimed(manifest)
         if claimed.get("head_hash") and claimed["head_hash"] != chain["head_hash"]:
             problems.append(
                 "head hash disagreement — the package states %s… but its own "
@@ -225,21 +492,26 @@ def verify_package(manifest, file_bytes=None, expect_head=None):
                 "end, or the history was rewritten. Both verify perfectly on "
                 "their own; only your copy of the head detects this."
                 % (str(expect_head)[:16], chain["head_hash"][:16]))
-    notes = []
     if chain and not expect_head:
         notes.append(
             "No expected head supplied. A chain truncated at the end verifies "
             "perfectly — pass --expect-head with the head hash you were given "
             "when the record was closed out.")
 
-    files = verify_files(manifest, file_bytes or {})
-    for f in files:
-        if f["status"] == "MISMATCH":
-            problems.append("photo %s does not match its recorded hash"
-                            % f["photo_id"])
+    files, photo_problems, unverified, photo_notes = verify_files(
+        manifest, file_bytes or {}, entries, chain)
+    problems.extend(photo_problems)
+    notes.extend(photo_notes)
 
-    return {"ok": not problems, "problems": problems, "notes": notes,
-            "chain": chain, "files": files}
+    if problems:
+        verdict = "FAIL"
+    elif unverified:
+        verdict = "UNVERIFIED"
+    else:
+        verdict = "PASS"
+    return {"ok": verdict == "PASS", "verdict": verdict, "problems": problems,
+            "unverified": unverified, "notes": notes, "chain": chain,
+            "files": files}
 
 
 # ------------------------------------------------------------------ cli ----
@@ -276,10 +548,12 @@ def main(argv=None):
         print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 1
 
-    job = manifest.get("job") or {}
+    job = manifest.get("job") if isinstance(manifest.get("job"), dict) else {}
+    record = manifest.get("record") if isinstance(manifest.get("record"), dict) else {}
     print("Shield evidence package — independent verification")
-    print("  job                %s" % job.get("shield_job_id"))
-    print("  reference          %s" % (job.get("external_reference") or "—"))
+    print("  job                %s" % (job.get("shield_job_id") or record.get("id")))
+    print("  reference          %s" % (
+        job.get("external_reference") or record.get("external_ref") or "—"))
     if report["chain"]:
         c = report["chain"]
         print("  custody chain      %s (%d/%d entries)"
@@ -294,19 +568,35 @@ def main(argv=None):
     else:
         print("  custody chain      NOT VERIFIABLE — no entries in package")
     supplied = [f for f in report["files"] if f["status"] in ("match", "MISMATCH")]
+    unverified_files = [f for f in report["files"] if f["status"] == "UNVERIFIED"]
     if supplied:
         matched = sum(1 for f in supplied if f["status"] == "match")
-        print("  photos checked     %d of %d match" % (matched, len(supplied)))
+        print("  photos checked     %d of %d match the sealed upload record"
+              % (matched, len(supplied)))
+    elif unverified_files:
+        print("  photos checked     %d unverified (no sealed upload record)"
+              % len(unverified_files))
     else:
         print("  photos checked     none supplied (pass --files to check them)")
 
     print()
-    if report["ok"]:
+    if report["verdict"] == "PASS":
         print("PASS — everything checkable in this package checks out.")
+    elif report["verdict"] == "UNVERIFIED":
+        print("UNVERIFIED — the chain checks out, but one or more photos")
+        print("cannot be tied to a sealed upload record. This is not a pass,")
+        print("and it is not a finding that the photo was swapped.")
+        for item in report["unverified"]:
+            print("  - %s" % item)
     else:
         print("FAIL")
         for p in report["problems"]:
             print("  - %s" % p)
+        for item in report.get("unverified") or []:
+            print("  - unverified: %s" % item)
+    for note in report.get("notes") or []:
+        if note.startswith("photo "):
+            print("  note: %s" % note)
     print()
     print("This establishes integrity, not truth. It does not show that a photo")
     print("came off a camera, that the assessments are correct, or that the work")
