@@ -101,6 +101,10 @@ button.primary:hover, .buttons button:hover { border-color: var(--accent); }
   border-left-width: 4px; border-radius: var(--radius);
   padding: 16px 18px; margin-top: 16px;
 }
+.kicker {
+  margin: 0 0 4px; font-size: 0.72rem; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
 .card h3 { margin: 0 0 8px; font-size: 1.08rem; }
 .card h4 { margin: 18px 0 6px; font-size: 0.92rem; color: var(--muted); }
 .card.good { border-left-color: var(--good); }

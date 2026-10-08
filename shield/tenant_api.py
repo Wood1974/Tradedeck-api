@@ -52,6 +52,7 @@ import attestation
 import db as shield_db
 import integrity
 import ledger
+import offline_seal
 import queue_ingest
 import tenancy
 import ticket
@@ -1766,10 +1767,39 @@ def package(record_id):
         "receipt": receipt_view,
         "timestamp": timestamp_view,
         "signing_key": ticket.export_public_key(),
+        "offline": _offline_block(record_id, ordered),
         "verify_with": "https://github.com/Wood1974/Tradedeck-api "
                        "(shield/verifier/shield_verify.py, or "
                        "shield/webapp/shield.html in a browser)",
     })
+
+
+def _offline_block(record_id, entries):
+    """The phone chain, ticket, and key a recipient can check with wifi off.
+
+    Built from rows already stored. A failure here leaves the custody package
+    intact and the seal card empty, rather than failing the export.
+    """
+    ticket_row = None
+    public_key = None
+    try:
+        ticket_row = shield_db.find_job_ticket(_principal().tenant_id, record_id)
+        if ticket_row and ticket_row.get("key_id"):
+            rows = (_t("attested_keys").select("public_key")
+                    .eq("key_id", ticket_row["key_id"])
+                    .eq("tenant_id", _principal().tenant_id)
+                    .limit(1).execute()).data or []
+            if rows:
+                public_key = rows[0].get("public_key")
+    except Exception:
+        log.exception("Offline seal block failed for %s", record_id)
+        return None
+    return offline_seal.block_from_stored(
+        entries=entries,
+        ticket_row=ticket_row,
+        public_key_b64=public_key,
+        app_id=config.get("APP_ATTEST_APP_ID") or None,
+    )
 
 
 def _live_for(checkpoint_id, photos):
