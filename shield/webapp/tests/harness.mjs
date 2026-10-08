@@ -11,7 +11,7 @@
  * through both implementations and the bytes are compared. Reads one JSON
  * request on stdin, writes one JSON response on stdout.
  */
-import { canonical, pyJson, pyRepr, verifyChain, genesisHash, link }
+import { canonical, pyJson, pyRepr, verifyChain, verifyPackage, genesisHash, link }
   from "../verify.js";
 import { judgeOfflineSeal } from "../seal.js";
 
@@ -72,6 +72,10 @@ switch (req.op) {
   case "verify":
     out = await verifyChain(req.entries, req.shield_job_id,
                             { expectHead: req.expect_head ?? null });
+    break;
+
+  case "package":
+    out = await verifyPackage(req.manifest, { expectHead: req.expect_head ?? null });
     break;
 
   case "seal": {

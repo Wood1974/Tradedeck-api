@@ -369,6 +369,11 @@ class TestAValidBatch:
         assert package["head_hash"] == body["custody_head_hash"]
         assert package["timestamp"]["forged"] is False
         assert package["timestamp"]["status"] == "missing"
+        assert "timestamp missing" in package["timestamp"]["note"]
+        assert package["receipt"]["signed"]["head_hash"] == package["head_hash"]
+        assert tsa.verify_receipt(
+            package["receipt"]["signed"], package["receipt"]["signature"],
+            pem=SIGNING_PEM)["ok"] is True
         assert package["receipt"]["time_labels"][0]["verdict"] == "CONSISTENT"
         assert "PRIVATE" not in json.dumps(package)
 
