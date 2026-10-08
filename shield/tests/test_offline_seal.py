@@ -65,10 +65,16 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not installed")
 
 
-def js_seal(package, roots_pem):
+def js_seal(package, roots_pem, files=None):
+    payload = {"op": "seal", "package": package, "roots_pem": roots_pem}
+    if files:
+        payload["files"] = [
+            {"photo_id": photo_id, "hex": raw.hex()}
+            for photo_id, raw in files.items()
+        ]
     proc = subprocess.run(
         ["node", HARNESS],
-        input=json.dumps({"op": "seal", "package": package, "roots_pem": roots_pem}),
+        input=json.dumps(payload),
         capture_output=True, text=True, timeout=60,
     )
     if proc.returncode != 0:
@@ -211,7 +217,9 @@ def build_package(*, platform="ios", boot_id=BOOT, wall_extra=0, flags=0,
         "phone_chain_head": records[-1]["record_hash"],
         "ticket_clock": clock,
     }
-    event = queue_ingest.custody_event(prepared, ticket_hash=ticket_hash)
+    photo_ids = [f"ph-{index + 1}" for index in range(len(records))]
+    event = queue_ingest.custody_event(
+        prepared, ticket_hash=ticket_hash, photo_ids=photo_ids)
     event.update({
         "shield_job_id": JOB,
         "actor_id": ACTOR,
@@ -267,13 +275,30 @@ def build_package(*, platform="ios", boot_id=BOOT, wall_extra=0, flags=0,
         "timestamp": timestamp,
         "signing_key": ticket.export_public_key(pem),
         "offline": offline,
+        "photos": [
+            {
+                "id": photo_ids[index],
+                "checkpoint_id": record["checkpoint_id"],
+                "original_hash": record["photo_sha256"],
+            }
+            for index, record in enumerate(records)
+        ],
+        "checkpoints": [
+            {
+                "checkpoint_number": index + 1,
+                "checkpoint_id": record["checkpoint_id"],
+                "photo_id": photo_ids[index],
+                "sha256_original": record["photo_sha256"],
+            }
+            for index, record in enumerate(records)
+        ],
     }
     return package, roots
 
 
-def _agree(package, roots, label):
-    py = offline_seal.judge(package, roots_pem=roots)
-    js = js_seal(package, roots)
+def _agree(package, roots, label, files=None):
+    py = offline_seal.judge(package, roots_pem=roots, files=files)
+    js = js_seal(package, roots, files)
     assert py["label"] == label, py
     assert js["label"] == label, js
     assert js["flags"] == py["flags"]
@@ -373,6 +398,48 @@ class TestTheTwoJudgesAgree:
         roots = offline_seal.pinned_roots()
         got = _agree(package, roots, "SEALED")
         assert got["notes"] == []
+
+    def test_each_offline_photo_is_sealed_to_its_hash_and_checkpoint(self):
+        package, roots = build_package(photos=2)
+        bindings = package["custody_entries"][0]["event_data"]["sealed_photos"]
+        assert bindings == [
+            {
+                "photo_id": "ph-1",
+                "photo_sha256": PHOTO,
+                "checkpoint_id": "cp-1",
+            },
+            {
+                "photo_id": "ph-2",
+                "photo_sha256": PHOTO,
+                "checkpoint_id": "cp-2",
+            },
+        ]
+        assert "photo_ids" not in package["custody_entries"][0]["event_data"]
+        chain = ledger.verify_chain(package["custody_entries"], JOB)
+        assert chain["intact"] is True
+        _agree(package, roots, "receipt present, timestamp absent")
+
+    def test_editing_an_offline_photo_hash_is_tampered_though_the_seal_verifies(self):
+        package, roots = build_package(photos=1)
+        package["photos"][0]["original_hash"] = "ef" * 32
+        chain = ledger.verify_chain(package["custody_entries"], JOB)
+        assert chain["intact"] is True
+        _agree(package, roots, "TAMPERED")
+
+    def test_editing_a_checkpoint_hash_is_tampered_though_the_seal_verifies(self):
+        package, roots = build_package(photos=1)
+        package["checkpoints"][0]["sha256_original"] = "ef" * 32
+        assert ledger.verify_chain(package["custody_entries"], JOB)["intact"] is True
+        _agree(package, roots, "TAMPERED")
+
+    def test_bytes_that_match_the_manifest_but_not_the_phone_chain_are_tampered(self):
+        package, roots = build_package(photos=1)
+        new = b"not-the-photograph-the-phone-signed"
+        digest = hashlib.sha256(new).hexdigest()
+        package["photos"][0]["original_hash"] = digest
+        package["checkpoints"][0]["sha256_original"] = digest
+        assert ledger.verify_chain(package["custody_entries"], JOB)["intact"] is True
+        _agree(package, roots, "TAMPERED", files={"ph-1": new})
 
     def test_a_package_with_no_phone_chain_has_no_seal(self):
         package, roots = build_package()

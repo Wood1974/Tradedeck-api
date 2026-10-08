@@ -19,7 +19,7 @@
   have to change it, which is the point.
 -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-uCRw4ru0jUHwwgzsGqouMzgO9jPviGVOZrDiHG/7iGg=';
+      content="default-src 'none'; script-src 'sha256-hgWDmLg12DKrSJOaaTCTLde23YVJp3mGJ8tH0yGiBuY=';
                style-src 'sha256-H0O6Z8OCx2XrSRzgcphS4dqumDO6Z7EyOf9qhZRcEIs='; img-src 'self' data: blob:;
                connect-src *; base-uri 'none'; form-action 'none'">
 <style>
@@ -1713,9 +1713,175 @@ async function verifyPhoneChain(records, firstPrev) {
   return { ok: true, head: expected };
 }
 
+function eventDataOf(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  let data = entry.event_data;
+  if (typeof data === "string") {
+    try { data = JSON.parse(data); } catch { return null; }
+  }
+  return data && typeof data === "object" ? data : null;
+}
+
+function photoAnchors(entries) {
+  const anchors = [];
+  const problems = [];
+  for (const entry of entries || []) {
+    const data = eventDataOf(entry);
+    if (!data || !Array.isArray(data.phone_chain)) continue;
+    const records = data.phone_chain.filter((item) => item && typeof item === "object");
+    const bindings = data.sealed_photos;
+    if (bindings === undefined || bindings === null) {
+      for (const record of records) {
+        anchors.push({
+          photo_id: null,
+          photo_sha256: record.photo_sha256,
+          checkpoint_id: record.checkpoint_id ? String(record.checkpoint_id) : "",
+        });
+      }
+      continue;
+    }
+    if (!Array.isArray(bindings)) {
+      problems.push("sealed_photos is not a list of photograph bindings.");
+      continue;
+    }
+    const unused = [];
+    for (const binding of bindings) {
+      if (binding && typeof binding === "object") unused.push(binding);
+      else problems.push("A sealed photograph binding is not an object.");
+    }
+    for (const record of records) {
+      const digest = record.photo_sha256;
+      const checkpoint = record.checkpoint_id ? String(record.checkpoint_id) : "";
+      const index = unused.findIndex((binding) =>
+        binding.photo_sha256 === digest && String(binding.checkpoint_id || "") === checkpoint);
+      if (index < 0) {
+        problems.push("A hardware-signed photograph has no sealed photo_id binding.");
+        anchors.push({ photo_id: null, photo_sha256: digest, checkpoint_id: checkpoint });
+        continue;
+      }
+      const match = unused.splice(index, 1)[0];
+      let photoId = match.photo_id;
+      if (typeof photoId !== "string" || !photoId.trim()) {
+        problems.push("A sealed photograph has no photo_id.");
+        photoId = null;
+      }
+      anchors.push({ photo_id: photoId, photo_sha256: digest, checkpoint_id: checkpoint });
+    }
+    if (unused.length) {
+      problems.push("A sealed photograph is not in the hardware-signed phone chain.");
+    }
+  }
+  return { anchors, problems };
+}
+
+function photoClaims(manifest) {
+  const claims = [];
+  if (Array.isArray(manifest?.photos)) {
+    for (const photo of manifest.photos) {
+      if (!photo || typeof photo !== "object") continue;
+      const digest = typeof photo.original_hash === "string"
+        ? photo.original_hash
+        : (typeof photo.sha256_original === "string" ? photo.sha256_original : null);
+      claims.push({
+        photo_id: photo.id ? String(photo.id) : null,
+        checkpoint_id: photo.checkpoint_id ? String(photo.checkpoint_id) : null,
+        sha256: digest,
+      });
+    }
+  }
+  if (Array.isArray(manifest?.checkpoints)) {
+    for (const item of manifest.checkpoints) {
+      if (!item || typeof item !== "object") continue;
+      if (!("sha256_original" in item) && !("photo_id" in item)) continue;
+      claims.push({
+        photo_id: item.photo_id ? String(item.photo_id) : null,
+        checkpoint_id: item.checkpoint_id ? String(item.checkpoint_id) : null,
+        sha256: typeof item.sha256_original === "string" ? item.sha256_original : null,
+      });
+      for (const old of item.superseded_attempts || []) {
+        if (!old || typeof old !== "object") continue;
+        claims.push({
+          photo_id: old.photo_id ? String(old.photo_id) : null,
+          checkpoint_id: null,
+          sha256: typeof old.sha256_original === "string" ? old.sha256_original : null,
+        });
+      }
+    }
+  }
+  return claims;
+}
+
+function anchorFor(claim, anchors) {
+  if (claim.photo_id) {
+    return anchors.find((anchor) => anchor.photo_id === claim.photo_id) || null;
+  }
+  if (!claim.checkpoint_id) return null;
+  const byCheckpoint = anchors.filter((anchor) => anchor.checkpoint_id === claim.checkpoint_id);
+  if (!byCheckpoint.length) return null;
+  if (claim.sha256) {
+    const exact = byCheckpoint.filter((anchor) => anchor.photo_sha256 === claim.sha256);
+    return exact[0] || byCheckpoint[0];
+  }
+  return byCheckpoint.length === 1 ? byCheckpoint[0] : null;
+}
+
+function fileList(files) {
+  if (!files) return [];
+  const list = Array.isArray(files) ? files : Object.entries(files).map(([photo_id, bytes]) => ({ photo_id, bytes }));
+  const out = [];
+  for (const item of list) {
+    if (item instanceof Uint8Array) {
+      out.push({ photo_id: null, bytes: item });
+      continue;
+    }
+    const bytes = item?.bytes;
+    if (!(bytes instanceof Uint8Array) || !bytes.length) continue;
+    out.push({ photo_id: item.photo_id ? String(item.photo_id) : null, bytes });
+  }
+  return out;
+}
+
+async function checkOfflinePhotos(manifest, entries, files, state) {
+  const { anchors, problems } = photoAnchors(entries);
+  for (const problem of problems) worsen(state, TAMPERED, problem);
+  if (!anchors.length) return;
+  const claims = photoClaims(manifest);
+  for (const claim of claims) {
+    const anchor = anchorFor(claim, anchors);
+    if (!anchor) continue;
+    if (claim.sha256 && claim.sha256 !== anchor.photo_sha256) {
+      worsen(state, TAMPERED,
+        "An offline photograph's hash does not match the hardware-signed phone chain.");
+    }
+    if (claim.checkpoint_id && anchor.checkpoint_id && claim.checkpoint_id !== anchor.checkpoint_id) {
+      worsen(state, TAMPERED,
+        "An offline photograph is not on the checkpoint the phone signed.");
+    }
+  }
+  for (const file of fileList(files)) {
+    const digest = toHex(await sha256(file.bytes));
+    if (file.photo_id) {
+      const found = anchors.find((anchor) => anchor.photo_id === file.photo_id);
+      if (found && digest !== found.photo_sha256) {
+        worsen(state, TAMPERED,
+          "Supplied photograph bytes do not match the hardware-signed phone chain.");
+      }
+      continue;
+    }
+    for (const claim of claims) {
+      if (claim.sha256 !== digest) continue;
+      const anchor = anchorFor(claim, anchors);
+      if (anchor && anchor.photo_sha256 !== digest) {
+        worsen(state, TAMPERED,
+          "Supplied photograph bytes match the manifest and do not match the hardware-signed phone chain.");
+      }
+    }
+  }
+}
+
 /**
  * @param {object} manifest
- * @param {{ rootsPem?: string }} [options]
+ * @param {{ rootsPem?: string, files?: Array<{photo_id?: string, bytes: Uint8Array}> }} [options]
  */
 async function judgeOfflineSeal(manifest, options = {}) {
   const rootsPem = options.rootsPem || PINNED_TSA_ROOTS;
@@ -1824,6 +1990,7 @@ async function judgeOfflineSeal(manifest, options = {}) {
     worsen(state, UNVERIFIED, "The ticket clock is missing, so the time rules cannot run.");
   }
 
+  await checkOfflinePhotos(manifest, entries, options.files, state);
   const receipt = await checkReceipt(manifest, custodyHead, custodyIntact, records, state);
   const timestampAbsent = await checkTimestamp(
     manifest, custodyIntact ? custodyHead : receipt.claimed, rootsPem, state);
@@ -2166,6 +2333,7 @@ const money = (cents) => `$${(cents / 100).toLocaleString("en-US",
 /* ----------------------------------------------------------------- verify -- */
 
 let loadedPackage = null;
+let suppliedPhoto = null;
 
 function sealClass(label) {
   if (label === "SEALED") return "good";
@@ -2264,6 +2432,7 @@ function renderVerification({ verifiable, chain, findings }, seal) {
 
 async function loadPackage(file) {
   $("fileName").textContent = file.name;
+  suppliedPhoto = null;
   try {
     loadedPackage = JSON.parse(await file.text());
   } catch (err) {
@@ -2279,7 +2448,9 @@ async function runVerification() {
   try {
     const expectHead = $("expectHead").value.trim() || null;
     const custody = await verifyPackage(loadedPackage, { expectHead });
-    const seal = await judgeOfflineSeal(loadedPackage);
+    const seal = await judgeOfflineSeal(loadedPackage, {
+      files: suppliedPhoto ? [{ bytes: suppliedPhoto }] : undefined,
+    });
     renderVerification(custody, seal);
   } catch (err) {
     fail($("verifyResult"), err);
@@ -2311,8 +2482,10 @@ $("photoFile").addEventListener("change", async (e) => {
   }
   const hashes = (loadedPackage.checkpoints || [])
     .map((c) => c.sha256_original).filter(Boolean);
+  suppliedPhoto = new Uint8Array(await file.arrayBuffer());
   const { actual } = await checkPhoto(file, null);
   const match = hashes.includes(actual);
+  await runVerification();
   show($("photoResult"), `<div class="card ${match ? "good" : "bad"}">
     <p>${match
       ? "This file matches a photo hash recorded in the package."

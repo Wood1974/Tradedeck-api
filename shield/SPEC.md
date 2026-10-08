@@ -736,6 +736,15 @@ with `captures` or with `phone_chain` by position. There is no sealed
 `photo_ids` array. The list sits in `event_data`, so editing one object,
 or reordering the list, changes the custody head.
 
+`photos[].original_hash` and `checkpoints[].sha256_original` are copies.
+They are not sealed. The seal judge compares every offline photograph
+those lists name, and any bytes supplied for that photograph, to
+`phone_chain[].photo_sha256`. That hash sits in the capture record the
+phone's key signed. When the two disagree the label is TAMPERED, even
+if the phone chain, the hardware signatures, the receipt, and the
+timestamp otherwise check. A photograph that is not in `sealed_photos`
+is not an offline photograph, and this comparison does not apply to it.
+
 The photographs are stored the way a single upload stores one: the hash
 is recomputed, the file is sniffed, and a second live photo of the same
 checkpoint supersedes the previous one. Those writes are not separate

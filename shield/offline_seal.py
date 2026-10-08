@@ -10,8 +10,9 @@ Labels, one of them
 -------------------
 TAMPERED
     A phone-chain byte or link does not reproduce, the phone chain is not
-    the one inside the custody entry, or the receipt's head is not the
-    custody head.
+    the one inside the custody entry, the receipt's head is not the
+    custody head, or an offline photograph in the package does not match
+    the hardware-signed ``photo_sha256``.
 FORGED
     A hardware signature does not verify, the key is missing or not the
     point it claims to be, the ticket signature does not verify, the
@@ -144,8 +145,14 @@ def block_from_stored(*, entries, ticket_row=None, public_key_b64=None,
     return {key: value for key, value in block.items() if value is not None}
 
 
-def judge(package, *, roots_pem=None) -> dict:
-    """The seal label for one package. Does not raise on a bad package."""
+def judge(package, *, roots_pem=None, files=None) -> dict:
+    """The seal label for one package. Does not raise on a bad package.
+
+    ``files`` maps a photo id to bytes, or is a list of those bytes. When
+    the bytes are present they are hashed and compared to the
+    hardware-signed phone-chain hash for that photograph. A match against
+    the unsealed manifest is not enough.
+    """
     if roots_pem is None:
         roots_pem = pinned_roots()
     if not isinstance(package, dict):
@@ -263,6 +270,8 @@ def judge(package, *, roots_pem=None) -> dict:
     elif records:
         worsen(LABEL_UNVERIFIED, "The ticket clock is missing, so the time rules cannot run.")
 
+    _check_package_photos(package, entries if isinstance(entries, list) else [],
+                          files, worsen)
     receipt_ok, receipt_present, claimed_head = _check_receipt(
         package, custody_head, custody_intact, records, worsen)
     timestamp_absent = _check_timestamp(
@@ -372,6 +381,222 @@ def _cross_check_phone_chain(entries, records, worsen):
         worsen(LABEL_TAMPERED,
                "The phone chain in the package is not the phone chain in the "
                "custody entry.")
+
+
+def _event_data(entry):
+    if not isinstance(entry, dict):
+        return None
+    data = entry.get("event_data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def _photo_anchors(entries):
+    """Hardware-signed hashes, paired to ``sealed_photos`` by the fields.
+
+    The pairing is ``photo_sha256`` plus ``checkpoint_id``, not the index
+    of the two lists. A binding that names a hash the phone did not sign,
+    or a phone record with no binding, is reported. A package from before
+    ``sealed_photos`` existed has no bindings; the phone-chain hash is
+    still the anchor, and it carries no photo id.
+    """
+    anchors = []
+    problems = []
+    for entry in entries or []:
+        data = _event_data(entry)
+        if not isinstance(data, dict) or not isinstance(data.get("phone_chain"), list):
+            continue
+        records = [item for item in data["phone_chain"] if isinstance(item, dict)]
+        bindings = data.get("sealed_photos")
+        if bindings is None:
+            for record in records:
+                anchors.append({
+                    "photo_id": None,
+                    "photo_sha256": record.get("photo_sha256"),
+                    "checkpoint_id": str(record.get("checkpoint_id") or ""),
+                })
+            continue
+        if not isinstance(bindings, list):
+            problems.append("sealed_photos is not a list of photograph bindings.")
+            continue
+        unused = []
+        for binding in bindings:
+            if isinstance(binding, dict):
+                unused.append(binding)
+            else:
+                problems.append("A sealed photograph binding is not an object.")
+        for record in records:
+            digest = record.get("photo_sha256")
+            checkpoint = str(record.get("checkpoint_id") or "")
+            match = None
+            for binding in unused:
+                if (binding.get("photo_sha256") == digest
+                        and str(binding.get("checkpoint_id") or "") == checkpoint):
+                    match = binding
+                    break
+            if match is None:
+                problems.append(
+                    "A hardware-signed photograph has no sealed photo_id binding.")
+                anchors.append({
+                    "photo_id": None,
+                    "photo_sha256": digest,
+                    "checkpoint_id": checkpoint,
+                })
+                continue
+            unused.remove(match)
+            photo_id = match.get("photo_id")
+            if not isinstance(photo_id, str) or not photo_id.strip():
+                problems.append("A sealed photograph has no photo_id.")
+                photo_id = None
+            anchors.append({
+                "photo_id": photo_id,
+                "photo_sha256": digest,
+                "checkpoint_id": checkpoint,
+            })
+        if unused:
+            problems.append(
+                "A sealed photograph is not in the hardware-signed phone chain.")
+    return anchors, problems
+
+
+def _photo_claims(package):
+    """Unsealed hash claims for photographs the package shows."""
+    claims = []
+    photos = package.get("photos") if isinstance(package, dict) else None
+    if isinstance(photos, list):
+        for photo in photos:
+            if not isinstance(photo, dict):
+                continue
+            digest = photo.get("original_hash")
+            if not isinstance(digest, str):
+                digest = photo.get("sha256_original")
+            claims.append({
+                "photo_id": str(photo["id"]) if photo.get("id") else None,
+                "checkpoint_id": (str(photo["checkpoint_id"])
+                                  if photo.get("checkpoint_id") else None),
+                "sha256": digest if isinstance(digest, str) else None,
+            })
+    checkpoints = package.get("checkpoints") if isinstance(package, dict) else None
+    if isinstance(checkpoints, list):
+        for item in checkpoints:
+            if not isinstance(item, dict):
+                continue
+            if "sha256_original" not in item and "photo_id" not in item:
+                continue
+            digest = item.get("sha256_original")
+            claims.append({
+                "photo_id": str(item["photo_id"]) if item.get("photo_id") else None,
+                "checkpoint_id": (str(item["checkpoint_id"])
+                                  if item.get("checkpoint_id") else None),
+                "sha256": digest if isinstance(digest, str) else None,
+            })
+            for old in item.get("superseded_attempts") or []:
+                if not isinstance(old, dict):
+                    continue
+                old_hash = old.get("sha256_original")
+                claims.append({
+                    "photo_id": str(old["photo_id"]) if old.get("photo_id") else None,
+                    "checkpoint_id": None,
+                    "sha256": old_hash if isinstance(old_hash, str) else None,
+                })
+    return claims
+
+
+def _anchor_for(claim, anchors):
+    """The hardware-signed anchor for one unsealed claim, or None.
+
+    A photo id that is not in ``sealed_photos`` is not an offline
+    photograph. Matching it by checkpoint instead would accuse an online
+    retake of the same checkpoint.
+    """
+    photo_id = claim.get("photo_id")
+    if photo_id:
+        found = [anchor for anchor in anchors if anchor.get("photo_id") == photo_id]
+        return found[0] if found else None
+    checkpoint_id = claim.get("checkpoint_id")
+    if not checkpoint_id:
+        return None
+    by_checkpoint = [anchor for anchor in anchors
+                     if anchor.get("checkpoint_id") == checkpoint_id]
+    if not by_checkpoint:
+        return None
+    digest = claim.get("sha256")
+    if digest:
+        exact = [anchor for anchor in by_checkpoint
+                  if anchor.get("photo_sha256") == digest]
+        if exact:
+            return exact[0]
+        return by_checkpoint[0]
+    if len(by_checkpoint) == 1:
+        return by_checkpoint[0]
+    return None
+
+
+def _iter_files(files):
+    if isinstance(files, dict):
+        items = files.items()
+    elif isinstance(files, (list, tuple)):
+        items = []
+        for item in files:
+            if isinstance(item, (bytes, bytearray)):
+                items.append((None, item))
+            elif isinstance(item, dict):
+                items.append((item.get("photo_id"), item.get("bytes")))
+    else:
+        return
+    for photo_id, raw in items:
+        if not isinstance(raw, (bytes, bytearray)) or not raw:
+            continue
+        yield (str(photo_id) if photo_id else None), bytes(raw)
+
+
+def _check_package_photos(package, entries, files, worsen):
+    """Unsealed photo hashes and supplied bytes against the phone chain.
+
+    The custody chain can still verify. The manifest hash is not part of
+    it. The phone-chain hash is what the phone's key signed.
+    """
+    anchors, problems = _photo_anchors(entries)
+    for problem in problems:
+        worsen(LABEL_TAMPERED, problem)
+    if not anchors:
+        return
+    claims = _photo_claims(package)
+    for claim in claims:
+        anchor = _anchor_for(claim, anchors)
+        if anchor is None:
+            continue
+        if claim.get("sha256") and claim["sha256"] != anchor.get("photo_sha256"):
+            worsen(LABEL_TAMPERED,
+                   "An offline photograph's hash does not match the "
+                   "hardware-signed phone chain.")
+        checkpoint_id = claim.get("checkpoint_id")
+        if (checkpoint_id and anchor.get("checkpoint_id")
+                and checkpoint_id != anchor["checkpoint_id"]):
+            worsen(LABEL_TAMPERED,
+                   "An offline photograph is not on the checkpoint the "
+                   "phone signed.")
+    for photo_id, raw in _iter_files(files):
+        digest = hashlib.sha256(raw).hexdigest()
+        if photo_id:
+            found = [anchor for anchor in anchors if anchor.get("photo_id") == photo_id]
+            if found and digest != found[0].get("photo_sha256"):
+                worsen(LABEL_TAMPERED,
+                       "Supplied photograph bytes do not match the "
+                       "hardware-signed phone chain.")
+            continue
+        for claim in claims:
+            if claim.get("sha256") != digest:
+                continue
+            anchor = _anchor_for(claim, anchors)
+            if anchor and anchor.get("photo_sha256") != digest:
+                worsen(LABEL_TAMPERED,
+                       "Supplied photograph bytes match the manifest and do "
+                       "not match the hardware-signed phone chain.")
 
 
 def _signing_key(package, offline):

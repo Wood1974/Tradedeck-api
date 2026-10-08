@@ -25,6 +25,13 @@ const stdin = await new Promise((resolve) => {
 const req = JSON.parse(stdin);
 const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 
+function rawFromHex(value) {
+  const text = typeof value === "string" ? value : "";
+  const out = new Uint8Array(Math.floor(text.length / 2));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(text.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
 function attempt(fn) {
   try { return { ok: true, value: fn() }; }
   catch (err) { return { ok: false, error: err.constructor.name }; }
@@ -67,9 +74,19 @@ switch (req.op) {
                             { expectHead: req.expect_head ?? null });
     break;
 
-  case "seal":
-    out = await judgeOfflineSeal(req.package, { rootsPem: req.roots_pem || undefined });
+  case "seal": {
+    const files = Array.isArray(req.files)
+      ? req.files.map((item) => ({
+        photo_id: item.photo_id || null,
+        bytes: rawFromHex(item.hex || ""),
+      }))
+      : undefined;
+    out = await judgeOfflineSeal(req.package, {
+      rootsPem: req.roots_pem || undefined,
+      files,
+    });
     break;
+  }
 
   default:
     out = { error: `unknown op ${req.op}` };

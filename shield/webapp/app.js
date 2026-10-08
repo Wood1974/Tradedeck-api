@@ -45,6 +45,7 @@ const money = (cents) => `$${(cents / 100).toLocaleString("en-US",
 /* ----------------------------------------------------------------- verify -- */
 
 let loadedPackage = null;
+let suppliedPhoto = null;
 
 function sealClass(label) {
   if (label === "SEALED") return "good";
@@ -143,6 +144,7 @@ function renderVerification({ verifiable, chain, findings }, seal) {
 
 async function loadPackage(file) {
   $("fileName").textContent = file.name;
+  suppliedPhoto = null;
   try {
     loadedPackage = JSON.parse(await file.text());
   } catch (err) {
@@ -158,7 +160,9 @@ async function runVerification() {
   try {
     const expectHead = $("expectHead").value.trim() || null;
     const custody = await verifyPackage(loadedPackage, { expectHead });
-    const seal = await judgeOfflineSeal(loadedPackage);
+    const seal = await judgeOfflineSeal(loadedPackage, {
+      files: suppliedPhoto ? [{ bytes: suppliedPhoto }] : undefined,
+    });
     renderVerification(custody, seal);
   } catch (err) {
     fail($("verifyResult"), err);
@@ -190,8 +194,10 @@ $("photoFile").addEventListener("change", async (e) => {
   }
   const hashes = (loadedPackage.checkpoints || [])
     .map((c) => c.sha256_original).filter(Boolean);
+  suppliedPhoto = new Uint8Array(await file.arrayBuffer());
   const { actual } = await checkPhoto(file, null);
   const match = hashes.includes(actual);
+  await runVerification();
   show($("photoResult"), `<div class="card ${match ? "good" : "bad"}">
     <p>${match
       ? "This file matches a photo hash recorded in the package."
