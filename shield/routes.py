@@ -33,6 +33,8 @@ import notes as field_notes
 import pricing
 import protection
 import transparency
+import ticket
+import tsa
 import verdict as grading
 import vision
 from legacy_auth import require_auth, require_shield_job, utc_now_iso
@@ -1103,9 +1105,20 @@ def evidence_package(shield_job_id):
     note_rows = (db().table("shield_notes").select("*")
                  .eq("shield_job_id", shield_job_id).order("written_at").execute().data or [])
 
+    # The viewed event below is written after this manifest, so it is not
+    # one of the entries the receipt covers. The next export includes it
+    # and signs that later head.
+    chain = ledger.verify_chain(custody, shield_job_id)
+    signed, stamped = tsa.package_anchor(shield_job_id, chain["head_hash"])
+    receipt = None
+    if signed:
+        receipt = {"signed": signed["signed"], "signature": signed["signature"]}
     manifest = evidence_pkg.build_manifest(
         job=g.shield_job, points=points, photos=photos,
-        custody=custody, report=report, notes=note_rows)
+        custody=custody, report=report, notes=note_rows,
+        receipt=receipt,
+        timestamp=stamped if signed else None,
+        signing_key=ticket.export_public_key())
 
     # Retrieving evidence is itself a custody event. Being able to read the
     # record without leaving a trace is the other half of what chain of

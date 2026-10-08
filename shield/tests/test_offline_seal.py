@@ -15,9 +15,10 @@ hand-written hash. The labels this file expects are the contract:
     UNVERIFIED TIME
     DEVICE CLOCK MISMATCH
     receipt present, timestamp absent
+    receipt absent
 
 Flags are words beside the label. They do not change it. A missing
-timestamp is not FORGED.
+timestamp is not FORGED. A missing receipt is not FORGED.
 """
 import base64
 import hashlib
@@ -319,6 +320,14 @@ class TestTheTwoJudgesAgree:
         got = _agree(package, roots, "receipt present, timestamp absent")
         assert got["label"] != "FORGED"
         assert "forged" not in got["label"].lower()
+        assert "timestamp missing" in got["detail"]
+
+    def test_a_package_with_no_receipt_says_receipt_absent(self):
+        package, roots = build_package()
+        package["receipt"] = None
+        got = _agree(package, roots, "receipt absent")
+        assert got["label"] != "FORGED"
+        assert "receipt absent" in got["detail"]
 
     def test_android_agrees_on_the_same_missing_timestamp(self):
         package, roots = build_package(platform="android")

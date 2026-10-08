@@ -30,6 +30,12 @@ What it establishes
   * The chain runs unbroken from a genesis value derived from the job id.
   * The head hash you were handed matches the head this chain computes.
   * Where photo files are supplied, their SHA-256 matches the manifest.
+  * A receipt, when the package has one, is an ECDSA P-256 signature over
+    the record id, the head this file just computed, and the time it was
+    signed. A receipt over a different head fails with no --expect-head.
+  * An RFC 3161 token, when present, carries that same head as the TSTInfo
+    message imprint. This file checks the imprint. It does not check the
+    token's certificate chain; the verify page does, against pinned roots.
 
 What it cannot establish
 ------------------------
@@ -174,22 +180,393 @@ def verify_files(manifest, file_bytes):
     return results
 
 
+# --------------------------------------------------------------- receipt ---
+# P-256. The receipt signature is ECDSA with SHA-256 over the canonical
+# receipt. The public point travels in the package. This file does not
+# import a cryptography library: a recipient's interpreter may have none.
+
+_P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
+_A = _P - 3
+_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+_GX = 0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296
+_GY = 0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5
+_SHA256_OID = "2.16.840.1.101.3.4.2.1"
+_SIGNED_DATA_OID = "1.2.840.113549.1.7.2"
+
+
+def _b64decode(value):
+    if not isinstance(value, str):
+        return None
+    text = "".join(value.split()).replace("-", "+").replace("_", "/")
+    if not text:
+        return None
+    text += "=" * ((-len(text)) % 4)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    out = bytearray()
+    buf = bits = 0
+    for ch in text:
+        if ch == "=":
+            break
+        idx = alphabet.find(ch)
+        if idx < 0:
+            return None
+        buf = (buf << 6) | idx
+        bits += 6
+        if bits >= 8:
+            bits -= 8
+            out.append((buf >> bits) & 0xFF)
+    return bytes(out)
+
+
+def _der_items(data):
+    items = []
+    i = 0
+    view = data
+    while i < len(view):
+        tag = view[i]
+        i += 1
+        if i >= len(view):
+            raise ValueError("truncated DER")
+        length = view[i]
+        i += 1
+        if length & 0x80:
+            count = length & 0x7F
+            if count == 0 or count > 4 or i + count > len(view):
+                raise ValueError("bad DER length")
+            length = int.from_bytes(view[i:i + count], "big")
+            i += count
+        if i + length > len(view):
+            raise ValueError("truncated DER value")
+        items.append((tag, view[i:i + length]))
+        i += length
+    return items
+
+
+def _oid_str(content):
+    if not content:
+        raise ValueError("empty oid")
+    parts = [str(content[0] // 40), str(content[0] % 40)]
+    i = 1
+    while i < len(content):
+        n = 0
+        while True:
+            if i >= len(content):
+                raise ValueError("truncated oid")
+            byte = content[i]
+            i += 1
+            n = (n << 7) | (byte & 0x7F)
+            if not byte & 0x80:
+                break
+        parts.append(str(n))
+    return ".".join(parts)
+
+
+def _point_add(p1, p2):
+    if p1 is None:
+        return p2
+    if p2 is None:
+        return p1
+    x1, y1 = p1
+    x2, y2 = p2
+    if x1 == x2 and (y1 + y2) % _P == 0:
+        return None
+    if p1 == p2:
+        lam = (3 * x1 * x1 + _A) * pow(2 * y1, _P - 2, _P) % _P
+    else:
+        lam = (y2 - y1) * pow((x2 - x1) % _P, _P - 2, _P) % _P
+    x3 = (lam * lam - x1 - x2) % _P
+    y3 = (lam * (x1 - x3) - y1) % _P
+    return x3, y3
+
+
+def _point_mul(k, point):
+    result = None
+    addend = point
+    while k:
+        if k & 1:
+            result = _point_add(result, addend)
+        addend = _point_add(addend, addend)
+        k >>= 1
+    return result
+
+
+def _on_curve(x, y):
+    return (y * y - (x * x * x + _A * x + _B)) % _P == 0
+
+
+def _der_signature(signature):
+    items = _der_items(signature)
+    if len(items) != 1 or items[0][0] != 0x30:
+        raise ValueError("signature is not a sequence")
+    inner = _der_items(items[0][1])
+    if len(inner) < 2 or inner[0][0] != 0x02 or inner[1][0] != 0x02:
+        raise ValueError("signature is not two integers")
+    return (int.from_bytes(inner[0][1], "big"), int.from_bytes(inner[1][1], "big"))
+
+
+def _ecdsa_p256(point, signature, message):
+    if not point or len(point) != 65 or point[0] != 4:
+        return False
+    x = int.from_bytes(point[1:33], "big")
+    y = int.from_bytes(point[33:65], "big")
+    if not _on_curve(x, y):
+        return False
+    try:
+        r, s = _der_signature(signature)
+    except ValueError:
+        return False
+    if not (1 <= r < _N and 1 <= s < _N):
+        return False
+    e = int.from_bytes(hashlib.sha256(message).digest(), "big")
+    w = pow(s, _N - 2, _N)
+    u1 = (e * w) % _N
+    u2 = (r * w) % _N
+    combined = _point_add(_point_mul(u1, (_GX, _GY)), _point_mul(u2, (x, y)))
+    if combined is None:
+        return False
+    return (combined[0] % _N) == r
+
+
+def _spki_point(der):
+    items = _der_items(der)
+    if len(items) != 1 or items[0][0] != 0x30:
+        return None
+    for tag, content in _der_items(items[0][1]):
+        if tag == 0x03 and len(content) == 66 and content[0] == 0 and content[1] == 4:
+            return content[1:]
+    return None
+
+
+def _public_point(manifest):
+    sources = [manifest.get("signing_key")]
+    receipt = manifest.get("receipt")
+    if isinstance(receipt, dict):
+        sources.append(receipt.get("signing_key"))
+    offline = manifest.get("offline")
+    if isinstance(offline, dict):
+        sources.append(offline.get("signing_key"))
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        raw = _b64decode(source.get("uncompressed_point_b64") or "")
+        if raw and len(raw) == 65 and raw[0] == 4:
+            return raw
+        pem = source.get("pem") if isinstance(source.get("pem"), str) else ""
+        if "BEGIN PUBLIC KEY" not in pem or "PRIVATE" in pem:
+            continue
+        body = "".join(
+            line.strip() for line in pem.splitlines()
+            if not line.startswith("-----"))
+        der = _b64decode(body)
+        if not der:
+            continue
+        try:
+            point = _spki_point(der)
+        except ValueError:
+            point = None
+        if point:
+            return point
+    return None
+
+
+def _receipt_bytes(signed):
+    version = signed.get("version")
+    record_id = signed.get("record_id")
+    head = signed.get("head_hash")
+    at = signed.get("accepted_at_ms")
+    if isinstance(version, bool) or version != 1:
+        raise ValueError("unsupported receipt version")
+    if not isinstance(record_id, str) or record_id == "":
+        raise ValueError("record_id")
+    if not isinstance(head, str) or len(head) != 64:
+        raise ValueError("head_hash")
+    try:
+        raw = bytes.fromhex(head)
+    except ValueError as exc:
+        raise ValueError("head_hash") from exc
+    if head != raw.hex():
+        raise ValueError("head_hash")
+    if isinstance(at, bool) or not isinstance(at, int) or at < 0:
+        raise ValueError("accepted_at_ms")
+    body = {
+        "accepted_at_ms": at,
+        "head_hash": head,
+        "record_id": record_id,
+        "version": version,
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _signed_receipt(receipt):
+    signed = receipt.get("signed") if isinstance(receipt.get("signed"), dict) else receipt
+    return signed, receipt.get("signature") or receipt.get("server_signature")
+
+
+def _job_id(manifest):
+    job = manifest.get("job") if isinstance(manifest.get("job"), dict) else {}
+    record = manifest.get("record") if isinstance(manifest.get("record"), dict) else {}
+    return job.get("shield_job_id") or record.get("id") or None
+
+
+def _custody_entries(manifest):
+    entries = manifest.get("custody_entries")
+    if isinstance(entries, list):
+        return entries
+    custody = manifest.get("custody")
+    if isinstance(custody, list):
+        return custody
+    return None
+
+
+def _timestamp_imprint(token):
+    """The 32-byte SHA-256 imprint, read as the third field of TSTInfo.
+
+    Searching the token for the head bytes would pass a token that merely
+    contained them. The certificate chain is not checked here. A token an
+    attacker signed themselves can still carry the right imprint; the
+    receipt signature is what they cannot produce. The verify page checks
+    the chain against the pinned roots.
+    """
+    outer = _der_items(token)
+    if len(outer) != 1 or outer[0][0] != 0x30:
+        raise ValueError("no timestamp")
+    fields = _der_items(outer[0][1])
+    if not fields or fields[0][0] != 0x30:
+        raise ValueError("no status")
+    if len(fields) < 2:
+        raise ValueError("no token")
+    if fields[1][0] == 0xA0:
+        wrapped = _der_items(fields[1][1])
+        if len(wrapped) != 1 or wrapped[0][0] != 0x30:
+            raise ValueError("no token")
+        info = _der_items(wrapped[0][1])
+    elif fields[1][0] == 0x30:
+        info = _der_items(fields[1][1])
+    else:
+        raise ValueError("no token")
+    if len(info) < 2 or info[0][0] != 0x06 or _oid_str(info[0][1]) != _SIGNED_DATA_OID:
+        raise ValueError("not SignedData")
+    if info[1][0] != 0xA0:
+        raise ValueError("SignedData is missing")
+    # [0] EXPLICIT carries the SignedData SEQUENCE. The imprint lives in
+    # encapContentInfo, which is the SEQUENCE after the digest algorithms.
+    signed_outer = _der_items(info[1][1])
+    if len(signed_outer) != 1 or signed_outer[0][0] != 0x30:
+        raise ValueError("SignedData is missing")
+    encap = None
+    for tag, content in _der_items(signed_outer[0][1]):
+        if tag == 0x02:
+            continue
+        if tag == 0x31 and encap is None:
+            continue
+        if tag == 0x30 and encap is None:
+            encap = content
+            break
+    if encap is None:
+        raise ValueError("TSTInfo is missing")
+    encap_fields = _der_items(encap)
+    if len(encap_fields) < 2 or encap_fields[1][0] != 0xA0:
+        raise ValueError("TSTInfo is missing")
+    octet = _der_items(encap_fields[1][1])
+    if len(octet) != 1 or octet[0][0] != 0x04:
+        raise ValueError("TSTInfo wrapper")
+    # The octet string carries the TSTInfo SEQUENCE. The imprint is its
+    # third field, MessageImprint, not an octet string found anywhere else.
+    tst_outer = _der_items(octet[0][1])
+    if len(tst_outer) != 1 or tst_outer[0][0] != 0x30:
+        raise ValueError("TSTInfo wrapper")
+    tst = _der_items(tst_outer[0][1])
+    if len(tst) < 3 or tst[2][0] != 0x30:
+        raise ValueError("no imprint")
+    oid = hashed = None
+    for tag, content in _der_items(tst[2][1]):
+        if tag == 0x30 and oid is None:
+            alg = _der_items(content)
+            if alg and alg[0][0] == 0x06:
+                oid = _oid_str(alg[0][1])
+        elif tag == 0x04:
+            hashed = content
+    if hashed is None or oid != _SHA256_OID or len(hashed) != 32:
+        raise ValueError("imprint")
+    return hashed
+
+
+def _check_anchor(manifest, chain, job_id):
+    """Problems fail the package. Notes do not.
+
+    No receipt is "receipt absent". A receipt whose signature fails, or
+    whose head is not the head just computed, is a problem, so a rewritten
+    chain that keeps the original receipt fails with no --expect-head.
+    No token is "timestamp missing", which is not a problem.
+    """
+    problems = []
+    notes = []
+    head = chain.get("head_hash") if chain else None
+    receipt = manifest.get("receipt")
+    if not isinstance(receipt, dict):
+        notes.append("receipt absent")
+        return problems, notes
+    signed, signature = _signed_receipt(receipt)
+    point = _public_point(manifest)
+    raw_sig = _b64decode(signature) if isinstance(signature, str) else None
+    try:
+        body = _receipt_bytes(signed)
+    except ValueError:
+        body = None
+    if not point or not raw_sig or body is None or not _ecdsa_p256(point, raw_sig, body):
+        problems.append("The receipt signature does not verify.")
+    else:
+        if signed.get("head_hash") != head:
+            problems.append(
+                "The receipt is not over the custody head these bytes produce.")
+        elif signed.get("record_id") and str(signed.get("record_id")) != str(job_id):
+            problems.append("The receipt is not for this record.")
+    block = manifest.get("timestamp") if isinstance(manifest.get("timestamp"), dict) else {}
+    token = block.get("token_b64") if block.get("status") == "present" else None
+    if not isinstance(token, str) or not token.strip():
+        notes.append("timestamp missing")
+        return problems, notes
+    raw = _b64decode(token)
+    try:
+        expected = bytes.fromhex(head) if isinstance(head, str) and len(head) == 64 else None
+    except ValueError:
+        expected = None
+    if raw is None or expected is None:
+        problems.append("The timestamp token could not be read.")
+        return problems, notes
+    try:
+        imprint = _timestamp_imprint(raw)
+    except ValueError:
+        problems.append("The timestamp token could not be read.")
+        return problems, notes
+    if imprint != expected:
+        problems.append("The timestamp is not over this custody head.")
+    return problems, notes
+
+
 def verify_package(manifest, file_bytes=None, expect_head=None):
     """Everything checkable from a manifest, plus any files supplied.
 
     `expect_head` is a head hash you were given EARLIER, from your own records
-    — not the one inside this package. That distinction is the whole point: an
-    operator who truncates the chain also updates the package's own claim, so
-    comparing the package against itself catches nothing. Comparing it against
-    a head you already held catches truncation and rewrite both.
+    — not the one inside this package. An operator who truncates the chain and
+    re-signs a receipt over the shorter head still verifies; comparing it
+    against a head you already held catches that. A rewrite that keeps the
+    receipt over the original head does not: the receipt is checked against
+    the head these entries compute, with no --expect-head required.
+
+    An evidence manifest names `job.shield_job_id` and `custody_entries`.
+    The record package from the API names `record.id` and carries `custody`
+    as the entry list. Either shape is checked. A package with neither id
+    still reports `manifest has no job.shield_job_id`.
     """
     problems = []
-    job_id = (manifest.get("job") or {}).get("shield_job_id")
+    job_id = _job_id(manifest)
     if not job_id:
         return {"ok": False, "problems": ["manifest has no job.shield_job_id"],
-                "chain": None, "files": []}
+                "notes": [], "chain": None, "files": []}
 
-    entries = manifest.get("custody_entries")
+    entries = _custody_entries(manifest)
     if entries is None:
         problems.append(
             "package carries no custody_entries — the chain cannot be "
@@ -202,12 +579,20 @@ def verify_package(manifest, file_bytes=None, expect_head=None):
             problems.append("custody chain breaks at entry %d of %d: %s" % (
                 chain["broken_at_index"] + 1, chain["entries"], chain["reason"]))
 
-        claimed = manifest.get("custody") or {}
-        if claimed.get("head_hash") and claimed["head_hash"] != chain["head_hash"]:
-            problems.append(
-                "head hash disagreement — the package states %s… but its own "
-                "entries compute to %s…" % (str(claimed["head_hash"])[:16],
-                                            chain["head_hash"][:16]))
+        claimed = manifest.get("custody") if isinstance(
+            manifest.get("custody"), dict) else {}
+        stated = []
+        if claimed.get("head_hash"):
+            stated.append(claimed["head_hash"])
+        if manifest.get("head_hash"):
+            stated.append(manifest["head_hash"])
+        for value in stated:
+            if value != chain["head_hash"]:
+                problems.append(
+                    "head hash disagreement — the package states %s… but its own "
+                    "entries compute to %s…" % (str(value)[:16],
+                                                chain["head_hash"][:16]))
+                break
         if claimed.get("chain_intact") is True and not chain["intact"]:
             problems.append(
                 "the package asserts chain_intact: true and it is not")
@@ -231,6 +616,9 @@ def verify_package(manifest, file_bytes=None, expect_head=None):
             "No expected head supplied. A chain truncated at the end verifies "
             "perfectly — pass --expect-head with the head hash you were given "
             "when the record was closed out.")
+    anchor_problems, anchor_notes = _check_anchor(manifest, chain, job_id)
+    problems.extend(anchor_problems)
+    notes.extend(anchor_notes)
 
     files = verify_files(manifest, file_bytes or {})
     for f in files:
@@ -276,9 +664,10 @@ def main(argv=None):
         print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 1
 
-    job = manifest.get("job") or {}
+    job = manifest.get("job") if isinstance(manifest.get("job"), dict) else {}
+    record = manifest.get("record") if isinstance(manifest.get("record"), dict) else {}
     print("Shield evidence package — independent verification")
-    print("  job                %s" % job.get("shield_job_id"))
+    print("  job                %s" % (job.get("shield_job_id") or record.get("id")))
     print("  reference          %s" % (job.get("external_reference") or "—"))
     if report["chain"]:
         c = report["chain"]
@@ -300,6 +689,9 @@ def main(argv=None):
     else:
         print("  photos checked     none supplied (pass --files to check them)")
 
+    print()
+    for note in report.get("notes") or []:
+        print("  note: %s" % note)
     print()
     if report["ok"]:
         print("PASS — everything checkable in this package checks out.")

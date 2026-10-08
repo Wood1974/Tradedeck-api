@@ -498,7 +498,305 @@ export async function verifyPackage(manifest, { expectHead = null } = {}) {
     findings.push({ severity: "fatal", text: chain.reason });
   }
 
-  return { verifiable: true, chain, findings };
+  const anchor = await checkAnchor(manifest, chain.headHash, jobId);
+  findings.push(...anchor.findings);
+  return { verifiable: true, chain, findings, notes: anchor.notes };
+}
+
+const ANCHOR_RECEIPT_KEYS = ["accepted_at_ms", "head_hash", "record_id", "version"];
+
+function anchorB64(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const text = value.trim().replace(/-/g, "+").replace(/_/g, "/");
+  const padded = text + "=".repeat((4 - (text.length % 4)) % 4);
+  try {
+    const bin = atob(padded);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function anchorDer(data) {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const items = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const tag = bytes[i];
+    i += 1;
+    if (i >= bytes.length) throw new Error("truncated DER");
+    let length = bytes[i];
+    i += 1;
+    if (length >= 0x80) {
+      const count = length & 0x7f;
+      if (count === 0 || count > 4 || i + count > bytes.length) throw new Error("bad DER length");
+      length = 0;
+      for (let k = 0; k < count; k++) length = (length * 256) + bytes[i++];
+    }
+    if (i + length > bytes.length) throw new Error("truncated DER value");
+    items.push({ tag, value: bytes.subarray(i, i + length) });
+    i += length;
+  }
+  return items;
+}
+
+function anchorOid(content) {
+  if (!content.length) throw new Error("empty oid");
+  const parts = [String(Math.floor(content[0] / 40)), String(content[0] % 40)];
+  let i = 1;
+  while (i < content.length) {
+    let n = 0;
+    while (true) {
+      if (i >= content.length) throw new Error("truncated oid");
+      const byte = content[i];
+      i += 1;
+      n = (n * 128) + (byte & 0x7f);
+      if ((byte & 0x80) === 0) break;
+    }
+    parts.push(String(n));
+  }
+  return parts.join(".");
+}
+
+function anchorUnpad(bytes, size) {
+  let i = 0;
+  while (i < bytes.length - 1 && bytes[i] === 0) i += 1;
+  const rest = bytes.subarray(i);
+  if (rest.length > size) return null;
+  const out = new Uint8Array(size);
+  out.set(rest, size - rest.length);
+  return out;
+}
+
+function anchorP1363(der) {
+  try {
+    const items = anchorDer(der);
+    if (items.length !== 1 || items[0].tag !== 0x30) return null;
+    const inner = anchorDer(items[0].value);
+    if (inner.length < 2 || inner[0].tag !== 0x02 || inner[1].tag !== 0x02) return null;
+    const r = anchorUnpad(inner[0].value, 32);
+    const s = anchorUnpad(inner[1].value, 32);
+    if (!r || !s) return null;
+    const out = new Uint8Array(64);
+    out.set(r, 0);
+    out.set(s, 32);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function pointFromSigning(manifest) {
+  const sources = [
+    manifest?.signing_key,
+    manifest?.receipt?.signing_key,
+    manifest?.offline?.signing_key,
+  ];
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const raw = anchorB64(source.uncompressed_point_b64 || "");
+    if (raw && raw.length === 65 && raw[0] === 4) return raw;
+    const pem = typeof source.pem === "string" ? source.pem : "";
+    if (!pem.includes("BEGIN PUBLIC KEY") || pem.includes("PRIVATE")) continue;
+    const body = pem.replace(/-----BEGIN PUBLIC KEY-----/g, "")
+      .replace(/-----END PUBLIC KEY-----/g, "").replace(/\s+/g, "");
+    const der = anchorB64(body);
+    if (!der) continue;
+    try {
+      const outer = anchorDer(der);
+      if (outer.length !== 1 || outer[0].tag !== 0x30) continue;
+      for (const item of anchorDer(outer[0].value)) {
+        if (item.tag === 0x03 && item.value.length === 66
+            && item.value[0] === 0 && item.value[1] === 4) {
+          return item.value.subarray(1);
+        }
+      }
+    } catch { /* the next source may still be a point */ }
+  }
+  return null;
+}
+
+function receiptCanonical(signed) {
+  if (!signed || signed.version !== 1) throw new Error("unsupported receipt version");
+  if (typeof signed.record_id !== "string" || !signed.record_id) {
+    throw new Error("record_id");
+  }
+  if (typeof signed.head_hash !== "string" || !/^[0-9a-f]{64}$/.test(signed.head_hash)) {
+    throw new Error("head_hash");
+  }
+  if (!Number.isSafeInteger(signed.accepted_at_ms) || signed.accepted_at_ms < 0) {
+    throw new Error("accepted_at_ms");
+  }
+  const fields = {
+    accepted_at_ms: signed.accepted_at_ms,
+    head_hash: signed.head_hash,
+    record_id: signed.record_id,
+    version: signed.version,
+  };
+  const body = `{${ANCHOR_RECEIPT_KEYS.map((key) =>
+    `${pyJson(key)}:${typeof fields[key] === "string" ? pyJson(fields[key]) : String(fields[key])}`
+  ).join(",")}}`;
+  return encoder.encode(body);
+}
+
+async function receiptSignatureOk(manifest, signed, signatureB64) {
+  const point = pointFromSigning(manifest);
+  const signature = anchorB64(signatureB64 || "");
+  const raw = anchorP1363(signature || new Uint8Array());
+  if (!point || !raw) return false;
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw", point, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    return await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" }, key, raw, receiptCanonical(signed));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The 32-byte message imprint inside TSTInfo.
+ *
+ * This is the imprint only. It does not check the token's certificate
+ * chain. The offline seal does that, against the roots pinned in the page.
+ * An imprint that is merely pasted next to the head does not count: the
+ * bytes have to be the third field of TSTInfo.
+ */
+function timestampImprint(token) {
+  const outer = anchorDer(token);
+  if (outer.length !== 1 || outer[0].tag !== 0x30) throw new Error("no timestamp");
+  const fields = anchorDer(outer[0].value);
+  if (!fields.length || fields[0].tag !== 0x30) throw new Error("no status");
+  const statusFields = anchorDer(fields[0].value);
+  if (!statusFields.length || statusFields[0].tag !== 0x02) throw new Error("status");
+  if (fields.length < 2) throw new Error("no token");
+  // [0] EXPLICIT wraps the ContentInfo SEQUENCE. A live authority sends the
+  // SEQUENCE itself. Either way the OID and SignedData are inside it.
+  let info;
+  if (fields[1].tag === 0xa0) {
+    const wrapped = anchorDer(fields[1].value);
+    if (wrapped.length !== 1 || wrapped[0].tag !== 0x30) throw new Error("no token");
+    info = anchorDer(wrapped[0].value);
+  } else if (fields[1].tag === 0x30) {
+    info = anchorDer(fields[1].value);
+  } else throw new Error("no token");
+  if (info.length < 2 || info[0].tag !== 0x06 || anchorOid(info[0].value) !== "1.2.840.113549.1.7.2") {
+    throw new Error("not SignedData");
+  }
+  if (info[1].tag !== 0xa0) throw new Error("SignedData is missing");
+  const signedOuter = anchorDer(info[1].value);
+  if (signedOuter.length !== 1 || signedOuter[0].tag !== 0x30) {
+    throw new Error("SignedData is missing");
+  }
+  let encap = null;
+  for (const item of anchorDer(signedOuter[0].value)) {
+    if (item.tag === 0x02) continue;
+    if (item.tag === 0x31 && encap === null) continue;
+    if (item.tag === 0x30 && encap === null) { encap = item.value; break; }
+  }
+  if (!encap) throw new Error("TSTInfo is missing");
+  const encapFields = anchorDer(encap);
+  if (encapFields.length < 2 || encapFields[1].tag !== 0xa0) throw new Error("TSTInfo is missing");
+  const octet = anchorDer(encapFields[1].value);
+  if (octet.length !== 1 || octet[0].tag !== 0x04) throw new Error("TSTInfo wrapper");
+  const tstOuter = anchorDer(octet[0].value);
+  if (tstOuter.length !== 1 || tstOuter[0].tag !== 0x30) throw new Error("TSTInfo wrapper");
+  const tst = anchorDer(tstOuter[0].value);
+  if (tst.length < 3 || tst[2].tag !== 0x30) throw new Error("no imprint");
+  const imprint = anchorDer(tst[2].value);
+  let oid = null;
+  let hashed = null;
+  for (const item of imprint) {
+    if (item.tag === 0x30 && oid === null) {
+      const alg = anchorDer(item.value);
+      if (alg.length && alg[0].tag === 0x06) oid = anchorOid(alg[0].value);
+    } else if (item.tag === 0x04) hashed = item.value;
+  }
+  if (!hashed || oid !== "2.16.840.1.101.3.4.2.1" || hashed.length !== 32) {
+    throw new Error("imprint");
+  }
+  return hashed;
+}
+
+function anchorHex(hex) {
+  if (typeof hex !== "string" || !/^[0-9a-f]{64}$/.test(hex)) return null;
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function sameBytes(left, right) {
+  if (!left || !right || left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
+}
+
+async function checkAnchor(manifest, headHash, jobId) {
+  const findings = [];
+  const notes = [];
+  const receipt = manifest?.receipt;
+  if (!receipt || typeof receipt !== "object") {
+    notes.push("receipt absent");
+    return { findings, notes };
+  }
+  const signed = receipt.signed && typeof receipt.signed === "object" ? receipt.signed : {
+    version: receipt.version,
+    record_id: receipt.record_id,
+    head_hash: receipt.head_hash,
+    accepted_at_ms: receipt.accepted_at_ms,
+  };
+  const signature = receipt.signature || receipt.server_signature;
+  let ok = false;
+  try { ok = await receiptSignatureOk(manifest, signed, signature); }
+  catch { ok = false; }
+  if (!ok) {
+    findings.push({
+      kind: "anchor", severity: "fatal",
+      text: "The receipt signature does not verify.",
+    });
+  } else if (signed.head_hash !== headHash) {
+    findings.push({
+      kind: "anchor", severity: "fatal",
+      text: "The receipt is not over the custody head these bytes produce.",
+    });
+  } else if (signed.record_id && String(signed.record_id) !== String(jobId)) {
+    findings.push({
+      kind: "anchor", severity: "fatal",
+      text: "The receipt is not for this record.",
+    });
+  }
+  const block = manifest.timestamp;
+  const token = block && block.status === "present" ? block.token_b64 : null;
+  if (typeof token !== "string" || !token.trim()) {
+    notes.push("timestamp missing");
+    return { findings, notes };
+  }
+  const raw = anchorB64(token);
+  const expected = anchorHex(headHash || "");
+  if (!raw || !expected) {
+    findings.push({
+      kind: "anchor", severity: "fatal",
+      text: "The timestamp token could not be read.",
+    });
+    return { findings, notes };
+  }
+  try {
+    const imprint = timestampImprint(raw);
+    if (!sameBytes(imprint, expected)) {
+      findings.push({
+        kind: "anchor", severity: "fatal",
+        text: "The timestamp is not over this custody head.",
+      });
+    }
+  } catch {
+    findings.push({
+      kind: "anchor", severity: "fatal",
+      text: "The timestamp token could not be read.",
+    });
+  }
+  return { findings, notes };
 }
 
 /**

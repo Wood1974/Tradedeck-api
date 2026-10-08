@@ -24,7 +24,13 @@ UNVERIFIED TIME
     The time rules say so, and they do not also say a mismatch.
 receipt present, timestamp absent
     Everything else that SEALED requires is true, and there is no token.
-    A missing token is not FORGED.
+    A missing token is not FORGED. The words on the timestamp block are
+    "timestamp missing".
+receipt absent
+    The package has no receipt. A package sealed before receipts were
+    attached reads this way. It is not FORGED and it is not a failure of
+    the phone chain. A receipt that is present and does not match is
+    still FORGED or TAMPERED.
 SEALED
     The phone chain recomputes, every hardware signature checks, the ticket
     signature checks, the time rules pass, and the token checks against the
@@ -51,10 +57,12 @@ LABEL_FORGED = "FORGED"
 LABEL_UNVERIFIED = "UNVERIFIED TIME"
 LABEL_MISMATCH = "DEVICE CLOCK MISMATCH"
 LABEL_TIMESTAMP_ABSENT = "receipt present, timestamp absent"
+LABEL_RECEIPT_ABSENT = "receipt absent"
 LABEL_NONE = None
 
 _RANK = {
     LABEL_SEALED: 0,
+    LABEL_RECEIPT_ABSENT: 5,
     LABEL_TIMESTAMP_ABSENT: 10,
     LABEL_UNVERIFIED: 20,
     LABEL_MISMATCH: 30,
@@ -277,7 +285,9 @@ def judge(package, *, roots_pem=None, files=None) -> dict:
     timestamp_absent = _check_timestamp(
         package, custody_head if custody_intact else claimed_head, roots_pem, worsen)
 
-    if label == LABEL_SEALED and timestamp_absent and receipt_present and receipt_ok:
+    if label == LABEL_SEALED and not receipt_present:
+        label = LABEL_RECEIPT_ABSENT
+    elif label == LABEL_SEALED and timestamp_absent and receipt_present and receipt_ok:
         label = LABEL_TIMESTAMP_ABSENT
     notes = []
     if (timestamp_absent and receipt_present and label != LABEL_TIMESTAMP_ABSENT
@@ -298,7 +308,10 @@ def _ok_detail(label):
                 "timestamp checks against the pinned certificates.")
     if label == LABEL_TIMESTAMP_ABSENT:
         return ("The receipt is present and its signature checks. "
-                "The timestamp is absent. A missing timestamp is not a forgery.")
+                "timestamp missing. A missing timestamp is not a failure.")
+    if label == LABEL_RECEIPT_ABSENT:
+        return ("receipt absent. This package has no receipt. That is not "
+                "a failure of the chain.")
     return ""
 
 
@@ -744,7 +757,9 @@ def _one_signature(platform, assertion_b64, challenge, payload, point, app_id, p
 def _check_receipt(package, custody_head, custody_intact, records, worsen):
     receipt = package.get("receipt")
     if not isinstance(receipt, dict):
-        worsen(LABEL_FORGED, "The package has no receipt.")
+        # An older package has no receipt. That is "receipt absent", which
+        # the caller sets only while the seal is otherwise SEALED. It is
+        # not a forgery finding.
         return False, False, None
     signed = receipt.get("signed") if isinstance(receipt.get("signed"), dict) else None
     if signed is None:

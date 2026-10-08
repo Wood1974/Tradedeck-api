@@ -1180,6 +1180,45 @@ def _receipt_view(row, token_row):
     return receipt, timestamp
 
 
+def _export_anchor(record_id, head, receipt_view, timestamp_view):
+    """A receipt over the head this package actually ships.
+
+    The batch receipt covers the head at acceptance. A later custody entry
+    moves that head, and shipping the old receipt would look like tampering
+    to a verifier that recomputes the head. The export signs the shipped
+    head with the same ticket key. ``accepted_at_ms`` on that signature is
+    the export time. ``phone_chain_head`` and the time labels stay the
+    unsigned notes from the batch. A stored token is reused only when it
+    is over this same head. Otherwise the export asks again, and a timestamp
+    authority that is off or down leaves the token missing. Missing is not
+    forged. No signing key leaves the batch receipt in place so an offline
+    package still ships.
+    """
+    signed, stamped = tsa.package_anchor(record_id, head)
+    if not signed:
+        return receipt_view, timestamp_view
+    previous = receipt_view if isinstance(receipt_view, dict) else {}
+    inner = previous.get("signed") if isinstance(previous.get("signed"), dict) else previous
+    batch_head = inner.get("head_hash") if isinstance(inner, dict) else None
+    export_receipt = {
+        "signed": signed["signed"],
+        "signature": signed["signature"],
+        "phone_chain_head": previous.get("phone_chain_head"),
+        "time_labels": list(previous.get("time_labels") or []),
+        "head_hash": signed["head_hash"],
+        "accepted_at_ms": signed["signed"]["accepted_at_ms"],
+        "record_id": record_id,
+    }
+    token_present = (
+        isinstance(timestamp_view, dict)
+        and timestamp_view.get("status") == "present"
+        and timestamp_view.get("token_b64")
+        and batch_head == head)
+    if token_present:
+        return export_receipt, timestamp_view
+    return export_receipt, stamped
+
+
 def _prior_receipt(record_id, captures, existing, allowed, stored_clock):
     """The response for a batch whose receipt is already stored, or None.
 
@@ -1746,6 +1785,9 @@ def package(record_id):
                    for p in photos]
 
     ordered = chain_in_order(entries, record_id)
+    # The exported event appended above is not in `ordered`. The receipt
+    # covers the head these bytes recompute to, which is this list.
+    head = ledger.head_of(ordered, record_id)
     receipt_row = token_row = None
     try:
         receipt_row = shield_db.latest_receipt(_principal().tenant_id, record_id)
@@ -1754,7 +1796,8 @@ def package(record_id):
                 _principal().tenant_id, receipt_row.get("id"))
     except Exception:
         log.exception("Receipt read failed for package %s", record_id)
-    receipt_view, timestamp_view = _receipt_view(receipt_row, token_row)
+    receipt_view, timestamp_view = _export_anchor(
+        record_id, head, *_receipt_view(receipt_row, token_row))
     return jsonify({
         "schema": "tradedeck.shield.package.v2",
         "chain_version": ledger.CHAIN_VERSION,
@@ -1763,7 +1806,7 @@ def package(record_id):
         "checkpoints": points,
         "photos": safe_photos,
         "custody": ordered,
-        "head_hash": ledger.head_of(ordered, record_id),
+        "head_hash": head,
         "receipt": receipt_view,
         "timestamp": timestamp_view,
         "signing_key": ticket.export_public_key(),

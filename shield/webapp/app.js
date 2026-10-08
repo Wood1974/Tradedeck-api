@@ -49,7 +49,8 @@ let suppliedPhoto = null;
 
 function sealClass(label) {
   if (label === "SEALED") return "good";
-  if (label === "UNVERIFIED TIME" || label === "receipt present, timestamp absent") {
+  if (label === "UNVERIFIED TIME" || label === "receipt present, timestamp absent"
+      || label === "receipt absent") {
     return "partial";
   }
   if (label === "TAMPERED" || label === "FORGED" || label === "DEVICE CLOCK MISMATCH") {
@@ -84,7 +85,7 @@ function renderSeal(seal) {
   </div>`;
 }
 
-function renderVerification({ verifiable, chain, findings }, seal) {
+function renderVerification({ verifiable, chain, findings, notes }, seal) {
   const node = $("verifyResult");
   const sealHtml = renderSeal(seal);
 
@@ -94,6 +95,9 @@ function renderVerification({ verifiable, chain, findings }, seal) {
   }
 
   const lying = findings.filter((f) => f.severity === "lying");
+  const anchor = findings.filter((f) => f.kind === "anchor");
+  const noteHtml = (notes || []).map((note) =>
+    `<p class="caveat">${esc(note)}</p>`).join("");
   let head = "", cls = "", detail = "";
 
   if (chain.ambiguous) {
@@ -104,6 +108,10 @@ function renderVerification({ verifiable, chain, findings }, seal) {
     cls = "bad";
     head = `Chain does not verify — entry ${chain.brokeAt + 1} of ${chain.entries}`;
     detail = `<p>${esc(chain.reason)}</p>`;
+  } else if (anchor.length) {
+    cls = "bad";
+    head = "The chain links, but the receipt does not cover this head";
+    detail = anchor.map((f) => `<p>${esc(f.text)}</p>`).join("");
   } else if (chain.headMatchesExpected === false) {
     cls = "bad";
     head = "Every link verifies, but the chain has been shortened";
@@ -131,6 +139,7 @@ function renderVerification({ verifiable, chain, findings }, seal) {
     <div class="card ${cls}" id="custodyCard">
       <h3>${esc(head)}</h3>
       ${detail}
+      ${noteHtml}
       ${lying.length ? `<div class="lying"><h4>The package misdescribes itself</h4>
         ${lying.map((f) => `<p>${esc(f.text)}</p>`).join("")}</div>` : ""}
       <dl class="facts">${rows.map(([k, v]) =>

@@ -814,10 +814,12 @@ The outcome is one row in `shield.tsa_tokens`, append-only, either way.
 ### 11.8 The package
 
 `GET /shield/v2/records/<id>/package` and `evidence.build_manifest` both
-carry the latest receipt, the timestamp block, and the public half of the
-signing key. `custody.chain_version` is the version `ledger.verify_chain`
-already reports. It is still 2. A package with no receipt yet says the
-timestamp is missing, and it says that is not a forgery.
+carry a receipt, the timestamp block, and the public half of the signing
+key. The receipt on an export is signed over the head that export's own
+entries recompute to. See §11.10. `custody.chain_version` is the version
+`ledger.verify_chain` already reports. It is still 2. A package with no
+receipt says receipt absent. A package whose timestamp authority did not
+answer says timestamp missing. Neither of those is a forgery.
 
 ### 11.9 What this addendum does not establish
 
@@ -829,3 +831,61 @@ timestamp is missing, and it says that is not a forgery.
   the addresses are configuration. A test runs a local authority with a
   certificate that test minted. It does not call either host.
 - Anything that changes `chain_version`, which remains 2.
+- That a chain was not truncated after the export and then re-signed.
+  The receipt covers the head inside the package. A shorter chain with a
+  new receipt over the shorter head still verifies. A head the recipient
+  already holds is what catches that. See §6.
+
+### 11.10 The export receipt
+
+Every export signs a receipt over the head the exported entries recompute
+to. The signed fields are the four in §11.6. `record_id` is the job or
+the record. `head_hash` is that recomputed head, not a head stored beside
+it. `accepted_at_ms` is the server time of the export, whole Unix
+milliseconds. `version` stays `1`. `chain_version` stays 2.
+
+The signature is the same ECDSA P-256 key that signs job tickets
+(`SHIELD_TICKET_SIGNING_KEY_PEM`). `phone_chain_head` and the time labels
+from the latest batch ride beside the signature. They are not signed
+again. The custody head already commits to the entry that stored them.
+
+Both package shapes carry it. `evidence.build_manifest` flattens the
+signed fields onto `receipt` and puts the public key on `signing_key`.
+`GET /shield/v2/records/<id>/package` nests the signed fields under
+`receipt.signed` and puts the same public key on `signing_key`. The
+custody list on that response is `custody`, not `custody_entries`. A
+verifier accepts either shape.
+
+The timestamp is an RFC 3161 token over that same head. The imprint is
+the raw 32-byte head, as in §11.7. DigiCert is asked first, then Sectigo,
+and only when `SHIELD_TSA_ENABLED` is `1`. A token already stored for the
+batch is reused only when that token's head is this package's head. A
+token over a different head is not shipped in its place. When the
+authority is off or does not answer, the package still ships and the
+timestamp block says timestamp missing. `forged` is false. The service
+does not mint a token to fill the gap.
+
+A verifier recomputes the head and checks three things against it:
+
+- The receipt signature, with the public key in the package.
+- The signed `head_hash` equals the head just computed. A full rewrite
+  that leaves the original receipt in place fails here, with no
+  `--expect-head`.
+- The token's TSTInfo imprint, when a token is present, is that same
+  head. A missing token is the note timestamp missing, not a failure.
+
+No receipt is the note receipt absent, not a failure. A package from
+before this receipt was added still verifies its chain.
+
+`verifier/shield_verify.py` checks the signature and the imprint. It does
+not check the token's certificate chain: that check needs the pinned
+roots, and the independent verifier does not carry them. An attacker who
+can sign a token can put the new head in the imprint. They cannot produce
+the receipt signature. `offline_seal.py` and the verify page do check the
+token against the pinned DigiCert and Sectigo roots.
+
+A receipt inside the export does not stop a server that rewrites the
+chain and then signs the new head itself. Holding a receipt returned at
+upload, on the client, would. Putting that same receipt into a later
+export does not, because the exporter can omit it. That client-held
+anchor is a follow-up. It is not part of this package.

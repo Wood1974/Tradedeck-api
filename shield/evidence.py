@@ -113,7 +113,7 @@ def timestamp_block(timestamp=None):
         "authority": None,
         "token_b64": None,
         "gen_time": None,
-        "note": ("The timestamp is missing. A missing timestamp is not a "
+        "note": ("timestamp missing. A missing timestamp is not a "
                  "forgery. The receipt, when there is one, still covers "
                  "the custody head."),
     }
@@ -395,12 +395,17 @@ def verification_instructions(manifest):
         "   hold means the history was rewritten after you received it.",
         "",
         "4. The receipt, when this package has one, is an ECDSA P-256 signature",
-        "   over the record id, the custody head, and the time the batch was",
-        "   accepted. The public half of that key is `signing_key`. Check the",
-        "   signature over the canonical receipt bytes. `chain_version` is not",
-        "   part of the receipt and is not changed by it.",
+        "   over the record id, the custody head this package recomputes, and",
+        "   the time the receipt was signed (`accepted_at_ms`: the batch, or",
+        "   the export of this package). The public half of that key is",
+        "   `signing_key`. Check the signature over the canonical receipt",
+        "   bytes, then check that the signed head is the head you just",
+        "   recomputed. A receipt over a different head means these bytes",
+        "   were rewritten after the receipt was signed. `chain_version` is",
+        "   not part of the receipt and is not changed by it. A package with",
+        "   no receipt says receipt absent. That is not a failure of the chain.",
         "",
         "   The timestamp block is an RFC 3161 token over that same custody",
-        "   head, or a statement that the token is missing. A missing timestamp",
-        "   is not a forgery. The receipt still covers the head.",
+        "   head, or the words timestamp missing. A missing timestamp is not",
+        "   a forgery. The receipt, when there is one, still covers the head.",
     ])
