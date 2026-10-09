@@ -143,7 +143,8 @@ def receipt_block(receipt, signing_key=None):
 
 
 def build_manifest(*, job, points, photos, custody, report=None, notes=None,
-                   receipt=None, timestamp=None, signing_key=None):
+                   receipt=None, timestamp=None, signing_key=None,
+                   locked_anchors=None):
     """The hash manifest plus an independent verification of the custody chain.
 
     Every item a recipient needs in order to check the package themselves,
@@ -246,6 +247,9 @@ def build_manifest(*, job, points, photos, custody, report=None, notes=None,
         "receipt": receipt_block(receipt, signing_key),
         "timestamp": timestamp_block(timestamp),
         "signing_key": public_signing_key(signing_key),
+        # Anchors this process has put. A verifier unions these with an
+        # external file. The file is what catches an export that omitted one.
+        "locked_anchors": list(locked_anchors or []),
     }
 
 
@@ -408,4 +412,22 @@ def verification_instructions(manifest):
         "   The timestamp block is an RFC 3161 token over that same custody",
         "   head, or the words timestamp missing. A missing timestamp is not",
         "   a forgery. The receipt, when there is one, still covers the head.",
+        "",
+        "5. Locked anchors. Each object was written to S3 with Object Lock in",
+        "   COMPLIANCE mode after the entry was sealed. `locked_anchors` in",
+        "   this package is the copy the exporter chose to include. Pass",
+        "   `--anchors` with the bucket listing (`python -m anchor_lock",
+        "   export`) or with the copy the phone kept. The two are unioned by",
+        "   object key. If the same key has two different bodies, the check",
+        "   fails. The phone copy does not replace the locked one.",
+        "",
+        "   Every anchor's head has to be an entry in this chain, at the",
+        "   index it names, and the token has to cover that head. A head",
+        "   with no locked anchor, when anchors were supplied, fails with",
+        "   the words: no locked anchor for this head. An anchor for an",
+        "   entry that is not in the chain means the tail was removed.",
+        "   A package with no anchors says anchor absent. That is not a",
+        "   failure. Anchors inside this file alone do not catch an exporter",
+        "   who rewrote the chain, locked the new head, and left the old",
+        "   object out. The bucket listing does.",
     ])

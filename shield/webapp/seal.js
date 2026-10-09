@@ -10,7 +10,7 @@
  * this page calling a record SEALED that the reference calls something else,
  * or the reverse, which is the page accusing someone the reference does not.
  */
-import { pyJson, verifyChain } from "./verify.js";
+import { checkLockedAnchors, pyJson, verifyChain } from "./verify.js";
 import { PINNED_TSA_ROOTS } from "./tsa_roots.js";
 
 const RECORD_FIELDS = [
@@ -1053,6 +1053,11 @@ export async function judgeOfflineSeal(manifest, options = {}) {
   }
 
   await checkOfflinePhotos(manifest, entries, options.files, state);
+  const locked = checkLockedAnchors(entries, manifest, options.anchors);
+  if (locked.findings.length) {
+    worsen(state, TAMPERED, locked.findings.map((finding) => finding.text).join(" "));
+  }
+  state.anchorNote = locked.notes.indexOf("anchor absent") === -1 ? null : "anchor absent";
   const receipt = await checkReceipt(manifest, custodyHead, custodyIntact, records, state);
   const timestampAbsent = await checkTimestamp(
     manifest, custodyIntact ? custodyHead : receipt.claimed, rootsPem, state);
@@ -1069,6 +1074,7 @@ function finish(state, flags, timestampAbsent, receiptPresent) {
   if (timestampAbsent && receiptPresent && state.label !== ABSENT && state.label !== FORGED) {
     notes.push(ABSENT);
   }
+  if (state.anchorNote) notes.push(state.anchorNote);
   let detail = state.reasons.join(" ");
   if (!detail && state.label === SEALED) {
     detail = "The phone chain recomputes, the hardware signatures check, the ticket signature checks, the time rules pass, and the timestamp checks against the pinned certificates.";
