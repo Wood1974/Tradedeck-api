@@ -11,8 +11,10 @@ Labels, one of them
 TAMPERED
     A phone-chain byte or link does not reproduce, the phone chain is not
     the one inside the custody entry, the receipt's head is not the
-    custody head, or an offline photograph in the package does not match
-    the hardware-signed ``photo_sha256``.
+    custody head, an offline photograph in the package does not match
+    the hardware-signed ``photo_sha256``, or a locked anchor does not
+    match the chain. No anchors is the note ``anchor absent``, and that
+    note does not change the label.
 FORGED
     A hardware signature does not verify, the key is missing or not the
     point it claims to be, the ticket signature does not verify, the
@@ -45,6 +47,7 @@ import json
 from pathlib import Path
 
 import capture_record
+import anchor_lock
 import ledger
 import queue_ingest
 import ticket
@@ -153,7 +156,7 @@ def block_from_stored(*, entries, ticket_row=None, public_key_b64=None,
     return {key: value for key, value in block.items() if value is not None}
 
 
-def judge(package, *, roots_pem=None, files=None) -> dict:
+def judge(package, *, roots_pem=None, files=None, anchors=None) -> dict:
     """The seal label for one package. Does not raise on a bad package.
 
     ``files`` maps a photo id to bytes, or is a list of those bytes. When
@@ -280,6 +283,14 @@ def judge(package, *, roots_pem=None, files=None) -> dict:
 
     _check_package_photos(package, entries if isinstance(entries, list) else [],
                           files, worsen)
+    bundled = package.get("locked_anchors") if isinstance(
+        package.get("locked_anchors"), list) else []
+    chosen, copy_problems = anchor_lock.combine_anchors(bundled, anchors)
+    lock_problems, lock_notes = anchor_lock.assess_anchors(
+        entries if isinstance(entries, list) else [], chosen)
+    for problem in copy_problems + lock_problems:
+        worsen(LABEL_TAMPERED, problem)
+    anchor_absent = anchor_lock.NOTE_ABSENT in lock_notes
     receipt_ok, receipt_present, claimed_head = _check_receipt(
         package, custody_head, custody_intact, records, worsen)
     timestamp_absent = _check_timestamp(
@@ -298,6 +309,8 @@ def judge(package, *, roots_pem=None, files=None) -> dict:
         notes.append(LABEL_TIMESTAMP_ABSENT)
     if label == LABEL_TIMESTAMP_ABSENT:
         notes = []
+    if anchor_absent:
+        notes.append(anchor_lock.NOTE_ABSENT)
     return _done(label, flags, notes, " ".join(reasons) if reasons else _ok_detail(label))
 
 

@@ -182,6 +182,7 @@ actor ShieldClient {
             throw ClientError.transport(error.localizedDescription)
         }
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        AnchorBackup.keep(json: data)
         guard (200..<300).contains(code) else {
             // Surface the server's own words. A capture refused for a reason
             // the person can act on ("this device could not attest…") is worth
@@ -230,5 +231,52 @@ actor ShieldClient {
 
         req.httpBody = body
         return try await send(req)
+    }
+}
+
+/// A backup of the anchor the server returned. Not a second chain.
+///
+/// The deciding record is the S3 object. This file is what the phone can
+/// hand a verifier if the export leaves that object out. If the two bodies
+/// disagree, the check fails. This copy does not win.
+enum AnchorBackup {
+    static func keep(json data: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+        var items: [[String: Any]] = []
+        if let one = obj["locked_anchor"] as? [String: Any] {
+            items.append(one)
+        }
+        if let many = obj["locked_anchors"] as? [[String: Any]] {
+            items.append(contentsOf: many)
+        }
+        for item in items {
+            let status = item["status"] as? String ?? ""
+            if status == "disabled" || status.isEmpty { continue }
+            let key = (item["object_key"] as? String)
+                ?? "\(item["record_id"] ?? "record")-\(item["seq"] ?? 0)-\(item["head_hash"] ?? "pending")"
+            let safe = key.replacingOccurrences(of: "/", with: "_")
+            guard let dir = folder() else { return }
+            let url = dir.appendingPathComponent(safe + ".json")
+            guard let body = try? JSONSerialization.data(withJSONObject: item, options: [.sortedKeys]) else {
+                continue
+            }
+            try? body.write(to: url, options: .atomic)
+        }
+    }
+
+    private static func folder() -> URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                   in: .userDomainMask).first else {
+            return nil
+        }
+        let dir = base.appendingPathComponent("locked-anchors", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+        return dir
     }
 }

@@ -23,6 +23,7 @@ import requests
 import stripe
 from flask import Blueprint, g, jsonify, request
 
+import anchor_lock
 import codes
 import config
 import corroborate
@@ -109,10 +110,28 @@ def log_custody(*, photo_id=None, shield_job_id=None, event_type, actor_id=None,
         "recorded_at": utc_now_iso(),
     }
     prev = _chain_head(shield_job_id)
+    seq = None
+    if (anchor_lock.configured() and shield_job_id
+            and event_type in anchor_lock.ANCHORED_EVENTS):
+        try:
+            prior = (db().table("shield_custody_log").select("entry_hash")
+                     .eq("shield_job_id", shield_job_id).execute())
+            seq = len(prior.data or [])
+        except Exception:
+            log.exception("Could not count custody entries for %s", shield_job_id)
+            seq = 0
     sealed = ledger.seal(entry, prev)
     sealed["event_data"] = json.dumps(entry["event_data"], sort_keys=True,
                                       separators=(",", ":"), default=str)
     db().table("shield_custody_log").insert(sealed).execute()
+    if seq is not None:
+        view = anchor_lock.anchor_after_seal(
+            shield_job_id, seq, sealed["entry_hash"], entry["recorded_at"])
+        bag = getattr(g, "locked_anchors", None)
+        if bag is None:
+            bag = []
+            g.locked_anchors = bag
+        bag.append(view)
     return sealed["entry_hash"]
 
 
@@ -716,6 +735,7 @@ def upload_photo(shield_job_id):
                                                     if site_distance is not None else None),
                                 **{k: v for k, v in flags.items() if v}})
 
+    anchors = list(getattr(g, "locked_anchors", None) or [])
     return jsonify({
         "photo_id": photo_id, "original_hash": original_hash,
         "content_type": mime,
@@ -728,6 +748,9 @@ def upload_photo(shield_job_id):
         "device": " ".join(filter(None, [exif.get("device_make"),
                                          exif.get("device_model")])) or None,
         "captured_at": exif.get("captured_at"),
+        # The phone may keep this. It does not outrank the object in S3.
+        "locked_anchor": anchors[-1] if anchors else {"status": "disabled"},
+        "locked_anchors": anchors,
     }), 201
 
 
@@ -1118,7 +1141,8 @@ def evidence_package(shield_job_id):
         custody=custody, report=report, notes=note_rows,
         receipt=receipt,
         timestamp=stamped if signed else None,
-        signing_key=ticket.export_public_key())
+        signing_key=ticket.export_public_key(),
+        locked_anchors=anchor_lock.anchors_for(shield_job_id))
 
     # Retrieving evidence is itself a custody event. Being able to read the
     # record without leaving a trace is the other half of what chain of

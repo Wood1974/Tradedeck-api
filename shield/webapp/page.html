@@ -60,6 +60,12 @@
   </div>
 
   <label class="field">
+    <span>Locked anchors <em>(optional file from the bucket listing, or the copy the phone kept)</em></span>
+    <input type="file" id="anchorsFile" accept=".json,application/json">
+  </label>
+  <p class="muted small" id="anchorsName">No anchor file loaded. Anchors inside the package are checked. A package with none says anchor absent, which is not a failure. The anchors in the package alone do not catch an export that left an older object out.</p>
+
+  <label class="field">
     <span>Head hash you were given earlier <em>(optional, but it is the only thing that detects deletion)</em></span>
     <input type="text" id="expectHead" placeholder="64 hex characters, from your own records"
            autocomplete="off" spellcheck="false">

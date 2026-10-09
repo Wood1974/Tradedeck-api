@@ -51,6 +51,11 @@ DEFAULTS = {
     "SHIELD_TSA_ENABLED": "0",
     "SHIELD_TSA_PRIMARY_URL": "http://timestamp.digicert.com",
     "SHIELD_TSA_FALLBACK_URL": "http://timestamp.sectigo.com",
+    # Server-locked anchors. The bucket being unset is the disabled mode:
+    # uploads still succeed and verifiers say anchor absent. Region and
+    # retention apply only once a bucket is set. 2555 days is 7*365.
+    "SHIELD_ANCHOR_REGION": "us-east-1",
+    "SHIELD_ANCHOR_RETENTION_DAYS": "2555",
 }
 
 OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
@@ -86,7 +91,19 @@ OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
             # PEM bundle of TSA roots. Without it a timestamp token cannot be
             # checked, so it is not stored as present. The DigiCert and
             # Sectigo addresses above are not a substitute for this.
-            "SHIELD_TSA_ROOTS_PEM")
+            "SHIELD_TSA_ROOTS_PEM",
+            # S3 Object Lock bucket for custody-head anchors. Unset disables
+            # the lock; it does not fall back to a bucket named in this file.
+            # The write keys are PutObject and PutObjectRetention only. The
+            # read keys are a different principal, used to list the bucket.
+            "SHIELD_ANCHOR_BUCKET",
+            "SHIELD_ANCHOR_ACCESS_KEY_ID",
+            "SHIELD_ANCHOR_SECRET_ACCESS_KEY",
+            "SHIELD_ANCHOR_SESSION_TOKEN",
+            "SHIELD_ANCHOR_READ_ACCESS_KEY_ID",
+            "SHIELD_ANCHOR_READ_SECRET_ACCESS_KEY",
+            "SHIELD_ANCHOR_READ_SESSION_TOKEN",
+            "SHIELD_ANCHOR_QUEUE_PATH")
 
 
 def get(key, default=None):
