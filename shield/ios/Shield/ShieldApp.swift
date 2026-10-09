@@ -4,10 +4,13 @@
 //
 //  The credential lives in the Keychain, not in UserDefaults: a token in
 //  UserDefaults is in a plist inside the app container, readable from a
-//  backup. Nothing else is persisted — no photographs, no hashes, no record
-//  cache. The evidence lives on the server, and a copy on the phone would be
-//  a second version of the truth that nobody is chaining.
+//  backup. The outbox is the other thing kept on the phone: photographs
+//  taken with no signal, protected until the first unlock after boot, and
+//  deleted from the queue only after the server has accepted them. The
+//  server still hashes those bytes again. The phone is not a second chain
+//  of custody.
 
+import CoreLocation
 import Security
 import SwiftUI
 
@@ -135,6 +138,27 @@ final class AppState: ObservableObject {
         return try await client.upload(photo: photo, to: record,
                                        checkpoint: checkpoint,
                                        location: location)
+    }
+
+    /// While the phone still has a signal. The ticket hash is what the
+    /// first offline photograph chains from.
+    func establishTicket(recordID: String, location: CLLocation?) async throws -> String {
+        guard let client else { throw ClientError.notConnected }
+        return try await client.establishTicket(recordID: recordID, location: location)
+    }
+
+    /// Airplane mode. The photograph stays on this phone until flushOutbox.
+    func storeOffline(frame: CapturedFrame, recordID: String, checkpointID: String,
+                      location: CLLocation?) async throws -> String {
+        try await OfflineCapture.store(
+            frame: frame, recordID: recordID, checkpointID: checkpointID,
+            location: location)
+    }
+
+    /// Back online. Sends the queue in batches of 8.
+    func flushOutbox(recordID: String) async throws -> [String: Any]? {
+        guard let client else { throw ClientError.notConnected }
+        return try await Outbox.shared.flush(client: client, recordID: recordID)
     }
 }
 

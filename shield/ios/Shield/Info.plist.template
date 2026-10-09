@@ -27,6 +27,9 @@
   <key>NSLocationWhenInUseUsageDescription</key>
   <string>Your position is recorded with each photograph and measured against the site the record names. It is treated as a claim by this device, not as proof.</string>
 
+  <key>NSMotionUsageDescription</key>
+  <string>Motion and barometer readings are hashed into the capture record when the phone has them. A missing reading is left out. It is not invented.</string>
+
   <!-- DO NOT ADD NSPhotoLibraryUsageDescription. See the comment above. -->
 </dict>
 </plist>

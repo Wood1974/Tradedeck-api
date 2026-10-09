@@ -15,6 +15,7 @@
 //  recomputes it from the bytes that arrived and refuses if they differ, which
 //  is exactly what makes it worth computing here.
 
+import CoreLocation
 import Foundation
 
 enum ClientError: LocalizedError {
@@ -93,6 +94,51 @@ actor ShieldClient {
 
     func challenge(for recordID: String) async throws -> Challenge {
         try await postJSON("records/\(recordID)/capture-challenge", [String: String]())
+    }
+
+    /// Ask for a job ticket, sign the clocks measured now, and store the
+    /// ticket only if the server accepts the signature. Returns the ticket
+    /// hash the first offline photo chains from. Nothing is written on the
+    /// server until the signature checks.
+    func establishTicket(recordID: String, location: CLLocation?) async throws -> String {
+        let offer = try await postJSONObject(
+            "records/\(recordID)/genesis", ["platform": "ios"])
+        guard offer["stored"] as? Bool == false,
+              let ticket = offer["ticket"] as? [String: Any],
+              let ticketHash = offer["ticket_hash"] as? String,
+              let serverSignature = offer["server_signature"] as? String,
+              let rawHash = Digests.hexBytes(ticketHash) else {
+            throw ClientError.http(0, "The job ticket offer could not be read.")
+        }
+        let clock = PhoneClock.read(location: location)
+        let proof = try await Attestor.assertGenesis(
+            ticketHash: rawHash, clockJSON: clock.canonicalClock())
+        _ = try await postJSONObject("records/\(recordID)/genesis", [
+            "platform": "ios",
+            "ticket": ticket,
+            "ticket_clock": clock.ticketClock(),
+            "server_signature": serverSignature,
+            "assertion": proof.blob.base64EncodedString(),
+            "attestation_key_id": proof.keyID,
+        ])
+        try await Outbox.shared.rememberTicket(recordID: recordID, ticketHash: ticketHash)
+        return ticketHash
+    }
+
+    /// One batch, at most 8 captures, to the offline queue. The caller
+    /// decides which 8. A missing timestamp in the reply is not a failure.
+    func uploadBatch(recordID: String, captures: [[String: Any]],
+                     phoneChainHead: String) async throws -> [String: Any] {
+        guard let keyID = Attestor.registeredKeyID else {
+            throw AttestError.attestation(
+                "This install has no attested key, so the batch cannot be signed.")
+        }
+        return try await postJSONObject("records/\(recordID)/queue", [
+            "platform": "ios",
+            "attestation_key_id": keyID,
+            "phone_chain_head": phoneChainHead,
+            "captures": captures,
+        ])
     }
 
     /// Photograph first, prove second, upload third.
@@ -174,7 +220,7 @@ actor ShieldClient {
         return req
     }
 
-    private func send<T: Decodable>(_ req: URLRequest) async throws -> T {
+    private func sendData(_ req: URLRequest) async throws -> Data {
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: req)
@@ -192,7 +238,23 @@ actor ShieldClient {
             if body?.reattest == true { throw ClientError.reattest(message) }
             throw ClientError.http(code, message)
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        return data
+    }
+
+    private func send<T: Decodable>(_ req: URLRequest) async throws -> T {
+        try JSONDecoder().decode(T.self, from: try await sendData(req))
+    }
+
+    private func postJSONObject(_ path: String, _ body: Any) async throws -> [String: Any] {
+        var req = try request(path, method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let data = try await sendData(req)
+        let obj = try JSONSerialization.jsonObject(with: data)
+        guard let dict = obj as? [String: Any] else {
+            throw ClientError.http(0, "Shield's reply was not a JSON object.")
+        }
+        return dict
     }
 
     private func get<T: Decodable>(_ path: String) async throws -> T {

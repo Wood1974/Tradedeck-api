@@ -129,6 +129,45 @@ enum Attestor {
         return try await attest(hash: hash)
     }
 
+    /// An assertion over a capture record. clientData is the UTF-8 bytes of
+    /// `shield-capture-v1` followed by the raw 32-byte record hash.
+    /// generateAssertion is given SHA256(clientData), which is what
+    /// app_attest.verify_assertion recomputes. This is not the photograph
+    /// binding above. The record hash already covers the photograph digest.
+    static func assertRecord(recordHash: Data) async throws -> (keyID: String, blob: Data) {
+        guard DCAppAttestService.shared.isSupported else { throw AttestError.unsupported }
+        guard let keyID = registeredKeyID else {
+            throw AttestError.attestation(
+                "This install has no attested key yet. Connect and take one " +
+                "photograph online before sealing a job ticket or an offline capture.")
+        }
+        var client = Data("shield-capture-v1".utf8)
+        client.append(recordHash)
+        let hash = Data(SHA256.hash(data: client))
+        return (keyID, try await signAssertion(keyID: keyID, hash: hash))
+    }
+
+    /// An assertion over the job ticket and the clocks measured now.
+    /// clientData is `shield-genesis-v1` followed by SHA256(ticket hash raw
+    /// || canonical clock JSON). generateAssertion receives SHA256 of that.
+    static func assertGenesis(ticketHash: Data, clockJSON: Data) async throws -> (keyID: String, blob: Data) {
+        guard DCAppAttestService.shared.isSupported else { throw AttestError.unsupported }
+        guard let keyID = registeredKeyID else {
+            throw AttestError.attestation(
+                "This install has no attested key yet. Connect and take one " +
+                "photograph online before sealing a job ticket.")
+        }
+        var payload = ticketHash
+        payload.append(clockJSON)
+        let payloadHash = Data(SHA256.hash(data: payload))
+        var client = Data(TicketChallenge.utf8)
+        client.append(payloadHash)
+        let hash = Data(SHA256.hash(data: client))
+        return (keyID, try await signAssertion(keyID: keyID, hash: hash))
+    }
+
+    private static let TicketChallenge = "shield-genesis-v1"
+
     private static func signAssertion(keyID: String, hash: Data) async throws -> Data {
         try await withCheckedThrowingContinuation {
             (cont: CheckedContinuation<Data, Error>) in
