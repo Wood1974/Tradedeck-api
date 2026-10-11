@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import stripe
 from flask import Blueprint, g, jsonify, request
@@ -22,6 +23,8 @@ log = logging.getLogger(__name__)
 identity_bp = Blueprint("identity", __name__, url_prefix="/identity")
 
 CONSENT_VERSION = "1"
+# Each new session can cost money at Stripe, so one account cannot start unlimited checks.
+MAX_ID_CHECKS_PER_DAY = 5
 SESSIONS = "shield_identity_sessions"
 NOTES = "shield_note_attestations"
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -80,6 +83,10 @@ def start():
     existing = _latest_session(g.user_id)
     if existing and existing["status"] == "verified":
         return jsonify({"sessionId": existing["stripe_session_id"], "status": "verified", "url": None})
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    recent = _db().table(SESSIONS).select("id").eq("user_id", g.user_id).gte("created_at", since).execute().data
+    if len(recent) >= MAX_ID_CHECKS_PER_DAY:
+        return jsonify({"error": "too-many-id-checks"}), 429
     try:
         sess = stripe.identity.VerificationSession.create(
             type="document",
