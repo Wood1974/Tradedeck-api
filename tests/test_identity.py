@@ -43,13 +43,17 @@ class FakeQuery:
 
     def select(self, *_a): self.mode = "select"; return self
     def eq(self, c, v): self.f.append((c, v)); return self
+    def gte(self, c, v): self.f.append((c, v, "gte")); return self
     def order(self, c, desc=False): self.order_key = (c, desc); return self
     def limit(self, n): self.lim = n; return self
     def insert(self, row): self.mode, self.arg = "insert", row; return self
     def update(self, patch): self.mode, self.arg = "update", patch; return self
 
     def execute(self):
-        match = [r for r in self.rows if all(r.get(c) == v for c, v in self.f)]
+        def ok(r, f):
+            return str(r.get(f[0], "")) >= f[1] if len(f) == 3 else r.get(f[0]) == f[1]
+
+        match = [r for r in self.rows if all(ok(r, f) for f in self.f)]
         if self.mode == "insert":
             row = {"id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc).isoformat(), **self.arg}
             self.rows.append(row)
@@ -308,3 +312,23 @@ def test_a_non_p256_receipt_key_is_refused_not_used(env):
     d = Device()
     sid = start_and_verify(env)
     assert env.client.post("/identity/note", json=d.note(sid), headers=AUTH).status_code == 503
+
+
+# -------------------------------------------------------------- rate limit --
+def test_start_is_limited_per_account_per_day(env):
+    for _ in range(identity_api.MAX_ID_CHECKS_PER_DAY):
+        assert env.client.post("/identity/start", json=CONSENT, headers=AUTH).status_code == 200
+    assert env.stripe.created == identity_api.MAX_ID_CHECKS_PER_DAY
+    r = env.client.post("/identity/start", json=CONSENT, headers=AUTH)
+    assert r.status_code == 429 and r.get_json()["error"] == "too-many-id-checks"
+    assert env.stripe.created == identity_api.MAX_ID_CHECKS_PER_DAY  # the refused call never reached Stripe
+
+
+def test_the_limit_is_per_account_and_ignores_old_sessions(env):
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    for i in range(identity_api.MAX_ID_CHECKS_PER_DAY):
+        env.db.tables.setdefault("shield_identity_sessions", []).append(
+            {"id": f"old{i}", "user_id": "user-1", "stripe_session_id": f"vs_old{i}", "status": "canceled", "created_at": old})
+    assert env.client.post("/identity/start", json=CONSENT, headers=AUTH).status_code == 200  # old ones do not count
+    env.db.user_id = "user-2"
+    assert env.client.post("/identity/start", json=CONSENT, headers=AUTH).status_code == 200  # another account is unaffected

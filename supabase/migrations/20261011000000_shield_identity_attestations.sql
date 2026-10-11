@@ -1,4 +1,5 @@
--- ID check + signed photographer note for the Shield phone app (NOT APPLIED; for owner review).
+-- ID check + signed photographer note for the Shield phone app.
+-- Applied to the production project on 2026-10-11 (table by table, via execute_sql; the migration tool timed out).
 --
 -- Stores no ID or selfie images and no name or document data: Stripe Identity holds those. We keep
 -- the Stripe session id and its status, the consent record, and the device-signed note.
@@ -40,12 +41,20 @@ create index if not exists shield_note_attestations_user_idx
 alter table public.shield_identity_sessions enable row level security;
 alter table public.shield_note_attestations enable row level security;
 
-drop policy if exists shield_identity_sessions_select_own on public.shield_identity_sessions;
-create policy shield_identity_sessions_select_own on public.shield_identity_sessions
-    for select to authenticated using (user_id = auth.uid());
-
-drop policy if exists shield_note_attestations_select_own on public.shield_note_attestations;
-create policy shield_note_attestations_select_own on public.shield_note_attestations
-    for select to authenticated using (user_id = auth.uid());
+-- `drop policy if exists` hung against the production database, so each policy is created only when missing.
+do $$
+begin
+    if not exists (select 1 from pg_policies where schemaname = 'public'
+                   and tablename = 'shield_identity_sessions' and policyname = 'shield_identity_sessions_select_own') then
+        create policy shield_identity_sessions_select_own on public.shield_identity_sessions
+            for select to authenticated using (user_id = (select auth.uid()));
+    end if;
+    if not exists (select 1 from pg_policies where schemaname = 'public'
+                   and tablename = 'shield_note_attestations' and policyname = 'shield_note_attestations_select_own') then
+        create policy shield_note_attestations_select_own on public.shield_note_attestations
+            for select to authenticated using (user_id = (select auth.uid()));
+    end if;
+end
+$$;
 
 -- No insert/update/delete policies on purpose: only the service role (the API) writes these tables.
