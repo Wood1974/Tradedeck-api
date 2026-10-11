@@ -24,6 +24,7 @@ import audit.invariants
 import location
 import packs
 import pdf_export
+from identity_api import identity_bp
 try:
     from shield_api import shield_bp
 except Exception as _shield_import_err:
@@ -43,8 +44,9 @@ app.config["MAX_CONTENT_LENGTH"] = max_image_bytes() * 2
 CORS(app, origins=config.allowed_origins(), supports_credentials=True,
      allow_headers=["Authorization", "Content-Type"], methods=["GET", "POST", "OPTIONS"])
 app.register_blueprint(shield_bp)
+app.register_blueprint(identity_bp)
 
-stripe.api_key            = os.environ["STRIPE_SECRET_KEY"]
+stripe.api_key           = os.environ["STRIPE_SECRET_KEY"]
 STRIPE_WEBHOOK_SECRET     = os.environ["STRIPE_WEBHOOK_SECRET"]
 SUPABASE_URL              = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY      = os.environ["SUPABASE_SERVICE_KEY"]
