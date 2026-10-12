@@ -11,6 +11,12 @@ services:
         sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
+      # Owner-only test mode for the Shield ID check (see identity_api.py). Both are optional; unset means every
+      # account runs live. STRIPE_TEST_SECRET_KEY must be an sk_test_ / rk_test_ key.
+      - key: STRIPE_TEST_SECRET_KEY
+        sync: false
+      - key: IDENTITY_TEST_MODE_USER_IDS
+        sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
       - key: ANTHROPIC_API_KEY

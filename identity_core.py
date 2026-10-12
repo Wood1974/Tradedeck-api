@@ -113,7 +113,7 @@ def receipt_public(private_key) -> tuple[str, str]:
 
 
 def make_receipt(private_key, *, attestation_id: str, note_sha256: str, device_seal_id: str,
-                 session_id: str, now: datetime | None = None) -> dict:
+                 session_id: str, now: datetime | None = None, test_mode: bool = False) -> dict:
     now = now or datetime.now(timezone.utc)
     _, kid = receipt_public(private_key)
     payload = {
@@ -124,6 +124,10 @@ def make_receipt(private_key, *, attestation_id: str, note_sha256: str, device_s
         "idCheck": {"provider": ID_PROVIDER, "status": "verified"},
         "issuedAt": now.isoformat().replace("+00:00", "Z"), "kid": kid,
     }
+    if test_mode:
+        # The check was run in Stripe test mode (no real ID). Signed, so it cannot be removed afterwards. Absent on a
+        # live check, which keeps live receipts byte-identical to those issued before test mode existed.
+        payload["testMode"] = True
     der = private_key.sign(canonical(payload).encode("utf-8"), ec.ECDSA(hashes.SHA256()))
     r, s = utils.decode_dss_signature(der)
     sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")

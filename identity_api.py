@@ -4,6 +4,11 @@ Flow: consent -> /identity/start (Stripe Identity hosted check: document + live 
 /identity/status (server asks Stripe, never trusts the client) -> /identity/note (device-signed
 statement, accepted only after Stripe reports `verified`).
 
+Test mode: an account listed in IDENTITY_TEST_MODE_USER_IDS (the owner, who may have no ID to use) runs the check
+against Stripe test mode with STRIPE_TEST_SECRET_KEY. Such a check passes with Stripe's test documents, so its
+session is stored with livemode=false and its receipt carries a signed `testMode: true`; the phone app and the
+public lookup treat it as a test, never as a confirmed real check. Every other account is always live.
+
 Privacy: ID and selfie images never reach this service; Stripe holds them. We keep only the
 session id, its status, the consent record and the signed note. No name or document data is stored.
 """
@@ -34,6 +39,21 @@ def _db():
     return g.supabase
 
 
+_TEST_KEY_PREFIXES = ("sk_test_", "rk_test_")
+
+
+def _test_key():
+    """The Stripe test-mode key from the environment, or None. A live key here is refused, never used."""
+    key = os.environ.get("STRIPE_TEST_SECRET_KEY", "").strip()
+    return key if key.startswith(_TEST_KEY_PREFIXES) else None
+
+
+def _test_key_for(user_id):
+    """The test key, only for an account on the owner allowlist. Everyone else is always live."""
+    allowed = {u.strip() for u in os.environ.get("IDENTITY_TEST_MODE_USER_IDS", "").split(",") if u.strip()}
+    return _test_key() if str(user_id) in allowed else None
+
+
 def _receipt_key():
     try:
         return load_receipt_key(os.environ.get("IDENTITY_RECEIPT_KEY"))
@@ -49,7 +69,13 @@ def _latest_session(user_id):
 
 def _refresh(row):
     """Ask Stripe for the truth and persist it. Returns the (possibly updated) row."""
-    sess = stripe.identity.VerificationSession.retrieve(row["stripe_session_id"])
+    if row.get("livemode") is False:
+        key = _test_key()
+        if key is None:
+            raise stripe.error.StripeError("test mode is not configured")
+        sess = stripe.identity.VerificationSession.retrieve(row["stripe_session_id"], api_key=key)
+    else:
+        sess = stripe.identity.VerificationSession.retrieve(row["stripe_session_id"])
     if sess.status != row["status"]:
         patch = {"status": sess.status, "updated_at": utc_now_iso()}
         if sess.status == "verified":
@@ -87,19 +113,25 @@ def start():
     recent = _db().table(SESSIONS).select("id").eq("user_id", g.user_id).gte("created_at", since).execute().data
     if len(recent) >= MAX_ID_CHECKS_PER_DAY:
         return jsonify({"error": "too-many-id-checks"}), 429
+    test_key = _test_key_for(g.user_id)
+    extra = {"api_key": test_key} if test_key else {}
     try:
         sess = stripe.identity.VerificationSession.create(
             type="document",
             options={"document": {"require_matching_selfie": True, "require_live_capture": True}},
             metadata={"user_id": str(g.user_id), "product": "shield_note"},
+            **extra,
         )
     except stripe.error.StripeError:
         log.warning("Stripe Identity session create failed", exc_info=True)
         return jsonify({"error": "id-check-unavailable"}), 502
-    _db().table(SESSIONS).insert({
+    row = {
         "user_id": g.user_id, "stripe_session_id": sess.id, "status": sess.status,
         "consent_at": utc_now_iso(), "consent_version": CONSENT_VERSION,
-    }).execute()
+    }
+    if test_key:
+        row["livemode"] = False  # the column defaults to true, so live rows are unchanged
+    _db().table(SESSIONS).insert(row).execute()
     return jsonify({"sessionId": sess.id, "status": sess.status, "url": sess.url})
 
 
@@ -141,7 +173,8 @@ def note():
         return jsonify({"attestationId": existing[0]["id"], "noteSha256": note_sha, "receipt": existing[0]["receipt"]})
     att_id = str(uuid.uuid4())
     receipt = make_receipt(key, attestation_id=att_id, note_sha256=note_sha,
-                           device_seal_id=body["payload"]["deviceSealId"], session_id=row["stripe_session_id"])
+                           device_seal_id=body["payload"]["deviceSealId"], session_id=row["stripe_session_id"],
+                           test_mode=row.get("livemode") is False)
     _db().table(NOTES).insert({
         "id": att_id, "user_id": g.user_id, "session_id": row["id"],
         "device_seal_id": body["payload"]["deviceSealId"], "device_public_key": body["devicePublicKey"],
@@ -160,10 +193,15 @@ def attestation(att_id):
     if not rows:
         return jsonify({"error": "not-found"}), 404
     n = rows[0]
-    sess = _db().table(SESSIONS).select("status").eq("id", n["session_id"]).limit(1).execute().data
-    verified = bool(sess) and sess[0]["status"] == "verified" and not n.get("revoked_at")
-    return jsonify({
+    sess = _db().table(SESSIONS).select("status,livemode").eq("id", n["session_id"]).limit(1).execute().data
+    test = bool(sess) and sess[0].get("livemode") is False
+    # A test-mode check never reads as verified to a third party: no real ID was checked.
+    verified = bool(sess) and sess[0]["status"] == "verified" and not n.get("revoked_at") and not test
+    out = {
         "attestationId": n["id"], "verified": verified, "noteSha256": n["note_sha256"],
         "deviceSealId": n["device_seal_id"], "signedAt": n["signed_at"],
         "statementVersion": n["statement_version"], "provider": "stripe-identity",
-    })
+    }
+    if test:
+        out["testMode"] = True
+    return jsonify(out)
