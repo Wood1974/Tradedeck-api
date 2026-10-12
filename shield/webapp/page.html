@@ -76,10 +76,12 @@
   <details class="extra">
     <summary>Check a photograph against the package</summary>
     <p class="muted small">
-      Hashes a file in this page and compares it to the hash the package
-      recorded. This shows the file is the one that hash describes. It does not
-      show the photograph is of what anyone says it is, and nothing here shows
-      it came off a camera.
+      Hashes a file in this page and compares it to the sealed upload record
+      for that photo — the <code>file_hash</code> on the custody entry written
+      when the bytes were received. Matching a hash in the manifest is not
+      enough: the manifest is not sealed. This shows the file is the one that
+      was received. It does not show the photograph is of what anyone says it
+      is, and nothing here shows it came off a camera.
     </p>
     <input type="file" id="photoFile" accept="image/*">
     <div id="photoResult" class="result"></div>

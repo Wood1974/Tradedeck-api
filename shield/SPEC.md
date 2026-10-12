@@ -110,13 +110,14 @@ A manifest is JSON carrying at least:
 
 | Key | What |
 |---|---|
-| `job.shield_job_id` | The id the genesis value derives from |
-| `custody_entries` | Every entry's signed fields plus `prev_hash` and `entry_hash` |
-| `custody.head_hash` | The head the producer claims |
+| `job.shield_job_id` | The id the genesis value derives from. A v2 API package names the same id as `record.id` and puts the custody rows in `custody` rather than `custody_entries`. |
+| `custody_entries` | Every entry's signed fields plus `prev_hash` and `entry_hash`. On an API package this list is `custody`. |
+| `custody.head_hash` | The head the producer claims. On an API package the same claim is the top-level `head_hash`. |
 | `custody.chain_intact` | What the producer claims about its own chain |
-| `checkpoints[].sha256_original` | The hash of each photo as received |
+| `checkpoints[].sha256_original` | The manifest's copy of the hash of each live photo. It is **not** sealed. The hash that counts is `file_hash` on the sealed `uploaded` entry with the same `photo_id`. An API package stores the manifest copy as `photos[].original_hash`. |
+| `checkpoints[].superseded_attempts[].sha256_original` | The manifest copy for an earlier attempt at the same checkpoint. Same rule: it must equal that attempt's sealed `uploaded` `file_hash`. |
 
-**A package without `custody_entries` is not verifiable.** Its integrity is
+**A package without custody entries is not verifiable.** Its integrity is
 then the producer's assertion, and any verifier should say so rather than pass
 it. Shield's own export omitted these until this spec was written, which is
 exactly the kind of thing publishing a spec surfaces.
@@ -126,11 +127,33 @@ Cross-check the producer's claims against your own computation. If
 `chain_intact: true` over a chain that breaks, the package is lying about
 itself and that is a more serious finding than a broken chain.
 
+**Photos are bound to the sealed upload, not to the manifest.** For each
+photo, find the custody entry with `event_type` `uploaded` and the same
+`photo_id`. Its `file_hash` was sealed when the bytes were received.
+`checkpoints[].sha256_original` (or `photos[].original_hash`) must equal
+that `file_hash`, and the SHA-256 of a supplied file must equal it too.
+Editing the manifest hash to suit a swapped file is a failure: the seal did
+not change. Two sealed `uploaded` entries for one `photo_id` that disagree
+are a failure.
+
+Where that entry's `event_data.point_number` is present, the photo must be
+filed under that checkpoint. Legacy uploads do not seal a checkpoint number;
+the hash is still checked, and the missing checkpoint binding is a note, not
+a failure.
+
+A photo with no sealed `uploaded` entry at all is **UNVERIFIED**. That is
+weaker than a pass and it is not an accusation of tampering. Honest
+`chain_version` 2 packages already carry the sealed `photo_id` and
+`file_hash` for each upload, so they still pass. `chain_version` stays 2.
+
 ## 6. What this establishes, and what it does not
 
 **Establishes:** no entry was altered, inserted, removed or reordered after it
-was written; the head you hold commits to the whole history; supplied photo
-bytes match what was received.
+was written; the head you hold commits to the whole history; each photo's
+manifest hash and, where the file is supplied, its bytes match the `file_hash`
+sealed on the `uploaded` entry for that `photo_id` at the time the file was
+received. Where that entry seals a checkpoint number, the photo is the one
+filed under that checkpoint.
 
 **Does not establish:**
 
@@ -152,11 +175,14 @@ own records**. Pass it to a verifier (`--expect-head`). A verification run
 without one should say so rather than pass silently.
 
 **The honest limit.** An attacker who recomputes the entire chain produces
-something that verifies perfectly. What they cannot do is make it match a head
-hash somebody already holds. That is why a head hash that has left the
-building — in a close-out packet, an email to an adjuster, an RFC 3161
-timestamp, a customer's own system — is worth more than the chain itself.
-Keep the head you were given.
+something that verifies perfectly, including a chain recomputed so the sealed
+`file_hash` matches a photo they swapped in. What they cannot do is make it
+match a head hash somebody already holds. Binding the photo to the sealed
+upload means a swap is no longer an edit to one manifest string; it is a
+rewrite of the chain, and the held head is what catches the rewrite. That is
+why a head hash that has left the building — in a close-out packet, an email
+to an adjuster, an RFC 3161 timestamp, a customer's own system — is worth
+more than the chain itself. Keep the head you were given.
 
 ## 7. The defect that produced version 2
 

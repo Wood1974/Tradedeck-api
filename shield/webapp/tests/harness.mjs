@@ -11,8 +11,8 @@
  * through both implementations and the bytes are compared. Reads one JSON
  * request on stdin, writes one JSON response on stdout.
  */
-import { canonical, pyJson, pyRepr, verifyChain, genesisHash, link }
-  from "../verify.js";
+import { canonical, pyJson, pyRepr, verifyChain, genesisHash, link,
+  evaluatePackage, judgePhoto } from "../verify.js";
 
 const stdin = await new Promise((resolve) => {
   let buf = "";
@@ -64,6 +64,30 @@ switch (req.op) {
   case "verify":
     out = await verifyChain(req.entries, req.shield_job_id,
                             { expectHead: req.expect_head ?? null });
+    break;
+
+  case "package": {
+    const files = {};
+    for (const [id, b64] of Object.entries(req.files || {})) {
+      files[id] = Uint8Array.from(Buffer.from(b64, "base64"));
+    }
+    const report = await evaluatePackage(req.manifest, {
+      expectHead: req.expect_head ?? null,
+      files,
+    });
+    out = {
+      verdict: report.verdict,
+      ok: report.ok,
+      problems: report.problems,
+      unverified: report.unverified,
+      files: report.files,
+    };
+    break;
+  }
+
+  case "judge":
+    out = await judgePhoto(
+      req.manifest, Uint8Array.from(Buffer.from(req.file_b64, "base64")));
     break;
 
   default:

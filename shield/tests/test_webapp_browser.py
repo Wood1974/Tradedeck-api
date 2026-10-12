@@ -8,6 +8,7 @@ is a page that shows a reassuring tick while the chain underneath it is broken.
 So this loads `index.html` in Chromium, drops in packages built by `ledger.py`,
 and reads what the page says. Skipped when Playwright or the browser is absent.
 """
+import hashlib
 import json
 import os
 import sys
@@ -190,3 +191,83 @@ class TestThePageMakesNoNetworkRequests:
         load(page, tmp_path, manifest, expect_head=head)
         external = [u for u in seen if not u.startswith("file://")]
         assert not external, f"the page made requests while verifying: {external}"
+
+
+P1 = b"photo-one-bytes"
+P2 = b"photo-two-bytes"
+H1 = hashlib.sha256(P1).hexdigest()
+H2 = hashlib.sha256(P2).hexdigest()
+
+
+def bound_package():
+    entries, prev = [], ledger.genesis_hash("job-abc")
+    for photo_id, digest, point, when in (
+        ("ph1", H1, 1, "2026-09-02T15:00:00+00:00"),
+        ("ph2", H2, 2, "2026-09-03T09:00:00+00:00"),
+    ):
+        sealed = ledger.seal(
+            entry(shield_job_id="job-abc", photo_id=photo_id, file_hash=digest,
+                  event_data={"point_number": point, "note": "checkpoint"},
+                  recorded_at=when), prev)
+        entries.append(sealed)
+        prev = sealed["entry_hash"]
+    return {
+        "job": {"shield_job_id": "job-abc"},
+        "custody_entries": entries,
+        "custody": {"head_hash": prev, "chain_intact": True, "entries": 2},
+        "checkpoints": [
+            {"checkpoint_number": 1, "photo_id": "ph1", "sha256_original": H1},
+            {"checkpoint_number": 2, "photo_id": "ph2", "sha256_original": H2},
+        ],
+    }
+
+
+def drop_photo(page, tmp_path, blob, name):
+    # The file input sits in a closed <details>. Open it the way a recipient
+    # would, or the result is in the DOM and not on screen.
+    page.locator("details.extra summary").click()
+    path = tmp_path / name
+    path.write_bytes(blob)
+    page.set_input_files("#photoFile", str(path))
+    page.wait_for_selector("#photoResult .card")
+    return page.inner_text("#photoResult")
+
+
+class TestAPhotoIsBoundToTheSealedUpload:
+    def test_an_honest_package_says_the_manifest_matches_the_seal(self, page, tmp_path):
+        text = load(page, tmp_path, bound_package())
+        assert "matches the sealed upload record" in text
+        assert "bad" not in page.get_attribute("#verifyResult .card", "class")
+
+    def test_a_swap_that_rewrites_the_manifest_is_shown_as_a_failure(self, page, tmp_path):
+        manifest = bound_package()
+        swapped = b"a completely different image"
+        manifest["checkpoints"][0]["sha256_original"] = hashlib.sha256(swapped).hexdigest()
+        text = load(page, tmp_path, manifest)
+        assert "does not match the sealed upload record" in text
+        assert "ph1" in text
+        assert "bad" in page.get_attribute("#verifyResult .card", "class")
+
+        dropped = drop_photo(page, tmp_path, swapped, "swapped.jpg")
+        assert "does not match the sealed upload record" in dropped
+        assert "matches a photo hash" not in dropped.lower()
+        assert "bad" in page.get_attribute("#photoResult .card", "class")
+
+    def test_a_file_is_attributed_to_its_own_checkpoint(self, page, tmp_path):
+        load(page, tmp_path, bound_package())
+        text = drop_photo(page, tmp_path, P2, "ph2.jpg")
+        assert "photo ph2" in text
+        assert "checkpoint 2" in text
+        assert "checkpoint 1" not in text
+        assert "good" in page.get_attribute("#photoResult .card", "class")
+
+    def test_a_photo_with_no_sealed_upload_is_not_a_pass(self, page, tmp_path):
+        manifest = bound_package()
+        manifest["custody_entries"] = [manifest["custody_entries"][0]]
+        manifest["custody"]["head_hash"] = manifest["custody_entries"][0]["entry_hash"]
+        manifest["custody"]["entries"] = 1
+        text = load(page, tmp_path, manifest)
+        assert "cannot be tied" in text.lower()
+        assert "not a pass" in text.lower()
+        assert "unknown" in page.get_attribute("#verifyResult .card", "class")
+        assert "bad" not in page.get_attribute("#verifyResult .card", "class")
