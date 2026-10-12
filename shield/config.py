@@ -40,6 +40,17 @@ DEFAULTS = {
     # Outside clock on the job ticket. Off means the field is absent and
     # genesis still completes. There is no Roughtime client in this service.
     "SHIELD_ROUGHTIME_ENABLED": "0",
+    # Offline batch size. Photos past this are not accepted; the phone
+    # sends another request.
+    "SHIELD_QUEUE_BATCH_CAP": "8",
+    # RFC 3161. Off means a receipt is still issued and the timestamp is
+    # recorded as missing. Missing is not a forgery. The URLs are the
+    # authorities a deployment asks once the flag is on. Tests leave the
+    # flag off, or point the URLs at a local process. They do not call
+    # these hosts.
+    "SHIELD_TSA_ENABLED": "0",
+    "SHIELD_TSA_PRIMARY_URL": "http://timestamp.digicert.com",
+    "SHIELD_TSA_FALLBACK_URL": "http://timestamp.sectigo.com",
 }
 
 OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
@@ -66,11 +77,16 @@ OPTIONAL = ("RESEND_API_KEY", "STRIPE_SHIELD_PRICE_ID", "SHIELD_SUCCESS_URL",
             "ANDROID_ATTESTATION_ROOTS_PEM",
             "ANDROID_PACKAGE_NAME",
             "ANDROID_SIGNING_CERT_SHA256",
-            # ECDSA P-256 private key, PEM, that signs job tickets. The same
+            # ECDSA P-256 private key, PEM, that signs job tickets and the
+            # receipt issued when an offline batch is accepted. The same
             # posture as the Apple root: configuration, never a constant in
-            # this repository. Unset, and genesis is refused. The public
-            # half is derived from this key when a package needs it.
-            "SHIELD_TICKET_SIGNING_KEY_PEM")
+            # this repository. Unset, and genesis and the queue are refused.
+            # The public half is derived from this key when a package needs it.
+            "SHIELD_TICKET_SIGNING_KEY_PEM",
+            # PEM bundle of TSA roots. Without it a timestamp token cannot be
+            # checked, so it is not stored as present. The DigiCert and
+            # Sectigo addresses above are not a substitute for this.
+            "SHIELD_TSA_ROOTS_PEM")
 
 
 def get(key, default=None):
