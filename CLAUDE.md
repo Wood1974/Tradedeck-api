@@ -44,12 +44,6 @@ job payment workflows.
   use of the Anthropic key in this codebase — there is **no photo-quality
   AI check** implemented here despite that being described in prior notes
   as built.
-- Static HTML prototypes sit in this repo's root, **not wired to any Flask
-  route** (the only route serving `/` returns a JSON status): `tradedeck-newest.html`,
-  `tradedeck-final.html` and `tradedeck-merged.html`. They are full app-UI builds that ended
-  up in the wrong repo (`tradedeck.html`, the oldest, was deleted). Nothing references them;
-  consider deleting them once you've confirmed nothing still depends on them.
-
 ## Data layer
 
 - **SQLite**, on Render's persistent disk (`DB_PATH`, default
