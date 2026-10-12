@@ -16,7 +16,8 @@ import { PINNED_TSA_ROOTS } from "./tsa_roots.js";
 const RECORD_FIELDS = [
   "version", "checkpoint_id", "photo_sha256", "ticket_id", "wall_time_ms",
   "monotonic_ms", "boot_id", "boot_count", "gnss_time_ms", "location_simulated",
-  "sensor_hash", "depth_hash", "depth_present", "flags",
+  "sensor_hash", "depth_hash", "depth_present", "gnss_fix_hash", "clip_sha256",
+  "flags",
 ];
 const TICKET_FIELDS = [
   "version", "record_id", "checkpoint_list_sha256", "actor_id",

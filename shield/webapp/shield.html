@@ -19,7 +19,7 @@
   have to change it, which is the point.
 -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-uCRw4ru0jUHwwgzsGqouMzgO9jPviGVOZrDiHG/7iGg=';
+      content="default-src 'none'; script-src 'sha256-nT8Inebuwj7JmHGZx4PJBCZmxwDQphe9lpeZXsjh0VE=';
                style-src 'sha256-H0O6Z8OCx2XrSRzgcphS4dqumDO6Z7EyOf9qhZRcEIs='; img-src 'self' data: blob:;
                connect-src *; base-uri 'none'; form-action 'none'">
 <style>
@@ -955,7 +955,8 @@ async function checkPhoto(file, expectedSha256) {
 const RECORD_FIELDS = [
   "version", "checkpoint_id", "photo_sha256", "ticket_id", "wall_time_ms",
   "monotonic_ms", "boot_id", "boot_count", "gnss_time_ms", "location_simulated",
-  "sensor_hash", "depth_hash", "depth_present", "flags",
+  "sensor_hash", "depth_hash", "depth_present", "gnss_fix_hash", "clip_sha256",
+  "flags",
 ];
 const TICKET_FIELDS = [
   "version", "record_id", "checkpoint_list_sha256", "actor_id",
