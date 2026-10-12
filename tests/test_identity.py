@@ -79,15 +79,18 @@ class FakeStripe:
     """Stands in for stripe.identity.VerificationSession."""
 
     def __init__(self):
-        self.status, self.created = "requires_input", 0
+        self.status, self.created, self.keys = "requires_input", 0, []
 
-    def create(self, **kw):
+    def create(self, api_key=None, **kw):
+        self.keys.append(api_key)
         self.created += 1
         assert kw["type"] == "document"
         assert kw["options"]["document"] == {"require_matching_selfie": True, "require_live_capture": True}
         return SimpleNamespace(id=f"vs_{self.created}", status="requires_input", url=f"https://verify.stripe.com/s/vs_{self.created}")
 
-    def retrieve(self, sid): return SimpleNamespace(id=sid, status=self.status)
+    def retrieve(self, sid, api_key=None):
+        self.keys.append(api_key)
+        return SimpleNamespace(id=sid, status=self.status)
 
 
 def _pem(key):
@@ -332,3 +335,79 @@ def test_the_limit_is_per_account_and_ignores_old_sessions(env):
     assert env.client.post("/identity/start", json=CONSENT, headers=AUTH).status_code == 200  # old ones do not count
     env.db.user_id = "user-2"
     assert env.client.post("/identity/start", json=CONSENT, headers=AUTH).status_code == 200  # another account is unaffected
+
+
+# ------------------------------------------------------------- test mode --
+TEST_KEY = "sk_test_abc123"
+
+
+def _owner(env, user="user-1", key=TEST_KEY, allow="user-1"):
+    env.monkeypatch.setenv("STRIPE_TEST_SECRET_KEY", key)
+    env.monkeypatch.setenv("IDENTITY_TEST_MODE_USER_IDS", allow)
+    env.db.user_id = user
+
+
+def test_live_is_the_default_and_uses_no_special_key(env):
+    env.client.post("/identity/start", json=CONSENT, headers=AUTH)
+    assert env.stripe.keys == [None]
+    assert "livemode" not in env.db.tables["shield_identity_sessions"][0]
+
+
+def test_an_allowlisted_account_runs_in_test_mode_with_the_test_key(env):
+    _owner(env)
+    env.client.post("/identity/start", json=CONSENT, headers=AUTH)
+    assert env.stripe.keys == [TEST_KEY]
+    assert env.db.tables["shield_identity_sessions"][0]["livemode"] is False
+    env.client.get("/identity/status", headers=AUTH)
+    assert env.stripe.keys == [TEST_KEY, TEST_KEY]  # status asks Stripe with the matching key
+
+
+def test_other_accounts_stay_live_even_when_test_mode_is_configured(env):
+    _owner(env, user="someone-else")
+    env.client.post("/identity/start", json=CONSENT, headers=AUTH)
+    assert env.stripe.keys == [None]
+    assert "livemode" not in env.db.tables["shield_identity_sessions"][0]
+
+
+@pytest.mark.parametrize("key", ["sk_live_abc123", "", "whsec_nope"])
+def test_a_key_that_is_not_a_test_key_is_never_used_for_test_mode(env, key):
+    _owner(env, key=key)
+    env.client.post("/identity/start", json=CONSENT, headers=AUTH)
+    assert env.stripe.keys == [None]  # the allowlisted owner falls back to a live check, never to a live key as "test"
+
+
+def test_an_empty_allowlist_means_nobody_gets_test_mode(env):
+    _owner(env, allow=" , ")
+    env.client.post("/identity/start", json=CONSENT, headers=AUTH)
+    assert env.stripe.keys == [None]
+
+
+def test_a_test_session_is_refused_if_test_mode_is_switched_off(env):
+    _owner(env)
+    env.client.post("/identity/start", json=CONSENT, headers=AUTH)
+    env.monkeypatch.delenv("STRIPE_TEST_SECRET_KEY")
+    r = env.client.get("/identity/status", headers=AUTH)
+    assert r.status_code == 502 and r.get_json()["error"] == "id-check-unavailable"
+
+
+def test_a_test_receipt_is_signed_and_marked_and_a_live_receipt_is_not(env):
+    _owner(env)
+    sid = start_and_verify(env)
+    att = env.client.post("/identity/note", json=Device().note(sid), headers=AUTH).get_json()
+    key = env.client.get("/identity/receipt-key").get_json()["publicKey"]
+    assert core.verify_receipt(att["receipt"], key) == (True, "ok")
+    assert att["receipt"]["payload"]["testMode"] is True
+    # The mark is inside the signature: removing it breaks the receipt.
+    stripped = {"payload": {k: v for k, v in att["receipt"]["payload"].items() if k != "testMode"}, "signature": att["receipt"]["signature"]}
+    assert core.verify_receipt(stripped, key)[0] is False
+    # A live receipt carries no such field at all, so live receipts are unchanged.
+    live = core.make_receipt(env.receipt_key, attestation_id="a", note_sha256="b" * 64, device_seal_id="X", session_id="vs_1")
+    assert "testMode" not in live["payload"]
+
+
+def test_a_test_check_never_reads_as_verified_to_a_third_party(env):
+    _owner(env)
+    sid = start_and_verify(env)
+    att = env.client.post("/identity/note", json=Device().note(sid), headers=AUTH).get_json()
+    pub = env.client.get(f"/identity/attestations/{att['attestationId']}").get_json()
+    assert pub["verified"] is False and pub["testMode"] is True

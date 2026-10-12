@@ -82,6 +82,12 @@ Files deleted: `escrow.py` (complete payment state machine, no longer used).
 - `DB_PATH` — SQLite file path (Render disk-backed).
 - `PERMITSTACK_KEY`, `SAM_API_KEY`, `ZIPRECRUITER_KEY` — lead source APIs.
 - `ANTHROPIC_API_KEY` — used only by `/api/chat`.
+- `IDENTITY_RECEIPT_KEY` — EC P-256 private key (PEM) that signs ID-check receipts for the Shield app. Its public half is pinned in
+  `shield-app/src/identity/trust.ts`. Without it `/identity/note` refuses (503).
+- `STRIPE_TEST_SECRET_KEY`, `IDENTITY_TEST_MODE_USER_IDS` — optional owner-only Stripe test mode for the ID check, for an owner with no
+  ID to use. Accounts listed in the second (comma-separated Supabase user ids) run the check against Stripe test mode with the first
+  (must be `sk_test_`/`rk_test_`). Their receipt carries a signed `testMode: true`; the app and the public lookup never treat it as a
+  confirmed real check. Everyone else is always live.
 - `SECRET_KEY` — signs auth tokens and salts password hashes. **Must** be
   set explicitly in Render; the in-code fallback (`'tradedeck-secret-2026'`)
   is not safe for production and is visible to anyone reading this repo.
