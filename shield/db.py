@@ -132,6 +132,29 @@ def find_receipt_by_phone_head(tenant_id, record_id, phone_chain_head):
     return rows[0] if rows else None
 
 
+def _countersigns():
+    """Service-role access to shield.capture_countersigns. RLS does not apply."""
+    return db().schema(SCHEMA).table("capture_countersigns")
+
+
+def insert_countersign(row):
+    """Insert one second-phone signature. Does not update an existing row."""
+    if not isinstance(row, dict):
+        raise TypeError("countersign row must be an object")
+    return _countersigns().insert(dict(row)).execute()
+
+
+def find_countersign(tenant_id, record_hash):
+    """The countersignature for one record hash in one tenant, or None."""
+    res = (_countersigns().select("*")
+           .eq("tenant_id", tenant_id)
+           .eq("record_hash", record_hash)
+           .limit(1)
+           .execute())
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
 def find_tsa_token(tenant_id, receipt_id):
     """The timestamp row for one receipt in one tenant, or None."""
     res = (_tsa_tokens().select("*")

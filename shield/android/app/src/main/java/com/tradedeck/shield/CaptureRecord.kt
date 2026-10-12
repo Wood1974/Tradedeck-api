@@ -27,6 +27,9 @@ class CaptureRecordBody(
     val sensorHash: String? = null,
     val depthHash: String? = null,
     val depthPresent: Boolean? = null,
+    /** Set only when the tenant opted in. Null leaves the field out of the record. */
+    val gnssFixHash: String? = null,
+    val clipSha256: String? = null,
 ) {
     fun canon(): Canon {
         val fields = linkedMapOf<String, Canon>(
@@ -44,6 +47,8 @@ class CaptureRecordBody(
         sensorHash?.let { fields["sensor_hash"] = Canon.Str(it) }
         depthHash?.let { fields["depth_hash"] = Canon.Str(it) }
         depthPresent?.let { fields["depth_present"] = Canon.Bool(it) }
+        gnssFixHash?.let { fields["gnss_fix_hash"] = Canon.Str(it) }
+        clipSha256?.let { fields["clip_sha256"] = Canon.Str(it) }
         return Canon.Obj(fields)
     }
 
@@ -72,6 +77,8 @@ class CaptureRecordBody(
         sensorHash?.let { body.put("sensor_hash", it) }
         depthHash?.let { body.put("depth_hash", it) }
         depthPresent?.let { body.put("depth_present", it) }
+        gnssFixHash?.let { body.put("gnss_fix_hash", it) }
+        clipSha256?.let { body.put("clip_sha256", it) }
         return body
     }
 }

@@ -87,6 +87,8 @@ RECORD_FIELDS = (
     "sensor_hash",
     "depth_hash",
     "depth_present",
+    "gnss_fix_hash",
+    "clip_sha256",
     "flags",
 )
 
@@ -116,7 +118,10 @@ _NON_NEGATIVE_INTS = frozenset({
     "flags",
 })
 _BOOL_FIELDS = frozenset({"location_simulated", "depth_present"})
-_HEX_FIELDS = frozenset({"photo_sha256", "sensor_hash", "depth_hash"})
+_HEX_FIELDS = frozenset({
+    "photo_sha256", "sensor_hash", "depth_hash",
+    "gnss_fix_hash", "clip_sha256",
+})
 _TEXT_FIELDS = frozenset({"checkpoint_id", "ticket_id", "boot_id"})
 
 # Screen captured, debugger, mock location, root traces. Higher bits are
@@ -323,7 +328,8 @@ def link(record: dict, prev_hash: str) -> str:
 def build(*, checkpoint_id, photo_sha256, ticket_id, wall_time_ms,
           monotonic_ms, flags=0, boot_id=None, boot_count=None,
           gnss_time_ms=None, location_simulated=None, sensor_hash=None,
-          depth_hash=None, depth_present=None, version=RECORD_VERSION) -> dict:
+          depth_hash=None, depth_present=None, gnss_fix_hash=None,
+          clip_sha256=None, version=RECORD_VERSION) -> dict:
     """A record dict with nulls removed, validated, not yet linked.
 
     ``flags`` defaults to 0 because "no flag bits set" is a real statement
@@ -345,6 +351,8 @@ def build(*, checkpoint_id, photo_sha256, ticket_id, wall_time_ms,
         "sensor_hash": sensor_hash,
         "depth_hash": depth_hash,
         "depth_present": depth_present,
+        "gnss_fix_hash": gnss_fix_hash,
+        "clip_sha256": clip_sha256,
         "flags": flags,
     }
     record = {k: v for k, v in record.items() if v is not None}

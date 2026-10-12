@@ -252,6 +252,8 @@ not cover.
 | `sensor_hash` | string | no | Lowercase hex SHA-256 of the sensor snapshot. Omit when no snapshot was taken |
 | `depth_hash` | string | no | Lowercase hex SHA-256 of the depth payload |
 | `depth_present` | boolean | no | `true` only together with `depth_hash`. `false` means the phone reported that depth was not available |
+| `gnss_fix_hash` | string | no | Lowercase hex SHA-256 of a short GNSS fix (time, satellite count, accuracy in millimetres, mock flag). Omit when the tenant has not opted in or the phone has no fix. Not required for SEALED |
+| `clip_sha256` | string | no | Lowercase hex SHA-256 of an optional one-second clip stored under a separate bucket path. Omit when there is no clip. Not required for SEALED |
 | `flags` | number | yes | Bitfield below. `0` means no bits set, and it is not the same as omitting the field |
 
 `prev_hash` and `record_hash` travel with the record and are **not** in the
