@@ -46,6 +46,7 @@ const money = (cents) => `$${(cents / 100).toLocaleString("en-US",
 
 let loadedPackage = null;
 let suppliedPhoto = null;
+let suppliedAnchors = null;
 
 function sealClass(label) {
   if (label === "SEALED") return "good";
@@ -95,6 +96,7 @@ function renderVerification({ verifiable, chain, findings, notes }, seal) {
   }
 
   const lying = findings.filter((f) => f.severity === "lying");
+  const locked = findings.filter((f) => f.kind === "locked");
   const anchor = findings.filter((f) => f.kind === "anchor");
   const noteHtml = (notes || []).map((note) =>
     `<p class="caveat">${esc(note)}</p>`).join("");
@@ -108,6 +110,10 @@ function renderVerification({ verifiable, chain, findings, notes }, seal) {
     cls = "bad";
     head = `Chain does not verify — entry ${chain.brokeAt + 1} of ${chain.entries}`;
     detail = `<p>${esc(chain.reason)}</p>`;
+  } else if (locked.length) {
+    cls = "bad";
+    head = "The chain links, but there is no locked anchor for this head";
+    detail = locked.map((f) => `<p>${esc(f.text)}</p>`).join("");
   } else if (anchor.length) {
     cls = "bad";
     head = "The chain links, but the receipt does not cover this head";
@@ -168,9 +174,12 @@ async function runVerification() {
   if (!loadedPackage) return;
   try {
     const expectHead = $("expectHead").value.trim() || null;
-    const custody = await verifyPackage(loadedPackage, { expectHead });
+    const custody = await verifyPackage(loadedPackage, {
+      expectHead, anchors: suppliedAnchors,
+    });
     const seal = await judgeOfflineSeal(loadedPackage, {
       files: suppliedPhoto ? [{ bytes: suppliedPhoto }] : undefined,
+      anchors: suppliedAnchors,
     });
     renderVerification(custody, seal);
   } catch (err) {
@@ -194,6 +203,23 @@ $("packageFile").addEventListener("change", (e) => {
   if (e.target.files[0]) loadPackage(e.target.files[0]);
 });
 $("expectHead").addEventListener("change", runVerification);
+$("anchorsFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) {
+    suppliedAnchors = null;
+    $("anchorsName").textContent = "No anchor file loaded.";
+    return;
+  }
+  try {
+    const parsed = JSON.parse(await file.text());
+    suppliedAnchors = Array.isArray(parsed) ? parsed : (parsed.anchors || []);
+    $("anchorsName").textContent = file.name;
+  } catch {
+    suppliedAnchors = null;
+    $("anchorsName").textContent = "That file is not anchor JSON.";
+  }
+  await runVerification();
+});
 
 $("photoFile").addEventListener("change", async (e) => {
   const file = e.target.files[0];

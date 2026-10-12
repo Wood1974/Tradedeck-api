@@ -312,7 +312,7 @@ class TestTheTwoJudgesAgree:
         package, roots = build_package(with_token=True)
         got = _agree(package, roots, "SEALED")
         assert got["flags"] == []
-        assert got["notes"] == []
+        assert got["notes"] == ["anchor absent"]
         assert package["chain_version"] == 2
 
     def test_a_missing_timestamp_is_not_forged(self):
@@ -406,7 +406,7 @@ class TestTheTwoJudgesAgree:
         package = json.loads(open(path).read())
         roots = offline_seal.pinned_roots()
         got = _agree(package, roots, "SEALED")
-        assert got["notes"] == []
+        assert got["notes"] == ["anchor absent"]
 
     def test_each_offline_photo_is_sealed_to_its_hash_and_checkpoint(self):
         package, roots = build_package(photos=2)

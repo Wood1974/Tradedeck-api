@@ -545,7 +545,224 @@ def _check_anchor(manifest, chain, job_id):
     return problems, notes
 
 
-def verify_package(manifest, file_bytes=None, expect_head=None):
+_LOCK_SKEW_SECONDS = 300
+_ANCHORED_EVENTS = frozenset({
+    "uploaded", "offline_batch", "superseded", "integrity_flag",
+})
+
+
+def _civil_unix(year, month, day, hour, minute, second, micro=0):
+    """Seconds since the Unix epoch. No datetime import: this file stays stdlib-minimal."""
+    y = year
+    m = month
+    if m <= 2:
+        y -= 1
+        m += 9
+    else:
+        m -= 3
+    era = (y if y >= 0 else y - 399) // 400
+    yoe = y - era * 400
+    doy = (153 * m + 2) // 5 + day - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    days = era * 146097 + doe - 719468
+    return days * 86400 + hour * 3600 + minute * 60 + second + micro / 1000000.0
+
+
+def _lock_object_key(anchor):
+    key = anchor.get("object_key")
+    if isinstance(key, str) and key:
+        return key
+    record = anchor.get("record_id") or "record"
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(record))
+    seq = anchor.get("seq")
+    try:
+        n = int(seq)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 0:
+        n = 0
+    return "anchors/%s/%08d-%s.json" % (safe, n, anchor.get("head_hash") or "")
+
+
+def combine_locked_anchors(bundled, extra):
+    """Union by object key. A second, different body is a problem.
+
+    The first body stays. A phone backup does not replace it.
+    """
+    problems = []
+    chosen = []
+    seen = {}
+    for item in list(bundled or []) + list(extra or []):
+        if not isinstance(item, dict):
+            continue
+        key = _lock_object_key(item)
+        proof = (item.get("record_id"), item.get("seq"), item.get("head_hash"),
+                 item.get("token_b64"))
+        if key in seen:
+            if seen[key] != proof:
+                problems.append("A phone copy does not match the locked anchor.")
+            continue
+        seen[key] = proof
+        chosen.append(item)
+    return chosen, problems
+
+
+def _lock_parse_iso(value):
+    """ISO-8601 with a Z or numeric offset, as a Unix second count."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) < 19:
+        return None
+    if text[4] != "-" or text[7] != "-" or text[10] not in "Tt" or text[13] != ":" or text[16] != ":":
+        return None
+    try:
+        year = int(text[0:4])
+        month = int(text[5:7])
+        day = int(text[8:10])
+        hour = int(text[11:13])
+        minute = int(text[14:16])
+        second = int(text[17:19])
+    except ValueError:
+        return None
+    micro = 0
+    rest = text[19:]
+    if rest.startswith("."):
+        frac = []
+        for ch in rest[1:]:
+            if not ch.isdigit():
+                break
+            frac.append(ch)
+        if not frac or len(frac) > 12:
+            return None
+        micro = int(("".join(frac) + "000000")[:6])
+        rest = rest[1 + len(frac):]
+    offset = 0
+    if rest in ("Z", "z", ""):
+        offset = 0
+    elif len(rest) >= 6 and rest[0] in "+-" and rest[3] == ":":
+        try:
+            sign = 1 if rest[0] == "+" else -1
+            offset = sign * (int(rest[1:3]) * 3600 + int(rest[4:6]) * 60)
+        except ValueError:
+            return None
+    else:
+        return None
+    if not (1 <= month <= 12 and 1 <= day <= 31 and 0 <= hour <= 23
+            and 0 <= minute <= 59 and 0 <= second <= 60):
+        return None
+    return _civil_unix(year, month, day, hour, minute, second, micro) - offset
+
+
+def _lock_parse_gen(value):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    body = value[:-1]
+    frac = ""
+    if "." in body:
+        body, frac = body.split(".", 1)
+        if not frac.isdigit() or len(frac) > 12:
+            return None
+    if len(body) != 14 or not body.isdigit():
+        return None
+    year = int(body[0:4])
+    month = int(body[4:6])
+    day = int(body[6:8])
+    hour = int(body[8:10])
+    minute = int(body[10:12])
+    second = int(body[12:14])
+    micro = int((frac + "000000")[:6]) if frac else 0
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return _civil_unix(year, month, day, hour, minute, second, micro)
+
+
+def _lock_token_covers(token_b64, head_hash):
+    raw = _b64decode(token_b64) if isinstance(token_b64, str) else None
+    try:
+        expected = bytes.fromhex(head_hash) if isinstance(head_hash, str) else None
+    except ValueError:
+        expected = None
+    if raw is None or expected is None or len(expected) != 32:
+        return False
+    try:
+        imprint = _timestamp_imprint(raw)
+    except ValueError:
+        return False
+    return imprint == expected
+
+
+def _lock_time_fits(anchor, entry):
+    recorded = _lock_parse_iso(entry.get("recorded_at") if isinstance(entry, dict) else None)
+    stamped = _lock_parse_gen(anchor.get("gen_time")) or _lock_parse_iso(anchor.get("anchored_at"))
+    if recorded is None or stamped is None:
+        return False
+    return stamped >= recorded - _LOCK_SKEW_SECONDS
+
+
+def _check_locked(entries, anchors):
+    """Locked-anchor problems. An empty set is the note anchor absent.
+
+    This is a separate copy of the rule in anchor_lock.assess_anchors. The
+    independent verifier does not import that module. The two are compared
+    by test_anchor_lock.
+    """
+    problems = []
+    notes = []
+    locked = []
+    for anchor in anchors or []:
+        if not isinstance(anchor, dict):
+            continue
+        if anchor.get("timestamp_status") not in (None, "present"):
+            continue
+        if not anchor.get("token_b64") or not anchor.get("head_hash"):
+            continue
+        locked.append(anchor)
+    if not locked:
+        notes.append("anchor absent")
+        return problems, notes
+    index_of = {}
+    for index, entry in enumerate(entries or []):
+        if isinstance(entry, dict) and entry.get("entry_hash"):
+            index_of.setdefault(entry["entry_hash"], index)
+    missed = False
+    matched = 0
+    for anchor in locked:
+        head = anchor.get("head_hash")
+        idx = index_of.get(head)
+        seq = anchor.get("seq")
+        if isinstance(seq, bool) or not isinstance(seq, int) or idx is None or seq != idx:
+            missed = True
+            continue
+        entry = entries[idx]
+        if not _lock_token_covers(anchor.get("token_b64"), head):
+            problems.append("The locked anchor token does not cover this head.")
+            continue
+        if not _lock_time_fits(anchor, entry):
+            problems.append("The locked anchor time does not fit this entry.")
+            continue
+        receipt = anchor.get("receipt")
+        if isinstance(receipt, dict):
+            signed = receipt.get("signed") if isinstance(receipt.get("signed"), dict) else receipt
+            claimed = signed.get("head_hash") if isinstance(signed, dict) else None
+            if claimed and claimed != head:
+                problems.append("The locked anchor receipt is not over this head.")
+                continue
+        matched += 1
+    if missed:
+        problems.append("A locked anchor names a head that is not in this chain.")
+    head = None
+    head_type = None
+    if entries and isinstance(entries[-1], dict):
+        head = entries[-1].get("entry_hash")
+        head_type = entries[-1].get("event_type")
+    covered = any(anchor.get("head_hash") == head for anchor in locked)
+    if head and not covered and (head_type in _ANCHORED_EVENTS or matched == 0):
+        problems.append("no locked anchor for this head")
+    return problems, notes
+
+
+def verify_package(manifest, file_bytes=None, expect_head=None, anchors=None):
     """Everything checkable from a manifest, plus any files supplied.
 
     `expect_head` is a head hash you were given EARLIER, from your own records
@@ -619,6 +836,15 @@ def verify_package(manifest, file_bytes=None, expect_head=None):
     anchor_problems, anchor_notes = _check_anchor(manifest, chain, job_id)
     problems.extend(anchor_problems)
     notes.extend(anchor_notes)
+    bundled = manifest.get("locked_anchors")
+    if not isinstance(bundled, list):
+        bundled = []
+    chosen, copy_problems = combine_locked_anchors(bundled, anchors)
+    problems.extend(copy_problems)
+    locked_problems, locked_notes = _check_locked(
+        entries if isinstance(entries, list) else [], chosen)
+    problems.extend(locked_problems)
+    notes.extend(locked_notes)
 
     files = verify_files(manifest, file_bytes or {})
     for f in files:
@@ -651,14 +877,31 @@ def main(argv=None):
     ap.add_argument("--expect-head", dest="expect_head",
                     help="the head hash you were given earlier, from your own "
                          "records — this is what detects truncation")
+    ap.add_argument("--anchors",
+                    help="JSON file of locked anchors, from `python -m "
+                         "anchor_lock export` or a phone backup. Unioned with "
+                         "locked_anchors in the package. Two bodies for one "
+                         "object key fail closed. The package list alone is "
+                         "not the deciding set: the exporter can omit an object.")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
 
     with open(args.manifest) as fh:
         manifest = json.load(fh)
+    extra_anchors = None
+    if args.anchors:
+        with open(args.anchors) as fh:
+            loaded = json.load(fh)
+        if isinstance(loaded, dict):
+            extra_anchors = loaded.get("anchors")
+        elif isinstance(loaded, list):
+            extra_anchors = loaded
+        else:
+            extra_anchors = []
     report = verify_package(manifest,
                             _load_files(args.files) if args.files else None,
-                            expect_head=args.expect_head)
+                            expect_head=args.expect_head,
+                            anchors=extra_anchors)
 
     if args.json:
         print(json.dumps(report, indent=2))

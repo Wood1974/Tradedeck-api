@@ -440,7 +440,7 @@ export async function verifyChain(entries, shieldJobId, { expectHead = null } = 
  * itself. The spec is explicit that this is a more serious finding than a
  * broken chain, so it is reported separately rather than folded in.
  */
-export async function verifyPackage(manifest, { expectHead = null } = {}) {
+export async function verifyPackage(manifest, { expectHead = null, anchors = null } = {}) {
   // An evidence manifest names the job. The record package from the API
   // names the record, and the chain was sealed under that id. `custody` on
   // a manifest is an object; on the API package it is the entry list.
@@ -500,7 +500,9 @@ export async function verifyPackage(manifest, { expectHead = null } = {}) {
 
   const anchor = await checkAnchor(manifest, chain.headHash, jobId);
   findings.push(...anchor.findings);
-  return { verifiable: true, chain, findings, notes: anchor.notes };
+  const locked = checkLockedAnchors(entries, manifest, anchors);
+  findings.push(...locked.findings);
+  return { verifiable: true, chain, findings, notes: anchor.notes.concat(locked.notes) };
 }
 
 const ANCHOR_RECEIPT_KEYS = ["accepted_at_ms", "head_hash", "record_id", "version"];
@@ -794,6 +796,159 @@ async function checkAnchor(manifest, headHash, jobId) {
     findings.push({
       kind: "anchor", severity: "fatal",
       text: "The timestamp token could not be read.",
+    });
+  }
+  return { findings, notes };
+}
+
+const LOCKED_EVENTS = {
+  uploaded: true, offline_batch: true, superseded: true, integrity_flag: true,
+};
+const LOCK_SKEW_MS = 5 * 60 * 1000;
+
+function lockParseIso(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const when = Date.parse(value.trim());
+  return Number.isNaN(when) ? null : when;
+}
+
+function lockParseGen(value) {
+  if (typeof value !== "string" || !value.endsWith("Z")) return null;
+  let body = value.slice(0, -1);
+  let frac = "";
+  const dot = body.indexOf(".");
+  if (dot !== -1) {
+    frac = body.slice(dot + 1);
+    body = body.slice(0, dot);
+    if (!/^\d+$/.test(frac) || frac.length > 12) return null;
+  }
+  if (!/^\d{14}$/.test(body)) return null;
+  const iso = `${body.slice(0, 4)}-${body.slice(4, 6)}-${body.slice(6, 8)}T`
+    + `${body.slice(8, 10)}:${body.slice(10, 12)}:${body.slice(12, 14)}.`
+    + `${(frac + "000").slice(0, 3)}Z`;
+  const when = Date.parse(iso);
+  return Number.isNaN(when) ? null : when;
+}
+
+function lockTimeFits(anchor, entry) {
+  const recorded = lockParseIso(entry && entry.recorded_at);
+  const stamped = lockParseGen(anchor.gen_time);
+  const when = stamped === null ? lockParseIso(anchor.anchored_at) : stamped;
+  if (recorded === null || when === null) return false;
+  return when >= recorded - LOCK_SKEW_MS;
+}
+
+function lockTokenCovers(tokenB64, head) {
+  const raw = anchorB64(tokenB64);
+  const expected = anchorHex(head);
+  if (!raw || !expected) return false;
+  try {
+    return sameBytes(timestampImprint(raw), expected);
+  } catch {
+    return false;
+  }
+}
+
+function lockUnionAnchors(bundled, extra) {
+  const problems = [];
+  const chosen = [];
+  const seen = new Map();
+  const items = [];
+  if (Array.isArray(bundled)) items.push(...bundled);
+  if (Array.isArray(extra)) items.push(...extra);
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const key = item.object_key
+      || `anchors/${item.record_id}/${String(item.seq).padStart(8, "0")}-${item.head_hash}`;
+    const proof = `${item.record_id}|${item.seq}|${item.head_hash}|${item.token_b64}`;
+    if (seen.has(key)) {
+      if (seen.get(key) !== proof) problems.push("A phone copy does not match the locked anchor.");
+      continue;
+    }
+    seen.set(key, proof);
+    chosen.push(item);
+  }
+  return { chosen, problems };
+}
+
+/**
+ * Each locked head has to still be in the chain, and the token has to cover
+ * that exact head. No anchors is the note "anchor absent", not a failure.
+ * A rewritten head that the locked set does not name is
+ * "no locked anchor for this head".
+ */
+export function checkLockedAnchors(entries, manifest, extra) {
+  const findings = [];
+  const notes = [];
+  const bundled = Array.isArray(manifest?.locked_anchors) ? manifest.locked_anchors : [];
+  const more = Array.isArray(extra) ? extra : (Array.isArray(extra?.anchors) ? extra.anchors : []);
+  const union = lockUnionAnchors(bundled, more);
+  for (const text of union.problems) {
+    findings.push({ kind: "locked", severity: "fatal", text });
+  }
+  const locked = union.chosen.filter((anchor) => anchor
+    && anchor.token_b64 && anchor.head_hash
+    && (anchor.timestamp_status == null || anchor.timestamp_status === "present"));
+  if (!locked.length) {
+    notes.push("anchor absent");
+    return { findings, notes };
+  }
+  const indexOf = new Map();
+  (entries || []).forEach((entry, index) => {
+    if (entry && entry.entry_hash && !indexOf.has(entry.entry_hash)) {
+      indexOf.set(entry.entry_hash, index);
+    }
+  });
+  let missed = false;
+  let matched = 0;
+  for (const anchor of locked) {
+    const idx = indexOf.get(anchor.head_hash);
+    const seq = anchor.seq;
+    if (!Number.isInteger(seq) || idx === undefined || seq !== idx) {
+      missed = true;
+      continue;
+    }
+    const entry = entries[idx];
+    if (!lockTokenCovers(anchor.token_b64, anchor.head_hash)) {
+      findings.push({
+        kind: "locked", severity: "fatal",
+        text: "The locked anchor token does not cover this head.",
+      });
+      continue;
+    }
+    if (!lockTimeFits(anchor, entry)) {
+      findings.push({
+        kind: "locked", severity: "fatal",
+        text: "The locked anchor time does not fit this entry.",
+      });
+      continue;
+    }
+    const receipt = anchor.receipt;
+    if (receipt && typeof receipt === "object") {
+      const signed = receipt.signed && typeof receipt.signed === "object" ? receipt.signed : receipt;
+      if (signed.head_hash && signed.head_hash !== anchor.head_hash) {
+        findings.push({
+          kind: "locked", severity: "fatal",
+          text: "The locked anchor receipt is not over this head.",
+        });
+        continue;
+      }
+    }
+    matched += 1;
+  }
+  if (missed) {
+    findings.push({
+      kind: "locked", severity: "fatal",
+      text: "A locked anchor names a head that is not in this chain.",
+    });
+  }
+  const tip = entries && entries.length ? entries[entries.length - 1] : null;
+  const head = tip && tip.entry_hash;
+  const covered = locked.some((anchor) => anchor.head_hash === head);
+  if (head && !covered && (LOCKED_EVENTS[tip.event_type] || matched === 0)) {
+    findings.push({
+      kind: "locked", severity: "fatal",
+      text: "no locked anchor for this head",
     });
   }
   return { findings, notes };

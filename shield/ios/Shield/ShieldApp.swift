@@ -4,9 +4,10 @@
 //
 //  The credential lives in the Keychain, not in UserDefaults: a token in
 //  UserDefaults is in a plist inside the app container, readable from a
-//  backup. Nothing else is persisted — no photographs, no hashes, no record
-//  cache. The evidence lives on the server, and a copy on the phone would be
-//  a second version of the truth that nobody is chaining.
+//  backup. Photographs are not persisted. The one other thing this app
+//  writes is a backup of the locked anchor the server returns. That file
+//  does not outrank the object in S3. A verifier that sees both and finds
+//  they differ fails closed. The phone copy never replaces the locked one.
 
 import Security
 import SwiftUI

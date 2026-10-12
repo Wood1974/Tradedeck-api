@@ -19,7 +19,7 @@
   have to change it, which is the point.
 -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-YPIWtxJ19iVn82GmJj09VDpnX7NthdCVrkAgPDvhZwo=';
+      content="default-src 'none'; script-src 'sha256-DEsFv4XR/QliFhuQfT8TYT2xSSqy6MG6CPeZ3aGzopU=';
                style-src 'sha256-H0O6Z8OCx2XrSRzgcphS4dqumDO6Z7EyOf9qhZRcEIs='; img-src 'self' data: blob:;
                connect-src *; base-uri 'none'; form-action 'none'">
 <style>
@@ -210,6 +210,12 @@ footer {
     <p><strong>Drop the package JSON here</strong>, or click to choose a file.</p>
     <p class="muted" id="fileName">No file loaded.</p>
   </div>
+
+  <label class="field">
+    <span>Locked anchors <em>(optional file from the bucket listing, or the copy the phone kept)</em></span>
+    <input type="file" id="anchorsFile" accept=".json,application/json">
+  </label>
+  <p class="muted small" id="anchorsName">No anchor file loaded. Anchors inside the package are checked. A package with none says anchor absent, which is not a failure. The anchors in the package alone do not catch an export that left an older object out.</p>
 
   <label class="field">
     <span>Head hash you were given earlier <em>(optional, but it is the only thing that detects deletion)</em></span>
@@ -865,7 +871,7 @@ async function verifyChain(entries, shieldJobId, { expectHead = null } = {}) {
  * itself. The spec is explicit that this is a more serious finding than a
  * broken chain, so it is reported separately rather than folded in.
  */
-async function verifyPackage(manifest, { expectHead = null } = {}) {
+async function verifyPackage(manifest, { expectHead = null, anchors = null } = {}) {
   // An evidence manifest names the job. The record package from the API
   // names the record, and the chain was sealed under that id. `custody` on
   // a manifest is an object; on the API package it is the entry list.
@@ -925,7 +931,9 @@ async function verifyPackage(manifest, { expectHead = null } = {}) {
 
   const anchor = await checkAnchor(manifest, chain.headHash, jobId);
   findings.push(...anchor.findings);
-  return { verifiable: true, chain, findings, notes: anchor.notes };
+  const locked = checkLockedAnchors(entries, manifest, anchors);
+  findings.push(...locked.findings);
+  return { verifiable: true, chain, findings, notes: anchor.notes.concat(locked.notes) };
 }
 
 const ANCHOR_RECEIPT_KEYS = ["accepted_at_ms", "head_hash", "record_id", "version"];
@@ -1219,6 +1227,159 @@ async function checkAnchor(manifest, headHash, jobId) {
     findings.push({
       kind: "anchor", severity: "fatal",
       text: "The timestamp token could not be read.",
+    });
+  }
+  return { findings, notes };
+}
+
+const LOCKED_EVENTS = {
+  uploaded: true, offline_batch: true, superseded: true, integrity_flag: true,
+};
+const LOCK_SKEW_MS = 5 * 60 * 1000;
+
+function lockParseIso(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const when = Date.parse(value.trim());
+  return Number.isNaN(when) ? null : when;
+}
+
+function lockParseGen(value) {
+  if (typeof value !== "string" || !value.endsWith("Z")) return null;
+  let body = value.slice(0, -1);
+  let frac = "";
+  const dot = body.indexOf(".");
+  if (dot !== -1) {
+    frac = body.slice(dot + 1);
+    body = body.slice(0, dot);
+    if (!/^\d+$/.test(frac) || frac.length > 12) return null;
+  }
+  if (!/^\d{14}$/.test(body)) return null;
+  const iso = `${body.slice(0, 4)}-${body.slice(4, 6)}-${body.slice(6, 8)}T`
+    + `${body.slice(8, 10)}:${body.slice(10, 12)}:${body.slice(12, 14)}.`
+    + `${(frac + "000").slice(0, 3)}Z`;
+  const when = Date.parse(iso);
+  return Number.isNaN(when) ? null : when;
+}
+
+function lockTimeFits(anchor, entry) {
+  const recorded = lockParseIso(entry && entry.recorded_at);
+  const stamped = lockParseGen(anchor.gen_time);
+  const when = stamped === null ? lockParseIso(anchor.anchored_at) : stamped;
+  if (recorded === null || when === null) return false;
+  return when >= recorded - LOCK_SKEW_MS;
+}
+
+function lockTokenCovers(tokenB64, head) {
+  const raw = anchorB64(tokenB64);
+  const expected = anchorHex(head);
+  if (!raw || !expected) return false;
+  try {
+    return sameBytes(timestampImprint(raw), expected);
+  } catch {
+    return false;
+  }
+}
+
+function lockUnionAnchors(bundled, extra) {
+  const problems = [];
+  const chosen = [];
+  const seen = new Map();
+  const items = [];
+  if (Array.isArray(bundled)) items.push(...bundled);
+  if (Array.isArray(extra)) items.push(...extra);
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const key = item.object_key
+      || `anchors/${item.record_id}/${String(item.seq).padStart(8, "0")}-${item.head_hash}`;
+    const proof = `${item.record_id}|${item.seq}|${item.head_hash}|${item.token_b64}`;
+    if (seen.has(key)) {
+      if (seen.get(key) !== proof) problems.push("A phone copy does not match the locked anchor.");
+      continue;
+    }
+    seen.set(key, proof);
+    chosen.push(item);
+  }
+  return { chosen, problems };
+}
+
+/**
+ * Each locked head has to still be in the chain, and the token has to cover
+ * that exact head. No anchors is the note "anchor absent", not a failure.
+ * A rewritten head that the locked set does not name is
+ * "no locked anchor for this head".
+ */
+function checkLockedAnchors(entries, manifest, extra) {
+  const findings = [];
+  const notes = [];
+  const bundled = Array.isArray(manifest?.locked_anchors) ? manifest.locked_anchors : [];
+  const more = Array.isArray(extra) ? extra : (Array.isArray(extra?.anchors) ? extra.anchors : []);
+  const union = lockUnionAnchors(bundled, more);
+  for (const text of union.problems) {
+    findings.push({ kind: "locked", severity: "fatal", text });
+  }
+  const locked = union.chosen.filter((anchor) => anchor
+    && anchor.token_b64 && anchor.head_hash
+    && (anchor.timestamp_status == null || anchor.timestamp_status === "present"));
+  if (!locked.length) {
+    notes.push("anchor absent");
+    return { findings, notes };
+  }
+  const indexOf = new Map();
+  (entries || []).forEach((entry, index) => {
+    if (entry && entry.entry_hash && !indexOf.has(entry.entry_hash)) {
+      indexOf.set(entry.entry_hash, index);
+    }
+  });
+  let missed = false;
+  let matched = 0;
+  for (const anchor of locked) {
+    const idx = indexOf.get(anchor.head_hash);
+    const seq = anchor.seq;
+    if (!Number.isInteger(seq) || idx === undefined || seq !== idx) {
+      missed = true;
+      continue;
+    }
+    const entry = entries[idx];
+    if (!lockTokenCovers(anchor.token_b64, anchor.head_hash)) {
+      findings.push({
+        kind: "locked", severity: "fatal",
+        text: "The locked anchor token does not cover this head.",
+      });
+      continue;
+    }
+    if (!lockTimeFits(anchor, entry)) {
+      findings.push({
+        kind: "locked", severity: "fatal",
+        text: "The locked anchor time does not fit this entry.",
+      });
+      continue;
+    }
+    const receipt = anchor.receipt;
+    if (receipt && typeof receipt === "object") {
+      const signed = receipt.signed && typeof receipt.signed === "object" ? receipt.signed : receipt;
+      if (signed.head_hash && signed.head_hash !== anchor.head_hash) {
+        findings.push({
+          kind: "locked", severity: "fatal",
+          text: "The locked anchor receipt is not over this head.",
+        });
+        continue;
+      }
+    }
+    matched += 1;
+  }
+  if (missed) {
+    findings.push({
+      kind: "locked", severity: "fatal",
+      text: "A locked anchor names a head that is not in this chain.",
+    });
+  }
+  const tip = entries && entries.length ? entries[entries.length - 1] : null;
+  const head = tip && tip.entry_hash;
+  const covered = locked.some((anchor) => anchor.head_hash === head);
+  if (head && !covered && (LOCKED_EVENTS[tip.event_type] || matched === 0)) {
+    findings.push({
+      kind: "locked", severity: "fatal",
+      text: "no locked anchor for this head",
     });
   }
   return { findings, notes };
@@ -2290,6 +2451,11 @@ async function judgeOfflineSeal(manifest, options = {}) {
   }
 
   await checkOfflinePhotos(manifest, entries, options.files, state);
+  const locked = checkLockedAnchors(entries, manifest, options.anchors);
+  if (locked.findings.length) {
+    worsen(state, TAMPERED, locked.findings.map((finding) => finding.text).join(" "));
+  }
+  state.anchorNote = locked.notes.indexOf("anchor absent") === -1 ? null : "anchor absent";
   const receipt = await checkReceipt(manifest, custodyHead, custodyIntact, records, state);
   const timestampAbsent = await checkTimestamp(
     manifest, custodyIntact ? custodyHead : receipt.claimed, rootsPem, state);
@@ -2306,6 +2472,7 @@ function finish(state, flags, timestampAbsent, receiptPresent) {
   if (timestampAbsent && receiptPresent && state.label !== ABSENT && state.label !== FORGED) {
     notes.push(ABSENT);
   }
+  if (state.anchorNote) notes.push(state.anchorNote);
   let detail = state.reasons.join(" ");
   if (!detail && state.label === SEALED) {
     detail = "The phone chain recomputes, the hardware signatures check, the ticket signature checks, the time rules pass, and the timestamp checks against the pinned certificates.";
@@ -2639,6 +2806,7 @@ const money = (cents) => `$${(cents / 100).toLocaleString("en-US",
 
 let loadedPackage = null;
 let suppliedPhoto = null;
+let suppliedAnchors = null;
 
 function sealClass(label) {
   if (label === "SEALED") return "good";
@@ -2688,6 +2856,7 @@ function renderVerification({ verifiable, chain, findings, notes }, seal) {
   }
 
   const lying = findings.filter((f) => f.severity === "lying");
+  const locked = findings.filter((f) => f.kind === "locked");
   const anchor = findings.filter((f) => f.kind === "anchor");
   const noteHtml = (notes || []).map((note) =>
     `<p class="caveat">${esc(note)}</p>`).join("");
@@ -2701,6 +2870,10 @@ function renderVerification({ verifiable, chain, findings, notes }, seal) {
     cls = "bad";
     head = `Chain does not verify — entry ${chain.brokeAt + 1} of ${chain.entries}`;
     detail = `<p>${esc(chain.reason)}</p>`;
+  } else if (locked.length) {
+    cls = "bad";
+    head = "The chain links, but there is no locked anchor for this head";
+    detail = locked.map((f) => `<p>${esc(f.text)}</p>`).join("");
   } else if (anchor.length) {
     cls = "bad";
     head = "The chain links, but the receipt does not cover this head";
@@ -2761,9 +2934,12 @@ async function runVerification() {
   if (!loadedPackage) return;
   try {
     const expectHead = $("expectHead").value.trim() || null;
-    const custody = await verifyPackage(loadedPackage, { expectHead });
+    const custody = await verifyPackage(loadedPackage, {
+      expectHead, anchors: suppliedAnchors,
+    });
     const seal = await judgeOfflineSeal(loadedPackage, {
       files: suppliedPhoto ? [{ bytes: suppliedPhoto }] : undefined,
+      anchors: suppliedAnchors,
     });
     renderVerification(custody, seal);
   } catch (err) {
@@ -2787,6 +2963,23 @@ $("packageFile").addEventListener("change", (e) => {
   if (e.target.files[0]) loadPackage(e.target.files[0]);
 });
 $("expectHead").addEventListener("change", runVerification);
+$("anchorsFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) {
+    suppliedAnchors = null;
+    $("anchorsName").textContent = "No anchor file loaded.";
+    return;
+  }
+  try {
+    const parsed = JSON.parse(await file.text());
+    suppliedAnchors = Array.isArray(parsed) ? parsed : (parsed.anchors || []);
+    $("anchorsName").textContent = file.name;
+  } catch {
+    suppliedAnchors = null;
+    $("anchorsName").textContent = "That file is not anchor JSON.";
+  }
+  await runVerification();
+});
 
 $("photoFile").addEventListener("change", async (e) => {
   const file = e.target.files[0];

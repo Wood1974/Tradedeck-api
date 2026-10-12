@@ -885,7 +885,103 @@ the receipt signature. `offline_seal.py` and the verify page do check the
 token against the pinned DigiCert and Sectigo roots.
 
 A receipt inside the export does not stop a server that rewrites the
-chain and then signs the new head itself. Holding a receipt returned at
-upload, on the client, would. Putting that same receipt into a later
-export does not, because the exporter can omit it. That client-held
-anchor is a follow-up. It is not part of this package.
+chain and then signs the new head itself. The deciding proof is the
+server-locked anchor in §11.11. A copy kept on the phone is a backup.
+It does not outrank the object in the bucket.
+
+### 11.11 Server-locked anchors
+
+After a v2 upload, a legacy `/shield` upload, or an offline batch is
+sealed, the service asks DigiCert and then Sectigo for an RFC 3161
+token over that entry's hash, the same way §11.7 does. The entry's own
+hash is what is locked, not whatever the tip becomes after a later
+event. On an upload that also seals `superseded` or `integrity_flag`,
+each of those entries is locked too. `viewed`, `exported`, and
+`completed` are not.
+
+The anchor is one S3 object:
+
+```
+anchors/{record_id}/{seq:08d}-{head_hash}.json
+```
+
+`seq` is the entry's index in the chain at the moment it was sealed.
+The body is `record_id`, `seq`, `head_hash`, the token, the token time,
+`anchored_at`, `delay_ms`, and the receipt when the batch had one.
+Object Lock is COMPLIANCE. Retention is `SHIELD_ANCHOR_RETENTION_DAYS`,
+default 2555 (7×365). The bucket has to be created with Object Lock
+already on. It cannot be turned on afterwards.
+
+The application role is write-only: `s3:PutObject` and
+`s3:PutObjectRetention` on `anchors/*`. It has no `s3:DeleteObject` and
+no `s3:GetObject` or `s3:ListBucket`. A different principal, the read
+role, has `s3:GetObject` on `anchors/*` and `s3:ListBucket` on the
+bucket limited to that prefix. `python -m anchor_lock export` uses the
+read role. That listing is the set a verifier should be given.
+
+`SHIELD_ANCHOR_BUCKET` unset is the disabled mode. No S3 call is made.
+Uploads still succeed. Verifiers say `anchor absent`, which is not a
+failure. The other variables are `SHIELD_ANCHOR_REGION` (default
+`us-east-1`), `SHIELD_ANCHOR_RETENTION_DAYS`,
+`SHIELD_ANCHOR_ACCESS_KEY_ID`, `SHIELD_ANCHOR_SECRET_ACCESS_KEY`,
+optional `SHIELD_ANCHOR_SESSION_TOKEN`, the matching
+`SHIELD_ANCHOR_READ_*` keys, and `SHIELD_ANCHOR_QUEUE_PATH`.
+
+The queue is SQLite. It has to be on the persistent disk
+(`/var/data/shield-anchors.db` when the disk is mounted there). The
+container disk does not survive a restart. The queue is not in S3: a
+lock store that is down cannot be the place pending writes wait.
+
+Failure. The timestamp authority being down leaves the upload in place
+and the head `timestamp pending`. No object is written, because
+COMPLIANCE would freeze it without a token. `python -m anchor_lock
+retry` stamps it later. `delay_ms` on the object is the time from the
+first attempt to the put that succeeded. S3 being down, after a token
+is already in hand, queues the put as `anchor pending`. The upload is
+not refused. The response says pending until the put succeeds. Both
+down is timestamp pending first, then the put.
+
+The upload response carries `locked_anchor` (and `locked_anchors` when
+the request sealed more than one entry). The iOS app stores that JSON
+in the app container. It does not store the photograph. Android app
+source is not in this repository; the API field is what an Android
+client would keep. A phone copy that disagrees with the locked body
+fails the check. It never silently wins.
+
+Honest exports include `locked_anchors` from the local index of puts
+that succeeded. That index can be deleted by the same process that
+writes it. It is not the deciding record.
+
+A verifier unions `locked_anchors` in the package with `--anchors` (or
+the anchors file on the verify page) by object key.
+
+- No anchors: the note `anchor absent`. The chain can still pass.
+- An anchor whose head is not an entry, or whose `seq` is not that
+  entry's index: failure. This is the truncated tail, or a rewrite
+  that left the old object in the set the verifier was given.
+- The token's TSTInfo imprint has to be that head. The time on the
+  anchor has to be no earlier than the entry's `recorded_at` minus
+  five minutes. A stamp happens after the entry is sealed. A retry
+  may be much later. Later is fine.
+- The chain head has to have an anchor when that head is an upload,
+  an offline batch, a supersede, or an integrity flag, or when no
+  anchor in the set matches any entry. The failure says
+  `no locked anchor for this head`. A backfill locks only the current
+  head, so older entries are not required to have one. A `completed`
+  or `viewed` tip is not required to have one either, as long as the
+  anchors that do exist still match entries in the chain.
+
+`python -m anchor_lock backfill records.json` anchors the current head
+of every record in that file and leaves the earlier entries alone.
+`chain_version` stays 2.
+
+What this does not catch. Anchors bundled in a package the party under
+dispute produced. That party can rewrite the chain, lock the new head,
+and omit the old object. The verifier then sees one consistent anchor.
+The bucket listing, taken with the read role, still contains the old
+object, and that object names a head the new chain does not have.
+Truncating a tail that was never locked (`viewed` after an upload) is
+still the case §6 and the export receipt are for. The independent
+verifier does not call S3 and does not check the token's certificate
+chain. The page and `offline_seal.py` check the seal's token against
+the pinned roots; the locked-anchor check reads the imprint.

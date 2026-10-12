@@ -75,7 +75,10 @@ switch (req.op) {
     break;
 
   case "package":
-    out = await verifyPackage(req.manifest, { expectHead: req.expect_head ?? null });
+    out = await verifyPackage(req.manifest, {
+      expectHead: req.expect_head ?? null,
+      anchors: req.anchors ?? null,
+    });
     break;
 
   case "seal": {
@@ -88,6 +91,7 @@ switch (req.op) {
     out = await judgeOfflineSeal(req.package, {
       rootsPem: req.roots_pem || undefined,
       files,
+      anchors: req.anchors || undefined,
     });
     break;
   }
