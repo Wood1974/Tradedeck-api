@@ -10,7 +10,7 @@
  * this page calling a record SEALED that the reference calls something else,
  * or the reverse, which is the page accusing someone the reference does not.
  */
-import { pyJson, verifyChain } from "./verify.js";
+import { checkLockedAnchors, pyJson, verifyChain } from "./verify.js";
 import { PINNED_TSA_ROOTS } from "./tsa_roots.js";
 
 const RECORD_FIELDS = [
@@ -32,9 +32,10 @@ const FORGED = "FORGED";
 const UNVERIFIED = "UNVERIFIED TIME";
 const MISMATCH = "DEVICE CLOCK MISMATCH";
 const ABSENT = "receipt present, timestamp absent";
+const RECEIPT_ABSENT = "receipt absent";
 const RANK = {
-  [SEALED]: 0, [ABSENT]: 10, [UNVERIFIED]: 20, [MISMATCH]: 30, [FORGED]: 40,
-  [TAMPERED]: 50,
+  [SEALED]: 0, [RECEIPT_ABSENT]: 5, [ABSENT]: 10, [UNVERIFIED]: 20,
+  [MISMATCH]: 30, [FORGED]: 40, [TAMPERED]: 50,
 };
 
 const FLAG_WORDS = [
@@ -1052,10 +1053,17 @@ export async function judgeOfflineSeal(manifest, options = {}) {
   }
 
   await checkOfflinePhotos(manifest, entries, options.files, state);
+  const locked = checkLockedAnchors(entries, manifest, options.anchors);
+  if (locked.findings.length) {
+    worsen(state, TAMPERED, locked.findings.map((finding) => finding.text).join(" "));
+  }
+  state.anchorNote = locked.notes.indexOf("anchor absent") === -1 ? null : "anchor absent";
   const receipt = await checkReceipt(manifest, custodyHead, custodyIntact, records, state);
   const timestampAbsent = await checkTimestamp(
     manifest, custodyIntact ? custodyHead : receipt.claimed, rootsPem, state);
-  if (state.label === SEALED && timestampAbsent && receipt.present && receipt.ok) {
+  if (state.label === SEALED && !receipt.present) {
+    state.label = RECEIPT_ABSENT;
+  } else if (state.label === SEALED && timestampAbsent && receipt.present && receipt.ok) {
     state.label = ABSENT;
   }
   return finish(state, flags, timestampAbsent, receipt.present);
@@ -1066,12 +1074,16 @@ function finish(state, flags, timestampAbsent, receiptPresent) {
   if (timestampAbsent && receiptPresent && state.label !== ABSENT && state.label !== FORGED) {
     notes.push(ABSENT);
   }
+  if (state.anchorNote) notes.push(state.anchorNote);
   let detail = state.reasons.join(" ");
   if (!detail && state.label === SEALED) {
     detail = "The phone chain recomputes, the hardware signatures check, the ticket signature checks, the time rules pass, and the timestamp checks against the pinned certificates.";
   }
   if (!detail && state.label === ABSENT) {
-    detail = "The receipt is present and its signature checks. The timestamp is absent. A missing timestamp is not a forgery.";
+    detail = "The receipt is present and its signature checks. timestamp missing. A missing timestamp is not a failure.";
+  }
+  if (!detail && state.label === RECEIPT_ABSENT) {
+    detail = "receipt absent. This package has no receipt. That is not a failure of the chain.";
   }
   return { label: state.label, flags, notes, detail };
 }
@@ -1139,7 +1151,8 @@ async function oneSignature(platform, assertionB64, challenge, payload, point, a
 async function checkReceipt(manifest, custodyHead, custodyIntact, records, state) {
   const receipt = manifest.receipt;
   if (!receipt || typeof receipt !== "object") {
-    worsen(state, FORGED, "The package has no receipt.");
+    // An older package has no receipt. The caller says "receipt absent"
+    // only while the seal is otherwise SEALED. It is not a forgery finding.
     return { ok: false, present: false, claimed: null };
   }
   const signed = receipt.signed && typeof receipt.signed === "object" ? receipt.signed : {

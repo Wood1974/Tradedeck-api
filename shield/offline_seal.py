@@ -11,8 +11,10 @@ Labels, one of them
 TAMPERED
     A phone-chain byte or link does not reproduce, the phone chain is not
     the one inside the custody entry, the receipt's head is not the
-    custody head, or an offline photograph in the package does not match
-    the hardware-signed ``photo_sha256``.
+    custody head, an offline photograph in the package does not match
+    the hardware-signed ``photo_sha256``, or a locked anchor does not
+    match the chain. No anchors is the note ``anchor absent``, and that
+    note does not change the label.
 FORGED
     A hardware signature does not verify, the key is missing or not the
     point it claims to be, the ticket signature does not verify, the
@@ -24,7 +26,13 @@ UNVERIFIED TIME
     The time rules say so, and they do not also say a mismatch.
 receipt present, timestamp absent
     Everything else that SEALED requires is true, and there is no token.
-    A missing token is not FORGED.
+    A missing token is not FORGED. The words on the timestamp block are
+    "timestamp missing".
+receipt absent
+    The package has no receipt. A package sealed before receipts were
+    attached reads this way. It is not FORGED and it is not a failure of
+    the phone chain. A receipt that is present and does not match is
+    still FORGED or TAMPERED.
 SEALED
     The phone chain recomputes, every hardware signature checks, the ticket
     signature checks, the time rules pass, and the token checks against the
@@ -39,6 +47,7 @@ import json
 from pathlib import Path
 
 import capture_record
+import anchor_lock
 import ledger
 import queue_ingest
 import ticket
@@ -51,10 +60,12 @@ LABEL_FORGED = "FORGED"
 LABEL_UNVERIFIED = "UNVERIFIED TIME"
 LABEL_MISMATCH = "DEVICE CLOCK MISMATCH"
 LABEL_TIMESTAMP_ABSENT = "receipt present, timestamp absent"
+LABEL_RECEIPT_ABSENT = "receipt absent"
 LABEL_NONE = None
 
 _RANK = {
     LABEL_SEALED: 0,
+    LABEL_RECEIPT_ABSENT: 5,
     LABEL_TIMESTAMP_ABSENT: 10,
     LABEL_UNVERIFIED: 20,
     LABEL_MISMATCH: 30,
@@ -145,7 +156,7 @@ def block_from_stored(*, entries, ticket_row=None, public_key_b64=None,
     return {key: value for key, value in block.items() if value is not None}
 
 
-def judge(package, *, roots_pem=None, files=None) -> dict:
+def judge(package, *, roots_pem=None, files=None, anchors=None) -> dict:
     """The seal label for one package. Does not raise on a bad package.
 
     ``files`` maps a photo id to bytes, or is a list of those bytes. When
@@ -272,12 +283,22 @@ def judge(package, *, roots_pem=None, files=None) -> dict:
 
     _check_package_photos(package, entries if isinstance(entries, list) else [],
                           files, worsen)
+    bundled = package.get("locked_anchors") if isinstance(
+        package.get("locked_anchors"), list) else []
+    chosen, copy_problems = anchor_lock.combine_anchors(bundled, anchors)
+    lock_problems, lock_notes = anchor_lock.assess_anchors(
+        entries if isinstance(entries, list) else [], chosen)
+    for problem in copy_problems + lock_problems:
+        worsen(LABEL_TAMPERED, problem)
+    anchor_absent = anchor_lock.NOTE_ABSENT in lock_notes
     receipt_ok, receipt_present, claimed_head = _check_receipt(
         package, custody_head, custody_intact, records, worsen)
     timestamp_absent = _check_timestamp(
         package, custody_head if custody_intact else claimed_head, roots_pem, worsen)
 
-    if label == LABEL_SEALED and timestamp_absent and receipt_present and receipt_ok:
+    if label == LABEL_SEALED and not receipt_present:
+        label = LABEL_RECEIPT_ABSENT
+    elif label == LABEL_SEALED and timestamp_absent and receipt_present and receipt_ok:
         label = LABEL_TIMESTAMP_ABSENT
     notes = []
     if (timestamp_absent and receipt_present and label != LABEL_TIMESTAMP_ABSENT
@@ -288,6 +309,8 @@ def judge(package, *, roots_pem=None, files=None) -> dict:
         notes.append(LABEL_TIMESTAMP_ABSENT)
     if label == LABEL_TIMESTAMP_ABSENT:
         notes = []
+    if anchor_absent:
+        notes.append(anchor_lock.NOTE_ABSENT)
     return _done(label, flags, notes, " ".join(reasons) if reasons else _ok_detail(label))
 
 
@@ -298,7 +321,10 @@ def _ok_detail(label):
                 "timestamp checks against the pinned certificates.")
     if label == LABEL_TIMESTAMP_ABSENT:
         return ("The receipt is present and its signature checks. "
-                "The timestamp is absent. A missing timestamp is not a forgery.")
+                "timestamp missing. A missing timestamp is not a failure.")
+    if label == LABEL_RECEIPT_ABSENT:
+        return ("receipt absent. This package has no receipt. That is not "
+                "a failure of the chain.")
     return ""
 
 
@@ -744,7 +770,9 @@ def _one_signature(platform, assertion_b64, challenge, payload, point, app_id, p
 def _check_receipt(package, custody_head, custody_intact, records, worsen):
     receipt = package.get("receipt")
     if not isinstance(receipt, dict):
-        worsen(LABEL_FORGED, "The package has no receipt.")
+        # An older package has no receipt. That is "receipt absent", which
+        # the caller sets only while the seal is otherwise SEALED. It is
+        # not a forgery finding.
         return False, False, None
     signed = receipt.get("signed") if isinstance(receipt.get("signed"), dict) else None
     if signed is None:

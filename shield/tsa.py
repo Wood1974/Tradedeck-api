@@ -229,9 +229,34 @@ def missing_timestamp(reason):
         "authority": None,
         "gen_time": None,
         "reason": reason,
-        "note": ("The timestamp is missing. A missing timestamp is not a "
+        "note": ("timestamp missing. A missing timestamp is not a "
                  "forgery. The receipt still covers the custody head."),
     }
+
+
+def package_anchor(record_id, head_hash, *, at_ms=None, pem=None):
+    """Sign an export receipt over a custody head, then ask for a timestamp.
+
+    The signed fields are the same four a batch receipt uses. On an export,
+    ``accepted_at_ms`` is the time of the export. The head is the head the
+    package's own entries recompute to. A missing key, or a head this
+    function will not sign, returns no receipt and a missing timestamp.
+    Neither of those is a forgery. This function does not call
+    ``mint_token``. A caller that already holds a token over this same head
+    may keep that token; a token over a different head must not be shipped
+    as if it covered this one.
+    """
+    if at_ms is None:
+        at_ms = ticket.now_ms()
+    try:
+        signed = sign_receipt(build_receipt(
+            record_id=record_id, head_hash=head_hash, accepted_at_ms=at_ms),
+            pem=pem)
+    except (ticket.TicketKeyError, ValueError) as exc:
+        return None, missing_timestamp(
+            "No export receipt was signed (%s). A package with no receipt "
+            "says receipt absent, which is not a forgery." % exc)
+    return signed, stamp(head_hash)
 
 
 def enabled():

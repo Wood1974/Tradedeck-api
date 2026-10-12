@@ -11,7 +11,7 @@
  * through both implementations and the bytes are compared. Reads one JSON
  * request on stdin, writes one JSON response on stdout.
  */
-import { canonical, pyJson, pyRepr, verifyChain, genesisHash, link }
+import { canonical, pyJson, pyRepr, verifyChain, verifyPackage, genesisHash, link }
   from "../verify.js";
 import { judgeOfflineSeal } from "../seal.js";
 
@@ -74,6 +74,13 @@ switch (req.op) {
                             { expectHead: req.expect_head ?? null });
     break;
 
+  case "package":
+    out = await verifyPackage(req.manifest, {
+      expectHead: req.expect_head ?? null,
+      anchors: req.anchors ?? null,
+    });
+    break;
+
   case "seal": {
     const files = Array.isArray(req.files)
       ? req.files.map((item) => ({
@@ -84,6 +91,7 @@ switch (req.op) {
     out = await judgeOfflineSeal(req.package, {
       rootsPem: req.roots_pem || undefined,
       files,
+      anchors: req.anchors || undefined,
     });
     break;
   }

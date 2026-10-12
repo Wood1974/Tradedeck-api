@@ -113,7 +113,7 @@ def timestamp_block(timestamp=None):
         "authority": None,
         "token_b64": None,
         "gen_time": None,
-        "note": ("The timestamp is missing. A missing timestamp is not a "
+        "note": ("timestamp missing. A missing timestamp is not a "
                  "forgery. The receipt, when there is one, still covers "
                  "the custody head."),
     }
@@ -143,7 +143,8 @@ def receipt_block(receipt, signing_key=None):
 
 
 def build_manifest(*, job, points, photos, custody, report=None, notes=None,
-                   receipt=None, timestamp=None, signing_key=None):
+                   receipt=None, timestamp=None, signing_key=None,
+                   locked_anchors=None):
     """The hash manifest plus an independent verification of the custody chain.
 
     Every item a recipient needs in order to check the package themselves,
@@ -246,6 +247,9 @@ def build_manifest(*, job, points, photos, custody, report=None, notes=None,
         "receipt": receipt_block(receipt, signing_key),
         "timestamp": timestamp_block(timestamp),
         "signing_key": public_signing_key(signing_key),
+        # Anchors this process has put. A verifier unions these with an
+        # external file. The file is what catches an export that omitted one.
+        "locked_anchors": list(locked_anchors or []),
     }
 
 
@@ -395,12 +399,35 @@ def verification_instructions(manifest):
         "   hold means the history was rewritten after you received it.",
         "",
         "4. The receipt, when this package has one, is an ECDSA P-256 signature",
-        "   over the record id, the custody head, and the time the batch was",
-        "   accepted. The public half of that key is `signing_key`. Check the",
-        "   signature over the canonical receipt bytes. `chain_version` is not",
-        "   part of the receipt and is not changed by it.",
+        "   over the record id, the custody head this package recomputes, and",
+        "   the time the receipt was signed (`accepted_at_ms`: the batch, or",
+        "   the export of this package). The public half of that key is",
+        "   `signing_key`. Check the signature over the canonical receipt",
+        "   bytes, then check that the signed head is the head you just",
+        "   recomputed. A receipt over a different head means these bytes",
+        "   were rewritten after the receipt was signed. `chain_version` is",
+        "   not part of the receipt and is not changed by it. A package with",
+        "   no receipt says receipt absent. That is not a failure of the chain.",
         "",
         "   The timestamp block is an RFC 3161 token over that same custody",
-        "   head, or a statement that the token is missing. A missing timestamp",
-        "   is not a forgery. The receipt still covers the head.",
+        "   head, or the words timestamp missing. A missing timestamp is not",
+        "   a forgery. The receipt, when there is one, still covers the head.",
+        "",
+        "5. Locked anchors. Each object was written to S3 with Object Lock in",
+        "   COMPLIANCE mode after the entry was sealed. `locked_anchors` in",
+        "   this package is the copy the exporter chose to include. Pass",
+        "   `--anchors` with the bucket listing (`python -m anchor_lock",
+        "   export`) or with the copy the phone kept. The two are unioned by",
+        "   object key. If the same key has two different bodies, the check",
+        "   fails. The phone copy does not replace the locked one.",
+        "",
+        "   Every anchor's head has to be an entry in this chain, at the",
+        "   index it names, and the token has to cover that head. A head",
+        "   with no locked anchor, when anchors were supplied, fails with",
+        "   the words: no locked anchor for this head. An anchor for an",
+        "   entry that is not in the chain means the tail was removed.",
+        "   A package with no anchors says anchor absent. That is not a",
+        "   failure. Anchors inside this file alone do not catch an exporter",
+        "   who rewrote the chain, locked the new head, and left the old",
+        "   object out. The bucket listing does.",
     ])
