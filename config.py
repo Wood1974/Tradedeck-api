@@ -12,7 +12,9 @@ REQUIRED_ENV = (
 
 OPTIONAL_ENV_DEFAULTS = {
     "APP_URL": "https://tradedeckapp.com",
-    "ALLOWED_ORIGINS": "https://tradedeckapp.com,http://localhost:3000,http://127.0.0.1:5500",
+    # capacitor://localhost and https://localhost are the Shield phone app's own origins (iOS / Android). Without them the
+    # webview blocks every call to this API at the CORS preflight and shows "could not reach the service".
+    "ALLOWED_ORIGINS": "https://tradedeckapp.com,capacitor://localhost,https://localhost,http://localhost:3000,http://127.0.0.1:5500",
     "DRAW_PHOTOS_BUCKET": "draw-photos",
     "PLATFORM_FEE_BPS": "200",
     "MAX_IMAGE_BYTES": str(10 * 1024 * 1024),
@@ -47,7 +49,7 @@ def get_env(key, default=None):
 
 
 def allowed_origins():
-    raw = get_env("ALLOWED_ORIGINS", "")
+    raw = get_env("ALLOWED_ORIGINS") or ""
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 

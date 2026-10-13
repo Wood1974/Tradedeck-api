@@ -23,5 +23,6 @@ services:
         sync: false
       - key: APP_URL
         value: https://tradedeckapp.com
+      # Includes the Shield phone app's own origins (iOS capacitor://localhost, Android https://localhost).
       - key: ALLOWED_ORIGINS
-        value: https://tradedeckapp.com
+        value: https://tradedeckapp.com,capacitor://localhost,https://localhost
