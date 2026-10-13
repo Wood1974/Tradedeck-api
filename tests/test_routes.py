@@ -707,3 +707,27 @@ def test_seal_capture_missing_photo_error(client, mock_jwt_header, mock_supabase
     assert response.status_code == 400
     error_data = response.get_json()
     assert "error" in error_data
+
+
+@pytest.mark.parametrize("origin", ["capacitor://localhost", "https://localhost", "https://tradedeckapp.com"])
+def test_cors_preflight_allows_the_shield_phone_app(origin):
+    """The phone webview's own origin must pass the preflight, or it never sends the real request."""
+    r = app.test_client().options(
+        "/identity/start",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers.get("Access-Control-Allow-Origin") == origin
+    assert "authorization" in r.headers.get("Access-Control-Allow-Headers", "").lower()
+
+
+def test_cors_preflight_rejects_unknown_origin():
+    r = app.test_client().options(
+        "/identity/start",
+        headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"},
+    )
+    assert r.headers.get("Access-Control-Allow-Origin") is None
