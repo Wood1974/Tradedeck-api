@@ -59,15 +59,21 @@ def _chromium_path():
     Playwright pins a browser revision per version, so a pip install that does
     not match what is on disk refuses to launch and tells you to download one.
     Where a host provides a browser (PLAYWRIGHT_BROWSERS_PATH), use it rather
-    than pulling ~150 MB into a test run.
+    than pulling ~150 MB into a test run. A system Chrome is the same fallback.
     """
     root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if not root or not os.path.isdir(root):
-        return None
-    candidates = sorted(
-        (os.path.join(root, d, "chrome-linux", "chrome")
-         for d in os.listdir(root) if d.startswith("chromium-")), reverse=True)
-    return next((c for c in candidates if os.path.exists(c)), None)
+    if root and os.path.isdir(root):
+        candidates = sorted(
+            (os.path.join(root, d, "chrome-linux", "chrome")
+             for d in os.listdir(root) if d.startswith("chromium-")), reverse=True)
+        found = next((c for c in candidates if os.path.exists(c)), None)
+        if found:
+            return found
+    for candidate in ("/opt/google/chrome/chrome", "/usr/bin/google-chrome",
+                      "/usr/bin/chromium", "/usr/bin/chromium-browser"):
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 
 @pytest.fixture(scope="module")
@@ -190,3 +196,93 @@ class TestThePageMakesNoNetworkRequests:
         load(page, tmp_path, manifest, expect_head=head)
         external = [u for u in seen if not u.startswith("file://")]
         assert not external, f"the page made requests while verifying: {external}"
+
+
+class TestTheOfflineSealCard:
+    """The second card. Judged in the page, from the package, with no network.
+
+    The packages are the same ones the differential test runs through
+    ``offline_seal.py``. A local timestamp does not chain to the DigiCert and
+    Sectigo certificates pinned in the page, so the SEALED case that uses a
+    local authority is the differential test, not this one. This one checks
+    that the page says the words, and that it says them with the network off.
+    """
+
+    def _package(self, **kw):
+        from test_offline_seal import build_package
+        package, _roots = build_package(**kw)
+        return package
+
+    def test_two_cards_and_a_missing_timestamp_is_named(self, page, tmp_path):
+        text = load(page, tmp_path, self._package())
+        assert page.locator("#custodyCard").count() == 1
+        assert page.locator("#sealCard").count() == 1
+        assert "Every link verifies" in text
+        assert "receipt present, timestamp absent" in page.inner_text("#sealCard")
+        assert "forged" not in page.inner_text("#sealCard").lower()
+
+    def test_flags_are_words_beside_the_label(self, page, tmp_path):
+        import capture_record
+        package = self._package(flags=(
+            capture_record.FLAG_SCREEN_CAPTURED | capture_record.FLAG_MOCK_LOCATION))
+        text = page_text(page, tmp_path, package)
+        seal = page.inner_text("#sealCard")
+        assert "receipt present, timestamp absent" in seal
+        assert "screen captured" in seal
+        assert "mock location" in seal
+        assert "Flags do not change this label" in seal
+        assert "Every link verifies" in text
+
+    def test_a_broken_byte_reads_tampered(self, page, tmp_path):
+        package = self._package()
+        package["offline"]["captures"][0]["record"]["photo_sha256"] = "ef" * 32
+        seal = page_text(page, tmp_path, package, card="#sealCard")
+        assert "TAMPERED" in seal
+
+    def test_a_bad_signature_reads_forged(self, page, tmp_path):
+        import base64
+        package = self._package()
+        package["offline"]["captures"][0]["assertion"] = base64.b64encode(
+            b"not-a-signature").decode()
+        seal = page_text(page, tmp_path, package, card="#sealCard")
+        assert "FORGED" in seal
+
+    def test_a_reboot_reads_unverified_time(self, page, tmp_path):
+        package = self._package(boot_id="boot-session-after-reboot")
+        seal = page_text(page, tmp_path, package, card="#sealCard")
+        assert "UNVERIFIED TIME" in seal
+        assert "receipt present, timestamp absent" in seal
+
+    def test_a_three_minute_jump_reads_device_clock_mismatch(self, page, tmp_path):
+        package = self._package(wall_extra=180_000)
+        seal = page_text(page, tmp_path, package, card="#sealCard")
+        assert "DEVICE CLOCK MISMATCH" in seal
+
+    def test_a_digicert_token_reads_sealed_with_wifi_off(self, page, tmp_path):
+        path = os.path.join(os.path.dirname(__file__), "fixtures",
+                            "sealed_digicert_package.json")
+        package = json.loads(open(path).read())
+        seen = []
+        page.context.set_offline(True)
+        page.on("request", lambda r: seen.append(r.url))
+        load(page, tmp_path, package)
+        assert "Every link verifies" in page.inner_text("#custodyCard")
+        seal = page.inner_text("#sealCard")
+        assert "\nSEALED\n" in f"\n{seal}\n"
+        external = [u for u in seen if not u.startswith("file://")]
+        assert not external, f"the page made requests while verifying: {external}"
+
+    def test_wifi_off_still_shows_both_cards(self, page, tmp_path):
+        seen = []
+        page.context.set_offline(True)
+        page.on("request", lambda r: seen.append(r.url))
+        text = load(page, tmp_path, self._package())
+        assert "Every link verifies" in text
+        assert "receipt present, timestamp absent" in page.inner_text("#sealCard")
+        external = [u for u in seen if not u.startswith("file://")]
+        assert not external, f"the page made requests while verifying: {external}"
+
+
+def page_text(page, tmp_path, manifest, card="#verifyResult"):
+    load(page, tmp_path, manifest)
+    return page.inner_text(card)

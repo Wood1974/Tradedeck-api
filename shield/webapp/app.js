@@ -9,6 +9,7 @@
  */
 import { ShieldClient, ShieldError } from "./api.js";
 import { verifyPackage, checkPhoto } from "./verify.js";
+import { judgeOfflineSeal } from "./seal.js";
 
 const $ = (id) => document.getElementById(id);
 const client = () => new ShieldClient($("baseUrl").value, $("token").value || null);
@@ -44,16 +45,61 @@ const money = (cents) => `$${(cents / 100).toLocaleString("en-US",
 /* ----------------------------------------------------------------- verify -- */
 
 let loadedPackage = null;
+let suppliedPhoto = null;
+let suppliedAnchors = null;
 
-function renderVerification({ verifiable, chain, findings }) {
+function sealClass(label) {
+  if (label === "SEALED") return "good";
+  if (label === "UNVERIFIED TIME" || label === "receipt present, timestamp absent"
+      || label === "receipt absent") {
+    return "partial";
+  }
+  if (label === "TAMPERED" || label === "FORGED" || label === "DEVICE CLOCK MISMATCH") {
+    return "bad";
+  }
+  return "unknown";
+}
+
+function renderSeal(seal) {
+  const label = seal && seal.label;
+  if (!label) {
+    return `<div class="card unknown" id="sealCard">
+      <p class="kicker">Offline seal</p>
+      <h3>No offline seal</h3>
+      <p>${esc((seal && seal.detail) || "This package has no offline seal.")}</p>
+    </div>`;
+  }
+  const flags = seal.flags && seal.flags.length
+    ? `Flags: ${seal.flags.join(", ")}.`
+    : "No flags are set.";
+  const notes = (seal.notes || []).map((note) =>
+    `<p class="caveat">${esc(note)}</p>`).join("");
+  return `<div class="card ${sealClass(label)}" id="sealCard">
+    <p class="kicker">Offline seal</p>
+    <h3>${esc(label)}</h3>
+    <p>${esc(seal.detail || "")}</p>
+    ${notes}
+    <p>${esc(flags)} Flags do not change this label.</p>
+    <p class="limits">Computed in this page from the package bytes. No request
+      was made. A timestamp, when one is present, is checked against the
+      DigiCert and Sectigo certificates pinned in this page.</p>
+  </div>`;
+}
+
+function renderVerification({ verifiable, chain, findings, notes }, seal) {
   const node = $("verifyResult");
+  const sealHtml = renderSeal(seal);
 
   if (!verifiable) {
-    return show(node, `<div class="card bad"><h3>Not verifiable</h3>
-      ${findings.map((f) => `<p>${esc(f.text)}</p>`).join("")}</div>`);
+    return show(node, `<div class="card bad" id="custodyCard"><h3>Not verifiable</h3>
+      ${findings.map((f) => `<p>${esc(f.text)}</p>`).join("")}</div>${sealHtml}`);
   }
 
   const lying = findings.filter((f) => f.severity === "lying");
+  const locked = findings.filter((f) => f.kind === "locked");
+  const anchor = findings.filter((f) => f.kind === "anchor");
+  const noteHtml = (notes || []).map((note) =>
+    `<p class="caveat">${esc(note)}</p>`).join("");
   let head = "", cls = "", detail = "";
 
   if (chain.ambiguous) {
@@ -64,6 +110,14 @@ function renderVerification({ verifiable, chain, findings }) {
     cls = "bad";
     head = `Chain does not verify — entry ${chain.brokeAt + 1} of ${chain.entries}`;
     detail = `<p>${esc(chain.reason)}</p>`;
+  } else if (locked.length) {
+    cls = "bad";
+    head = "The chain links, but there is no locked anchor for this head";
+    detail = locked.map((f) => `<p>${esc(f.text)}</p>`).join("");
+  } else if (anchor.length) {
+    cls = "bad";
+    head = "The chain links, but the receipt does not cover this head";
+    detail = anchor.map((f) => `<p>${esc(f.text)}</p>`).join("");
   } else if (chain.headMatchesExpected === false) {
     cls = "bad";
     head = "Every link verifies, but the chain has been shortened";
@@ -88,9 +142,10 @@ function renderVerification({ verifiable, chain, findings }) {
   ];
 
   show(node, `
-    <div class="card ${cls}">
+    <div class="card ${cls}" id="custodyCard">
       <h3>${esc(head)}</h3>
       ${detail}
+      ${noteHtml}
       ${lying.length ? `<div class="lying"><h4>The package misdescribes itself</h4>
         ${lying.map((f) => `<p>${esc(f.text)}</p>`).join("")}</div>` : ""}
       <dl class="facts">${rows.map(([k, v]) =>
@@ -99,11 +154,12 @@ function renderVerification({ verifiable, chain, findings }) {
         That a photograph came off a camera rather than a file picker; that
         entries were never omitted <em>before</em> the chain was written; or
         that any assessment in the record is correct.</p>` : ""}
-    </div>`);
+    </div>${sealHtml}`);
 }
 
 async function loadPackage(file) {
   $("fileName").textContent = file.name;
+  suppliedPhoto = null;
   try {
     loadedPackage = JSON.parse(await file.text());
   } catch (err) {
@@ -118,7 +174,14 @@ async function runVerification() {
   if (!loadedPackage) return;
   try {
     const expectHead = $("expectHead").value.trim() || null;
-    renderVerification(await verifyPackage(loadedPackage, { expectHead }));
+    const custody = await verifyPackage(loadedPackage, {
+      expectHead, anchors: suppliedAnchors,
+    });
+    const seal = await judgeOfflineSeal(loadedPackage, {
+      files: suppliedPhoto ? [{ bytes: suppliedPhoto }] : undefined,
+      anchors: suppliedAnchors,
+    });
+    renderVerification(custody, seal);
   } catch (err) {
     fail($("verifyResult"), err);
   }
@@ -140,6 +203,23 @@ $("packageFile").addEventListener("change", (e) => {
   if (e.target.files[0]) loadPackage(e.target.files[0]);
 });
 $("expectHead").addEventListener("change", runVerification);
+$("anchorsFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) {
+    suppliedAnchors = null;
+    $("anchorsName").textContent = "No anchor file loaded.";
+    return;
+  }
+  try {
+    const parsed = JSON.parse(await file.text());
+    suppliedAnchors = Array.isArray(parsed) ? parsed : (parsed.anchors || []);
+    $("anchorsName").textContent = file.name;
+  } catch {
+    suppliedAnchors = null;
+    $("anchorsName").textContent = "That file is not anchor JSON.";
+  }
+  await runVerification();
+});
 
 $("photoFile").addEventListener("change", async (e) => {
   const file = e.target.files[0];
@@ -149,8 +229,10 @@ $("photoFile").addEventListener("change", async (e) => {
   }
   const hashes = (loadedPackage.checkpoints || [])
     .map((c) => c.sha256_original).filter(Boolean);
+  suppliedPhoto = new Uint8Array(await file.arrayBuffer());
   const { actual } = await checkPhoto(file, null);
   const match = hashes.includes(actual);
+  await runVerification();
   show($("photoResult"), `<div class="card ${match ? "good" : "bad"}">
     <p>${match
       ? "This file matches a photo hash recorded in the package."

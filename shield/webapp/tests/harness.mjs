@@ -11,8 +11,9 @@
  * through both implementations and the bytes are compared. Reads one JSON
  * request on stdin, writes one JSON response on stdout.
  */
-import { canonical, pyJson, pyRepr, verifyChain, genesisHash, link }
+import { canonical, pyJson, pyRepr, verifyChain, verifyPackage, genesisHash, link }
   from "../verify.js";
+import { judgeOfflineSeal } from "../seal.js";
 
 const stdin = await new Promise((resolve) => {
   let buf = "";
@@ -23,6 +24,13 @@ const stdin = await new Promise((resolve) => {
 
 const req = JSON.parse(stdin);
 const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+function rawFromHex(value) {
+  const text = typeof value === "string" ? value : "";
+  const out = new Uint8Array(Math.floor(text.length / 2));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(text.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
 
 function attempt(fn) {
   try { return { ok: true, value: fn() }; }
@@ -65,6 +73,28 @@ switch (req.op) {
     out = await verifyChain(req.entries, req.shield_job_id,
                             { expectHead: req.expect_head ?? null });
     break;
+
+  case "package":
+    out = await verifyPackage(req.manifest, {
+      expectHead: req.expect_head ?? null,
+      anchors: req.anchors ?? null,
+    });
+    break;
+
+  case "seal": {
+    const files = Array.isArray(req.files)
+      ? req.files.map((item) => ({
+        photo_id: item.photo_id || null,
+        bytes: rawFromHex(item.hex || ""),
+      }))
+      : undefined;
+    out = await judgeOfflineSeal(req.package, {
+      rootsPem: req.roots_pem || undefined,
+      files,
+      anchors: req.anchors || undefined,
+    });
+    break;
+  }
 
   default:
     out = { error: `unknown op ${req.op}` };

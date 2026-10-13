@@ -19,3 +19,22 @@ services:
         value: https://tradedeckapp.com
       - key: ALLOWED_ORIGINS
         value: https://tradedeckapp.com
+      # Shield server-locked anchors. Leave the bucket unset to disable.
+      # Object Lock must already be on when the bucket is created. The
+      # queue path has to be on a persistent disk, not the container disk.
+      - key: SHIELD_ANCHOR_BUCKET
+        sync: false
+      - key: SHIELD_ANCHOR_REGION
+        value: us-east-1
+      - key: SHIELD_ANCHOR_RETENTION_DAYS
+        value: "2555"
+      - key: SHIELD_ANCHOR_ACCESS_KEY_ID
+        sync: false
+      - key: SHIELD_ANCHOR_SECRET_ACCESS_KEY
+        sync: false
+      - key: SHIELD_ANCHOR_QUEUE_PATH
+        value: /var/data/shield-anchors.db
+      - key: SHIELD_ANCHOR_READ_ACCESS_KEY_ID
+        sync: false
+      - key: SHIELD_ANCHOR_READ_SECRET_ACCESS_KEY
+        sync: false

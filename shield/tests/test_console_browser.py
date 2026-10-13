@@ -32,6 +32,17 @@ from test_tenant_api import (  # noqa: E402
 CHROMIUM = "/opt/pw-browsers/chromium"
 
 
+def _chromium():
+    """The CI browser, or a system Chrome when that path is not on this host."""
+    if os.path.exists(CHROMIUM):
+        return CHROMIUM
+    for candidate in ("/opt/google/chrome/chrome", "/usr/bin/google-chrome",
+                      "/usr/bin/chromium", "/usr/bin/chromium-browser"):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -84,8 +95,13 @@ def service():
 @pytest.fixture(scope="module")
 def page(service):
     base, token, store = service
+    executable = _chromium()
+    if executable is None:
+        pytest.skip("chromium unavailable")
     with sync_api.sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=CHROMIUM)
+        browser = p.chromium.launch(
+            executable_path=executable,
+            args=["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context()
         # The upload path asks for a position; grant one so the branch runs.
         context.grant_permissions(["geolocation"])

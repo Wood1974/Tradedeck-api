@@ -736,6 +736,15 @@ with `captures` or with `phone_chain` by position. There is no sealed
 `photo_ids` array. The list sits in `event_data`, so editing one object,
 or reordering the list, changes the custody head.
 
+`photos[].original_hash` and `checkpoints[].sha256_original` are copies.
+They are not sealed. The seal judge compares every offline photograph
+those lists name, and any bytes supplied for that photograph, to
+`phone_chain[].photo_sha256`. That hash sits in the capture record the
+phone's key signed. When the two disagree the label is TAMPERED, even
+if the phone chain, the hardware signatures, the receipt, and the
+timestamp otherwise check. A photograph that is not in `sealed_photos`
+is not an offline photograph, and this comparison does not apply to it.
+
 The photographs are stored the way a single upload stores one: the hash
 is recomputed, the file is sniffed, and a second live photo of the same
 checkpoint supersedes the previous one. Those writes are not separate
@@ -805,10 +814,12 @@ The outcome is one row in `shield.tsa_tokens`, append-only, either way.
 ### 11.8 The package
 
 `GET /shield/v2/records/<id>/package` and `evidence.build_manifest` both
-carry the latest receipt, the timestamp block, and the public half of the
-signing key. `custody.chain_version` is the version `ledger.verify_chain`
-already reports. It is still 2. A package with no receipt yet says the
-timestamp is missing, and it says that is not a forgery.
+carry a receipt, the timestamp block, and the public half of the signing
+key. The receipt on an export is signed over the head that export's own
+entries recompute to. See §11.10. `custody.chain_version` is the version
+`ledger.verify_chain` already reports. It is still 2. A package with no
+receipt says receipt absent. A package whose timestamp authority did not
+answer says timestamp missing. Neither of those is a forgery.
 
 ### 11.9 What this addendum does not establish
 
@@ -820,3 +831,157 @@ timestamp is missing, and it says that is not a forgery.
   the addresses are configuration. A test runs a local authority with a
   certificate that test minted. It does not call either host.
 - Anything that changes `chain_version`, which remains 2.
+- That a chain was not truncated after the export and then re-signed.
+  The receipt covers the head inside the package. A shorter chain with a
+  new receipt over the shorter head still verifies. A head the recipient
+  already holds is what catches that. See §6.
+
+### 11.10 The export receipt
+
+Every export signs a receipt over the head the exported entries recompute
+to. The signed fields are the four in §11.6. `record_id` is the job or
+the record. `head_hash` is that recomputed head, not a head stored beside
+it. `accepted_at_ms` is the server time of the export, whole Unix
+milliseconds. `version` stays `1`. `chain_version` stays 2.
+
+The signature is the same ECDSA P-256 key that signs job tickets
+(`SHIELD_TICKET_SIGNING_KEY_PEM`). `phone_chain_head` and the time labels
+from the latest batch ride beside the signature. They are not signed
+again. The custody head already commits to the entry that stored them.
+
+Both package shapes carry it. `evidence.build_manifest` flattens the
+signed fields onto `receipt` and puts the public key on `signing_key`.
+`GET /shield/v2/records/<id>/package` nests the signed fields under
+`receipt.signed` and puts the same public key on `signing_key`. The
+custody list on that response is `custody`, not `custody_entries`. A
+verifier accepts either shape.
+
+The timestamp is an RFC 3161 token over that same head. The imprint is
+the raw 32-byte head, as in §11.7. DigiCert is asked first, then Sectigo,
+and only when `SHIELD_TSA_ENABLED` is `1`. A token already stored for the
+batch is reused only when that token's head is this package's head. A
+token over a different head is not shipped in its place. When the
+authority is off or does not answer, the package still ships and the
+timestamp block says timestamp missing. `forged` is false. The service
+does not mint a token to fill the gap.
+
+A verifier recomputes the head and checks three things against it:
+
+- The receipt signature, with the public key in the package.
+- The signed `head_hash` equals the head just computed. A full rewrite
+  that leaves the original receipt in place fails here, with no
+  `--expect-head`.
+- The token's TSTInfo imprint, when a token is present, is that same
+  head. A missing token is the note timestamp missing, not a failure.
+
+No receipt is the note receipt absent, not a failure. A package from
+before this receipt was added still verifies its chain.
+
+`verifier/shield_verify.py` checks the signature and the imprint. It does
+not check the token's certificate chain: that check needs the pinned
+roots, and the independent verifier does not carry them. An attacker who
+can sign a token can put the new head in the imprint. They cannot produce
+the receipt signature. `offline_seal.py` and the verify page do check the
+token against the pinned DigiCert and Sectigo roots.
+
+A receipt inside the export does not stop a server that rewrites the
+chain and then signs the new head itself. The deciding proof is the
+server-locked anchor in §11.11. A copy kept on the phone is a backup.
+It does not outrank the object in the bucket.
+
+### 11.11 Server-locked anchors
+
+After a v2 upload, a legacy `/shield` upload, or an offline batch is
+sealed, the service asks DigiCert and then Sectigo for an RFC 3161
+token over that entry's hash, the same way §11.7 does. The entry's own
+hash is what is locked, not whatever the tip becomes after a later
+event. On an upload that also seals `superseded` or `integrity_flag`,
+each of those entries is locked too. `viewed`, `exported`, and
+`completed` are not.
+
+The anchor is one S3 object:
+
+```
+anchors/{record_id}/{seq:08d}-{head_hash}.json
+```
+
+`seq` is the entry's index in the chain at the moment it was sealed.
+The body is `record_id`, `seq`, `head_hash`, the token, the token time,
+`anchored_at`, `delay_ms`, and the receipt when the batch had one.
+Object Lock is COMPLIANCE. Retention is `SHIELD_ANCHOR_RETENTION_DAYS`,
+default 2555 (7×365). The bucket has to be created with Object Lock
+already on. It cannot be turned on afterwards.
+
+The application role is write-only: `s3:PutObject` and
+`s3:PutObjectRetention` on `anchors/*`. It has no `s3:DeleteObject` and
+no `s3:GetObject` or `s3:ListBucket`. A different principal, the read
+role, has `s3:GetObject` on `anchors/*` and `s3:ListBucket` on the
+bucket limited to that prefix. `python -m anchor_lock export` uses the
+read role. That listing is the set a verifier should be given.
+
+`SHIELD_ANCHOR_BUCKET` unset is the disabled mode. No S3 call is made.
+Uploads still succeed. Verifiers say `anchor absent`, which is not a
+failure. The other variables are `SHIELD_ANCHOR_REGION` (default
+`us-east-1`), `SHIELD_ANCHOR_RETENTION_DAYS`,
+`SHIELD_ANCHOR_ACCESS_KEY_ID`, `SHIELD_ANCHOR_SECRET_ACCESS_KEY`,
+optional `SHIELD_ANCHOR_SESSION_TOKEN`, the matching
+`SHIELD_ANCHOR_READ_*` keys, and `SHIELD_ANCHOR_QUEUE_PATH`.
+
+The queue is SQLite. It has to be on the persistent disk
+(`/var/data/shield-anchors.db` when the disk is mounted there). The
+container disk does not survive a restart. The queue is not in S3: a
+lock store that is down cannot be the place pending writes wait.
+
+Failure. The timestamp authority being down leaves the upload in place
+and the head `timestamp pending`. No object is written, because
+COMPLIANCE would freeze it without a token. `python -m anchor_lock
+retry` stamps it later. `delay_ms` on the object is the time from the
+first attempt to the put that succeeded. S3 being down, after a token
+is already in hand, queues the put as `anchor pending`. The upload is
+not refused. The response says pending until the put succeeds. Both
+down is timestamp pending first, then the put.
+
+The upload response carries `locked_anchor` (and `locked_anchors` when
+the request sealed more than one entry). The iOS app stores that JSON
+in the app container. It does not store the photograph. Android app
+source is not in this repository; the API field is what an Android
+client would keep. A phone copy that disagrees with the locked body
+fails the check. It never silently wins.
+
+Honest exports include `locked_anchors` from the local index of puts
+that succeeded. That index can be deleted by the same process that
+writes it. It is not the deciding record.
+
+A verifier unions `locked_anchors` in the package with `--anchors` (or
+the anchors file on the verify page) by object key.
+
+- No anchors: the note `anchor absent`. The chain can still pass.
+- An anchor whose head is not an entry, or whose `seq` is not that
+  entry's index: failure. This is the truncated tail, or a rewrite
+  that left the old object in the set the verifier was given.
+- The token's TSTInfo imprint has to be that head. The time on the
+  anchor has to be no earlier than the entry's `recorded_at` minus
+  five minutes. A stamp happens after the entry is sealed. A retry
+  may be much later. Later is fine.
+- The chain head has to have an anchor when that head is an upload,
+  an offline batch, a supersede, or an integrity flag, or when no
+  anchor in the set matches any entry. The failure says
+  `no locked anchor for this head`. A backfill locks only the current
+  head, so older entries are not required to have one. A `completed`
+  or `viewed` tip is not required to have one either, as long as the
+  anchors that do exist still match entries in the chain.
+
+`python -m anchor_lock backfill records.json` anchors the current head
+of every record in that file and leaves the earlier entries alone.
+`chain_version` stays 2.
+
+What this does not catch. Anchors bundled in a package the party under
+dispute produced. That party can rewrite the chain, lock the new head,
+and omit the old object. The verifier then sees one consistent anchor.
+The bucket listing, taken with the read role, still contains the old
+object, and that object names a head the new chain does not have.
+Truncating a tail that was never locked (`viewed` after an upload) is
+still the case §6 and the export receipt are for. The independent
+verifier does not call S3 and does not check the token's certificate
+chain. The page and `offline_seal.py` check the seal's token against
+the pinned roots; the locked-anchor check reads the imprint.

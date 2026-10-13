@@ -52,6 +52,10 @@ ECDSA_SHA256_OID = "1.2.840.10045.4.3.2"
 ECDSA_SHA384_OID = "1.2.840.10045.4.3.3"
 RSA_SHA256_OID = "1.2.840.113549.1.1.11"
 RSA_SHA384_OID = "1.2.840.113549.1.1.12"
+# rsaEncryption. DigiCert and Sectigo both put this OID in SignerInfo and
+# name the hash separately (SHA-256 at DigiCert, SHA-384 at Sectigo). It is
+# PKCS#1 v1.5, not a second hash hiding in the parameters.
+RSA_ENCRYPTION_OID = "1.2.840.113549.1.1.1"
 # id-RSASSA-PSS. Sectigo signs some tokens this way. The hash is the one
 # named in SignerInfo, not a second algorithm hiding in the parameters.
 RSA_PSS_OID = "1.2.840.113549.1.1.10"
@@ -60,8 +64,10 @@ RSA_PSS_OID = "1.2.840.113549.1.1.10"
 # algorithms that may carry each one. SHA-1 is absent on purpose.
 _ACCEPTED_DIGESTS = (SHA256_OID, SHA384_OID)
 _SIG_OIDS = {
-    SHA256_OID: frozenset((ECDSA_SHA256_OID, RSA_SHA256_OID, RSA_PSS_OID)),
-    SHA384_OID: frozenset((ECDSA_SHA384_OID, RSA_SHA384_OID, RSA_PSS_OID)),
+    SHA256_OID: frozenset((
+        ECDSA_SHA256_OID, RSA_SHA256_OID, RSA_PSS_OID, RSA_ENCRYPTION_OID)),
+    SHA384_OID: frozenset((
+        ECDSA_SHA384_OID, RSA_SHA384_OID, RSA_PSS_OID, RSA_ENCRYPTION_OID)),
 }
 SIGNED_DATA_OID = "1.2.840.113549.1.7.2"
 TST_INFO_OID = "1.2.840.113549.1.9.16.1.4"
@@ -223,9 +229,34 @@ def missing_timestamp(reason):
         "authority": None,
         "gen_time": None,
         "reason": reason,
-        "note": ("The timestamp is missing. A missing timestamp is not a "
+        "note": ("timestamp missing. A missing timestamp is not a "
                  "forgery. The receipt still covers the custody head."),
     }
+
+
+def package_anchor(record_id, head_hash, *, at_ms=None, pem=None):
+    """Sign an export receipt over a custody head, then ask for a timestamp.
+
+    The signed fields are the same four a batch receipt uses. On an export,
+    ``accepted_at_ms`` is the time of the export. The head is the head the
+    package's own entries recompute to. A missing key, or a head this
+    function will not sign, returns no receipt and a missing timestamp.
+    Neither of those is a forgery. This function does not call
+    ``mint_token``. A caller that already holds a token over this same head
+    may keep that token; a token over a different head must not be shipped
+    as if it covered this one.
+    """
+    if at_ms is None:
+        at_ms = ticket.now_ms()
+    try:
+        signed = sign_receipt(build_receipt(
+            record_id=record_id, head_hash=head_hash, accepted_at_ms=at_ms),
+            pem=pem)
+    except (ticket.TicketKeyError, ValueError) as exc:
+        return None, missing_timestamp(
+            "No export receipt was signed (%s). A package with no receipt "
+            "says receipt absent, which is not a forgery." % exc)
+    return signed, stamp(head_hash)
 
 
 def enabled():
@@ -652,10 +683,17 @@ def _parse_response(token):
     if not status_fields or status_fields[0][0] != 0x02:
         raise ValueError("status is not an integer")
     status = _parse_int(status_fields[0][1])
-    if len(fields) < 2 or fields[1][0] != 0xA0:
+    if len(fields) < 2:
         raise ValueError("no token")
-    # [0] EXPLICIT ContentInfo, so the content is the ContentInfo TLV.
-    content_info = fields[1][1]
+    # RFC 3161 TimeStampResp carries ContentInfo directly, a SEQUENCE.
+    # mint_token wraps that SEQUENCE in an explicit [0] tag. Both are a
+    # token. A real DigiCert or Sectigo answer is the SEQUENCE form.
+    if fields[1][0] == 0xA0:
+        content_info = fields[1][1]
+    elif fields[1][0] == 0x30:
+        content_info = fields[1][2]
+    else:
+        raise ValueError("no token")
     info_fields = _one_seq(content_info)
     if len(info_fields) < 2 or info_fields[0][0] != 0x06:
         raise ValueError("token content type is missing")

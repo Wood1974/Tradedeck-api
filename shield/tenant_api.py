@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, g, jsonify, request
 
+import anchor_lock
 import config
 import android_attest
 import app_attest
@@ -52,6 +53,7 @@ import attestation
 import db as shield_db
 import integrity
 import ledger
+import offline_seal
 import queue_ingest
 import tenancy
 import ticket
@@ -247,7 +249,24 @@ def _head_and_append(record_id, entry):
     sealed = ledger.seal(body, prev)
     sealed["tenant_id"] = principal.tenant_id
     _t("custody_log").insert(sealed).execute()
+    g.last_sealed = {
+        "seq": len(ordered),
+        "entry_hash": sealed["entry_hash"],
+        "recorded_at": body["recorded_at"],
+        "event_type": entry["event_type"],
+        "record_id": record_id,
+    }
     return sealed["entry_hash"]
+
+
+def _lock_last(record_id, receipt=None, timestamp=None):
+    """Lock the entry `_head_and_append` just sealed. Never blocks the upload."""
+    info = getattr(g, "last_sealed", None) or {}
+    if info.get("record_id") not in (None, record_id):
+        info = {}
+    return anchor_lock.anchor_after_seal(
+        record_id, info.get("seq", 0), info.get("entry_hash"),
+        info.get("recorded_at"), receipt=receipt, timestamp=timestamp)
 
 
 # ------------------------------------------------------------------ whoami --
@@ -1179,6 +1198,45 @@ def _receipt_view(row, token_row):
     return receipt, timestamp
 
 
+def _export_anchor(record_id, head, receipt_view, timestamp_view):
+    """A receipt over the head this package actually ships.
+
+    The batch receipt covers the head at acceptance. A later custody entry
+    moves that head, and shipping the old receipt would look like tampering
+    to a verifier that recomputes the head. The export signs the shipped
+    head with the same ticket key. ``accepted_at_ms`` on that signature is
+    the export time. ``phone_chain_head`` and the time labels stay the
+    unsigned notes from the batch. A stored token is reused only when it
+    is over this same head. Otherwise the export asks again, and a timestamp
+    authority that is off or down leaves the token missing. Missing is not
+    forged. No signing key leaves the batch receipt in place so an offline
+    package still ships.
+    """
+    signed, stamped = tsa.package_anchor(record_id, head)
+    if not signed:
+        return receipt_view, timestamp_view
+    previous = receipt_view if isinstance(receipt_view, dict) else {}
+    inner = previous.get("signed") if isinstance(previous.get("signed"), dict) else previous
+    batch_head = inner.get("head_hash") if isinstance(inner, dict) else None
+    export_receipt = {
+        "signed": signed["signed"],
+        "signature": signed["signature"],
+        "phone_chain_head": previous.get("phone_chain_head"),
+        "time_labels": list(previous.get("time_labels") or []),
+        "head_hash": signed["head_hash"],
+        "accepted_at_ms": signed["signed"]["accepted_at_ms"],
+        "record_id": record_id,
+    }
+    token_present = (
+        isinstance(timestamp_view, dict)
+        and timestamp_view.get("status") == "present"
+        and timestamp_view.get("token_b64")
+        and batch_head == head)
+    if token_present:
+        return export_receipt, timestamp_view
+    return export_receipt, stamped
+
+
 def _prior_receipt(record_id, captures, existing, allowed, stored_clock):
     """The response for a batch whose receipt is already stored, or None.
 
@@ -1219,6 +1277,7 @@ def _prior_receipt(record_id, captures, existing, allowed, stored_clock):
         token_row = {"status": "missing", "token_b64": None}
     receipt_view, timestamp_view = _receipt_view(row, token_row)
     body = row.get("receipt_json") if isinstance(row.get("receipt_json"), dict) else {}
+    locked = anchor_lock.status_for(record_id, row.get("head_hash"))
     return jsonify({
         "stored": True,
         "replayed": True,
@@ -1233,6 +1292,7 @@ def _prior_receipt(record_id, captures, existing, allowed, stored_clock):
         "signing_key": ticket.export_public_key(),
         "time_labels": body.get("time_labels") or [],
         "photo_ids": [],
+        "locked_anchor": locked,
     }), 200
 
 
@@ -1463,6 +1523,7 @@ def ingest_queue(record_id):
         token_row = {"status": "missing", "token_b64": None}
 
     receipt_view, timestamp_view = _receipt_view(receipt_row, token_row)
+    locked = _lock_last(record_id, receipt=receipt_view, timestamp=timestamp_view)
     public = ticket.export_public_key()
     payload = {
         "stored": True,
@@ -1477,6 +1538,7 @@ def ingest_queue(record_id):
         "signing_key": public,
         "time_labels": labels,
         "photo_ids": photo_ids,
+        "locked_anchor": locked,
     }
     if prepared["message"]:
         payload["message"] = prepared["message"]
@@ -1643,6 +1705,7 @@ def upload_photo(record_id):
     # than replacing it. The failed attempt stays in the record and in the
     # published statistics; deleting it would make every corrected failure
     # disappear from our own numbers.
+    locked = []
     try:
         previous = (_t("photos").select("id")
                     .eq("checkpoint_id", checkpoint_id)
@@ -1656,6 +1719,7 @@ def upload_photo(record_id):
                 "event_type": "superseded", "photo_id": old["id"],
                 "event_data": {"superseded_by": photo_id},
             })
+            locked.append(_lock_last(record_id))
     except Exception:
         log.exception("Supersede pass failed for checkpoint %s", checkpoint_id)
 
@@ -1675,11 +1739,15 @@ def upload_photo(record_id):
             "attestation_tier": attested["tier"],
         },
     })
+    locked.append(_lock_last(record_id))
     return jsonify({
         "photo": (res.data or [{}])[0],
         # Only an attestation registers a key; an assertion used one that was.
         # The app keeps its key id only when this is true.
         "attestation_key_registered": bool(attested.get("key_registered")),
+        # A backup for the phone. The S3 object is the record that counts.
+        "locked_anchor": locked[-1] if locked else {"status": "disabled"},
+        "locked_anchors": locked,
     }), 201
 
 
@@ -1745,6 +1813,9 @@ def package(record_id):
                    for p in photos]
 
     ordered = chain_in_order(entries, record_id)
+    # The exported event appended above is not in `ordered`. The receipt
+    # covers the head these bytes recompute to, which is this list.
+    head = ledger.head_of(ordered, record_id)
     receipt_row = token_row = None
     try:
         receipt_row = shield_db.latest_receipt(_principal().tenant_id, record_id)
@@ -1753,7 +1824,8 @@ def package(record_id):
                 _principal().tenant_id, receipt_row.get("id"))
     except Exception:
         log.exception("Receipt read failed for package %s", record_id)
-    receipt_view, timestamp_view = _receipt_view(receipt_row, token_row)
+    receipt_view, timestamp_view = _export_anchor(
+        record_id, head, *_receipt_view(receipt_row, token_row))
     return jsonify({
         "schema": "tradedeck.shield.package.v2",
         "chain_version": ledger.CHAIN_VERSION,
@@ -1762,14 +1834,44 @@ def package(record_id):
         "checkpoints": points,
         "photos": safe_photos,
         "custody": ordered,
-        "head_hash": ledger.head_of(ordered, record_id),
+        "head_hash": head,
         "receipt": receipt_view,
         "timestamp": timestamp_view,
         "signing_key": ticket.export_public_key(),
+        "locked_anchors": anchor_lock.anchors_for(record_id),
+        "offline": _offline_block(record_id, ordered),
         "verify_with": "https://github.com/Wood1974/Tradedeck-api "
                        "(shield/verifier/shield_verify.py, or "
                        "shield/webapp/shield.html in a browser)",
     })
+
+
+def _offline_block(record_id, entries):
+    """The phone chain, ticket, and key a recipient can check with wifi off.
+
+    Built from rows already stored. A failure here leaves the custody package
+    intact and the seal card empty, rather than failing the export.
+    """
+    ticket_row = None
+    public_key = None
+    try:
+        ticket_row = shield_db.find_job_ticket(_principal().tenant_id, record_id)
+        if ticket_row and ticket_row.get("key_id"):
+            rows = (_t("attested_keys").select("public_key")
+                    .eq("key_id", ticket_row["key_id"])
+                    .eq("tenant_id", _principal().tenant_id)
+                    .limit(1).execute()).data or []
+            if rows:
+                public_key = rows[0].get("public_key")
+    except Exception:
+        log.exception("Offline seal block failed for %s", record_id)
+        return None
+    return offline_seal.block_from_stored(
+        entries=entries,
+        ticket_row=ticket_row,
+        public_key_b64=public_key,
+        app_id=config.get("APP_ATTEST_APP_ID") or None,
+    )
 
 
 def _live_for(checkpoint_id, photos):
