@@ -28,6 +28,9 @@ Targets, in descending order of what a finding would cost us
                     bomb lived.
   5. geometry       haversine and solar identities that must hold for all
                     inputs, not just the ones we wrote tests for.
+  6. capture        the on-phone capture record: whole numbers only, floats
+                    refused, a broken link caught, flags unable to move the
+                    time verdict.
 
 Every finding is reproducible: the seed that produced it is printed and saved.
 A finding is not a bug report — it is a failing case to turn into a named test
@@ -60,8 +63,10 @@ import logging             # noqa: E402
 # correct path; left on, it buries an actual finding in scrollback.
 logging.disable(logging.CRITICAL)
 
+import capture_record       # noqa: E402
 import ledger              # noqa: E402
 import shield_verify       # noqa: E402
+import time_audit          # noqa: E402
 
 try:
     import integrity
@@ -450,9 +455,197 @@ def t_rebroadcast(rnd, report, _cache=[]):
     return None
 
 
+def _hex64(rnd):
+    return "".join(rnd.choice("0123456789abcdef") for _ in range(64))
+
+
+def _short_id(rnd):
+    pool = string.ascii_letters + "ü漢字-_."
+    return "id-" + "".join(rnd.choice(pool) for _ in range(rnd.randint(0, 24)))
+
+
+def t_capture(rnd, report):
+    """Whole-number capture records.
+
+    The custody canonical fuzzer allows floats, because the custody chain
+    has two. This one must refuse them, keep absent and null identical, catch
+    an edit at the record where it happened, and keep a flag bit from moving
+    the time verdict.
+    """
+    raw = {
+        "version": 1,
+        "checkpoint_id": _short_id(rnd),
+        "photo_sha256": _hex64(rnd),
+        "ticket_id": _short_id(rnd),
+        "wall_time_ms": rnd.randint(-10**12, 10**12),
+        "monotonic_ms": rnd.randint(0, 10**12),
+        "flags": rnd.randint(0, 255),
+    }
+    if rnd.random() < 0.5:
+        raw["boot_count"] = rnd.randint(0, 10_000)
+    if rnd.random() < 0.5:
+        raw["boot_id"] = _short_id(rnd)
+    if rnd.random() < 0.4:
+        raw["gnss_time_ms"] = raw["wall_time_ms"] + rnd.randint(-10**6, 10**6)
+    if rnd.random() < 0.3:
+        raw["location_simulated"] = rnd.choice([True, False])
+    if rnd.random() < 0.3:
+        raw["sensor_hash"] = _hex64(rnd)
+    if rnd.random() < 0.5:
+        raw["depth_present"] = True
+        raw["depth_hash"] = _hex64(rnd)
+    elif rnd.random() < 0.5:
+        raw["depth_present"] = False
+
+    try:
+        once = capture_record.canonical(raw)
+    except ValueError as exc:
+        return report("capture", "a whole-number record was refused",
+                      {"error": str(exc), "record": raw})
+    if capture_record.canonical(dict(raw)) != once:
+        return report("capture", "canonical bytes are not stable", {"record": raw})
+
+    nulled = dict(raw)
+    for field in ("boot_id", "boot_count", "gnss_time_ms", "location_simulated",
+                  "sensor_hash", "depth_hash", "depth_present"):
+        if field not in nulled:
+            nulled[field] = None
+    if capture_record.canonical(nulled) != once:
+        return report("capture", "explicit null differs from absent",
+                      {"record": raw})
+
+    noisy = dict(raw, extra="metadata", chain_version=2)
+    if capture_record.canonical(noisy) != once:
+        return report("capture", "an unsigned field changed the hash",
+                      {"record": raw})
+
+    floated = dict(raw)
+    floated["wall_time_ms"] = float(int(raw["wall_time_ms"]))
+    try:
+        capture_record.canonical(floated)
+        return report("capture", "accepted a float wall time", {"record": floated})
+    except ValueError:
+        pass
+
+    nested = {
+        "heading_hundredths": rnd.randint(0, 36000),
+        "latitude_microdeg": rnd.randint(-90_000_000, 90_000_000),
+        "samples_milli_g": [rnd.randint(-1000, 1000)
+                            for _ in range(rnd.randint(0, 4))],
+        "unused": None,
+    }
+    try:
+        snap = capture_record.canonical_whole(nested)
+    except ValueError as exc:
+        return report("capture", "a whole-number snapshot was refused",
+                      {"error": str(exc), "nested": nested})
+    if capture_record.canonical_whole(dict(nested)) != snap:
+        return report("capture", "snapshot bytes are not stable", {"nested": nested})
+    bad_snap = dict(nested)
+    bad_snap["heading_hundredths"] = 1.5
+    try:
+        capture_record.canonical_whole(bad_snap)
+        return report("capture", "accepted a float in a snapshot",
+                      {"nested": bad_snap})
+    except ValueError:
+        pass
+
+    prev = _hex64(rnd)
+    sealed = []
+    cursor = prev
+    for i in range(rnd.randint(1, 6)):
+        item = dict(raw)
+        item["checkpoint_id"] = f"{raw['checkpoint_id']}-{i}"
+        item["monotonic_ms"] = raw["monotonic_ms"] + i * 1000
+        item["wall_time_ms"] = raw["wall_time_ms"] + i * 1000
+        try:
+            done = capture_record.seal(item, cursor)
+        except ValueError as exc:
+            return report("capture", "seal refused a record that canonicalised",
+                          {"error": str(exc), "record": item})
+        sealed.append(done)
+        cursor = done["record_hash"]
+
+    clean = capture_record.verify_chain(sealed, prev)
+    if clean["verdict"] != capture_record.VERDICT_INTACT or not clean["intact"]:
+        return report("capture", "a freshly sealed chain does not verify",
+                      {"records": len(sealed), "result": clean})
+
+    kind = rnd.choice(["edit", "delete", "relink", "truncate"])
+    tampered = [dict(e) for e in sealed]
+    index = rnd.randrange(len(tampered))
+    if kind == "truncate":
+        if len(tampered) < 2:
+            return None
+        short = tampered[:-1]
+        if capture_record.verify_chain(short, prev)["verdict"] != capture_record.VERDICT_INTACT:
+            return report("capture",
+                          "tail truncation broke the chain; the documented "
+                          "behaviour is that it does not",
+                          {"records": len(sealed)})
+        caught = capture_record.verify_chain(
+            short, prev, expect_head=clean["head_hash"])
+        if caught["verdict"] != capture_record.VERDICT_TAMPERED:
+            return report("capture",
+                          "tail truncation was not caught against a held head",
+                          {"head": clean["head_hash"]})
+        return None
+    if kind == "delete":
+        if len(tampered) < 2:
+            return None
+        del tampered[index]
+        if index == len(sealed) - 1:
+            return None  # tail truncation, handled above
+    elif kind == "relink":
+        tampered[index]["prev_hash"] = _hex64(rnd)
+        if tampered[index]["prev_hash"] == sealed[index]["prev_hash"]:
+            return None
+    else:
+        tampered[index]["flags"] = tampered[index]["flags"] + 1
+
+    after = capture_record.verify_chain(tampered, prev)
+    if after["verdict"] != capture_record.VERDICT_TAMPERED or after["intact"]:
+        return report("capture", f"{kind} was not detected",
+                      {"index": index, "records": len(sealed)})
+    if kind != "delete" and after["broken_at_index"] != index:
+        return report("capture", f"{kind} was not caught at the edited record",
+                      {"index": index, "broken": after["broken_at_index"]})
+
+    boot = raw.get("boot_count", 1)
+    observation = {
+        "wall_time_ms": raw["wall_time_ms"],
+        "monotonic_ms": raw["monotonic_ms"],
+        "boot_count": boot,
+    }
+    if "boot_id" in raw:
+        observation["boot_id"] = raw["boot_id"]
+    later = dict(observation)
+    later["monotonic_ms"] = observation["monotonic_ms"] + 1000
+    later["wall_time_ms"] = observation["wall_time_ms"] + 1000
+    if "gnss_time_ms" in raw:
+        later["gnss_time_ms"] = raw["gnss_time_ms"]
+    try:
+        plain = time_audit.assess(observation, later)
+        flagged = dict(later)
+        flagged["flags"] = rnd.randint(0, 1 << 12)
+        flagged["location_simulated"] = bool(rnd.getrandbits(1))
+        moved = time_audit.assess(observation, flagged)
+    except ValueError as exc:
+        return report("capture", "time audit refused a whole-number observation",
+                      {"error": str(exc)})
+    if (moved["verdict"] != plain["verdict"] or moved["labels"] != plain["labels"]
+            or moved["gnss"] != plain["gnss"]
+            or moved["monotonic_delta_ms"] != plain["monotonic_delta_ms"]):
+        return report("capture", "flags changed the time verdict",
+                      {"plain": plain["verdict"], "flagged": moved["verdict"],
+                       "flags": flagged["flags"]})
+    return None
+
+
 TARGETS = {"differential": t_differential, "chain": t_chain,
            "canonical": t_canonical, "parsers": t_parsers,
-           "geometry": t_geometry, "rebroadcast": t_rebroadcast}
+           "geometry": t_geometry, "rebroadcast": t_rebroadcast,
+           "capture": t_capture}
 
 
 # ------------------------------------------------------------------ main ---

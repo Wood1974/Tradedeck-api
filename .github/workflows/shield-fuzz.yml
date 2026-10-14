@@ -17,7 +17,7 @@ on:
         description: 'Seed, to reproduce a reported finding'
         required: false
       target:
-        description: 'Single target (differential|chain|canonical|parsers|geometry)'
+        description: 'Single target (differential|chain|canonical|parsers|geometry|rebroadcast|capture)'
         required: false
 
 permissions:

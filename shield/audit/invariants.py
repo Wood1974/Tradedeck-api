@@ -665,6 +665,111 @@ def inv_rebroadcast_never_accuses():
     return True, "positives upgrade; negatives never accuse"
 
 
+def inv_capture_flags_never_flip_time_verdict():
+    """A device-integrity flag must not move the time label or the byte verdict.
+
+    Screen capture, a debugger, mock location, and root traces are weak
+    signals the subject can often set or clear. A build that let any of them
+    turn a consistent clock into DEVICE CLOCK MISMATCH, clear a real
+    mismatch, or report an honest record as TAMPERED would be accusing — or
+    exonerating — from a bit. The time decision reads the clocks. The chain
+    decision reads the bytes. The bits ride along.
+    """
+    import capture_record
+    import time_audit
+
+    ticket = {"wall_time_ms": 1_700_000_000_000, "monotonic_ms": 50_000,
+              "boot_count": 3}
+    agreed = {"wall_time_ms": 1_700_000_060_000, "monotonic_ms": 110_000,
+              "boot_count": 3}
+    clean = time_audit.assess(ticket, agreed)
+    if clean["verdict"] != time_audit.VERDICT_CONSISTENT:
+        return False, "a clock that agrees with itself is no longer consistent"
+
+    flags = (capture_record.FLAG_SCREEN_CAPTURED | capture_record.FLAG_DEBUGGER
+             | capture_record.FLAG_MOCK_LOCATION | capture_record.FLAG_ROOT_TRACES
+             | (1 << 10))
+    flagged = dict(agreed, flags=flags, location_simulated=True)
+    out = time_audit.assess(ticket, flagged)
+    if out["verdict"] != clean["verdict"] or out["labels"] != clean["labels"]:
+        return False, "flags changed a consistent time verdict into " \
+                      f"{out['verdict']!r}"
+
+    jumped = dict(agreed, wall_time_ms=agreed["wall_time_ms"] + 180_000)
+    mismatch = time_audit.assess(ticket, jumped)
+    if mismatch["verdict"] != time_audit.VERDICT_DEVICE_CLOCK_MISMATCH:
+        return False, "a three-minute jump is no longer a device-clock mismatch"
+    jumped["flags"] = 0
+    if time_audit.assess(ticket, jumped)["verdict"] != mismatch["verdict"]:
+        return False, "clearing the flags cleared a clock mismatch"
+    jumped["flags"] = flags
+    jumped["location_simulated"] = True
+    if time_audit.assess(ticket, jumped)["verdict"] != mismatch["verdict"]:
+        return False, "setting the flags cleared a clock mismatch"
+
+    record = capture_record.build(
+        checkpoint_id="cp",
+        photo_sha256="ab" * 32,
+        ticket_id="ticket",
+        wall_time_ms=1_700_000_000_000,
+        monotonic_ms=50_000,
+        boot_count=3,
+        flags=flags,
+        location_simulated=True,
+    )
+    prev = "cd" * 32
+    sealed = capture_record.seal(record, prev)
+    verified = capture_record.verify_chain([sealed], prev)
+    if verified["verdict"] != capture_record.VERDICT_INTACT:
+        return False, "a record that honestly carries flags verifies as tampered"
+
+    # A monotonic clock does not run backward on one boot. Matching the wall
+    # clock to that backward step must not come out CONSISTENT, and it must
+    # not be accused as a device-clock mismatch.
+    backward = {
+        "wall_time_ms": ticket["wall_time_ms"] - 1,
+        "monotonic_ms": ticket["monotonic_ms"] - 1,
+        "boot_count": ticket["boot_count"],
+        "flags": flags,
+    }
+    back = time_audit.assess(ticket, backward)
+    if back["verdict"] != time_audit.VERDICT_UNVERIFIED_TIME:
+        return False, ("a monotonic clock that ran backward is "
+                       f"{back['verdict']!r}, not unverified time")
+    if time_audit.VERDICT_DEVICE_CLOCK_MISMATCH in back["labels"]:
+        return False, "a backward monotonic clock was labeled a device-clock mismatch"
+    if time_audit.assess(ticket, dict(backward, flags=0))["verdict"] != back["verdict"]:
+        return False, "clearing the flags changed a backward-clock label"
+    return True, "flags are carried in the bytes and never move the time label"
+
+
+def inv_clock_limit_is_not_the_challenge_ttl():
+    """The 120 s clock limit and the 120 s challenge lifetime are different knobs.
+
+    Both are 120 seconds today. One is how long a capture nonce may be spent.
+    The other is how far a device clock may drift before a capture is labeled.
+    Sharing the constant would make a change to nonce lifetime silently move
+    the clock audit, or the other way around.
+    """
+    import time_audit
+    path = SHIELD / "time_audit.py"
+    src = path.read_text()
+    src = re.sub(r'"""[\s\S]*?"""', "", src)
+    src = re.sub(r"#[^\n]*", "", src)
+    if "CHALLENGE_TTL" in src or "import attestation" in src or "attestation." in src:
+        return False, ("time_audit reads the capture-challenge lifetime; the "
+                       "clock limit has to be its own constant")
+    if "CLOCK_MISMATCH_LIMIT_MS" not in src:
+        return False, "the clock-mismatch limit has no name of its own"
+    if time_audit.CLOCK_MISMATCH_LIMIT_MS != 120_000:
+        return False, (f"CLOCK_MISMATCH_LIMIT_MS is "
+                       f"{time_audit.CLOCK_MISMATCH_LIMIT_MS}, not 120000 ms")
+    import attestation
+    if time_audit.CLOCK_MISMATCH_LIMIT_MS == attestation.CHALLENGE_TTL_S:
+        return False, "the clock limit and the challenge TTL are the same value"
+    return True, "120000 ms for the clock, 120 s for the nonce, different names"
+
+
 def inv_attestation_fails_closed():
     """Unverified or unbound device claims must never reach a trusted tier.
 
@@ -1691,6 +1796,215 @@ def inv_capture_app_has_no_library_path():
                            "would prove a moment and not a file")
     return True, "the capture app has no path to a file it did not photograph"
 
+
+def _strip_prose(src):
+    src = re.sub(r'"""[\s\S]*?"""', "", src)
+    return re.sub(r"#[^\n]*", "", src)
+
+
+def inv_job_ticket_is_a_database_row():
+    """A job ticket is a signed database row, not the in-process challenge jar.
+
+    Render runs two gunicorn workers. The capture-challenge jar is per
+    process, so a ticket kept there exists on whichever worker issued it
+    and is invisible to the other. The row has to be written by the
+    service-role client, only after the phone's signature verifies, and
+    the signing key has to be configuration. A key pasted into the source
+    is a key anyone with the repository can use to mint tickets.
+    """
+    import os
+    ticket_path = SHIELD / "ticket.py"
+    if not ticket_path.exists():
+        return False, "ticket.py is gone; genesis has no implementation"
+    raw = ticket_path.read_text()
+    if "BEGIN PRIVATE KEY" in raw or "BEGIN EC PRIVATE KEY" in raw:
+        return False, "ticket.py contains a private key"
+    code = _strip_prose(raw)
+    if "ChallengeStore" in code:
+        return False, "the ticket module uses the in-process challenge jar"
+    if "SHIELD_TICKET_SIGNING_KEY_PEM" not in (SHIELD / "config.py").read_text():
+        return False, "the ticket signing key is no longer configuration"
+
+    import ticket
+    if not os.environ.get("SHIELD_TICKET_SIGNING_KEY_PEM"):
+        if ticket.load_signing_key() is not None:
+            return False, ("a ticket signing key loads with the env var unset, "
+                           "so a key is hardcoded")
+
+    migration = next(iter(sorted(
+        MIGRATIONS.glob("*job_ticket*.sql"))), None)
+    if migration is None:
+        return False, "the job_tickets migration is gone"
+    sql = migration.read_text().lower()
+    for needle, why in (
+        ("create table if not exists shield.job_tickets",
+         "shield.job_tickets is not created"),
+        ("tenant_id", "the ticket table has no tenant_id"),
+        ("unique (record_id)", "two tickets can be stored for one record"),
+        ("force row level security", "RLS is not forced on job tickets"),
+        ("revoke all on shield.job_tickets from anon, authenticated",
+         "the browser roles can reach job tickets"),
+        ("hardware_signature", "a row can be stored with no hardware signature"),
+        ("ticket_clock", "the phone clock at genesis is not stored on the ticket"),
+    ):
+        if needle not in sql:
+            return False, why
+
+    db_src = _strip_prose((SHIELD / "db.py").read_text())
+    if "def insert_job_ticket" not in db_src or 'table("job_tickets")' not in db_src:
+        return False, "db.py is no longer the service-role writer for job tickets"
+
+    import tenant_api
+    for fn in (tenant_api.genesis, tenant_api._offer_genesis,
+               tenant_api._seal_genesis):
+        if "CHALLENGES" in _strip_prose(_source(fn)):
+            return False, f"{fn.__name__} reads the in-process challenge jar"
+    offer = _strip_prose(_source(tenant_api._offer_genesis))
+    if "insert_job_ticket" in offer:
+        return False, "the offer writes a ticket before the phone has signed it"
+    seal = _strip_prose(_source(tenant_api._seal_genesis))
+    verified_at = seal.find('["verified"]')
+    insert_at = seal.find("insert_job_ticket")
+    if verified_at < 0 or insert_at < 0 or verified_at > insert_at:
+        return False, ("the ticket row is written before the hardware "
+                       "signature is checked")
+    play = _strip_prose(_source(tenant_api._play_for))
+    if "verified=False" not in play or "verified=True" in play:
+        return False, ("genesis treats a Play Integrity body as verified; "
+                       "this release does not call Google")
+    if "ticket_clock" not in seal or "normalize_clock" not in seal:
+        return False, "the seal route does not bind the phone clock"
+    sample_hash = "ab" * 32
+    try:
+        _challenge, payload = ticket.hardware_binding(
+            sample_hash, {"wall_time_ms": 1, "monotonic_ms": 2, "boot_count": 1})
+    except Exception as exc:
+        return False, f"the genesis binding refused a phone clock ({exc})"
+    if payload == bytes.fromhex(sample_hash):
+        return False, ("the genesis signature covers only the ticket hash, "
+                       "so the phone clock can be substituted later")
+
+    import ledger
+    if ledger.CHAIN_VERSION != 2:
+        return False, f"chain_version moved to {ledger.CHAIN_VERSION}"
+    return True, "job tickets are signed rows, shared across workers"
+
+
+def inv_offline_queue_does_not_replace_the_chain():
+    """An offline batch is one custody entry. It is not a new chain.
+
+    The phone already hashed its own captures. Nesting that chain inside
+    one custody entry is the whole design. Replacing the custody chain, or
+    bumping chain_version to make room for it, would make every package
+    already in the field fail to verify. A missing timestamp is the other
+    half: the receipt is the record that the batch was accepted, and a
+    timestamp authority that does not answer does not turn that into a
+    forgery finding or into a token this service minted for itself.
+    """
+    import ledger
+    if ledger.CHAIN_VERSION != 2:
+        return False, f"chain_version moved to {ledger.CHAIN_VERSION}"
+
+    queue_path = SHIELD / "queue_ingest.py"
+    tsa_path = SHIELD / "tsa.py"
+    if not queue_path.exists() or not tsa_path.exists():
+        return False, "the offline queue or the timestamp module is missing"
+    queue_code = _strip_prose(queue_path.read_text())
+    if "chain_version" in queue_code or "CHAIN_VERSION" in queue_code:
+        return False, "queue_ingest assigns a chain version; seal stamps 2"
+    if "urllib" in queue_code:
+        return False, "queue_ingest talks to the network"
+
+    tsa_raw = tsa_path.read_text()
+    if "BEGIN CERTIFICATE" in tsa_raw:
+        return False, "tsa.py contains an embedded certificate"
+    import tsa
+    stamp_code = _strip_prose(_source(tsa.stamp))
+    if "mint_token" in stamp_code:
+        return False, ("stamp() mints a token when the authority does not "
+                       "answer")
+
+    called = {"n": 0}
+    real_post = tsa._urllib_post
+
+    def _boom(url, body, timeout=10):
+        called["n"] += 1
+        raise AssertionError(url)
+
+    tsa._urllib_post = _boom
+    try:
+        out = tsa.stamp("ab" * 32, enabled_flag=False)
+    finally:
+        tsa._urllib_post = real_post
+    if called["n"]:
+        return False, ("stamp() contacted a timestamp authority while the "
+                       "flag was off")
+    if out.get("status") != "missing" or out.get("forged") is not False:
+        return False, ("a disabled timestamp is not reported as missing, "
+                       "or is called forged")
+
+    cfg = (SHIELD / "config.py").read_text()
+    if ("timestamp.digicert.com" not in cfg
+            or "timestamp.sectigo.com" not in cfg):
+        return False, ("DigiCert and Sectigo are no longer the configured "
+                       "authorities")
+
+    migration = next(iter(sorted(MIGRATIONS.glob("*receipts*.sql"))), None)
+    if migration is None:
+        return False, "the receipts migration is gone"
+    sql = migration.read_text().lower()
+    for needle, why in (
+        ("create table if not exists shield.receipts",
+         "shield.receipts is not created"),
+        ("create table if not exists shield.tsa_tokens",
+         "shield.tsa_tokens is not created"),
+        ("force row level security",
+         "RLS is not forced on the receipt tables"),
+        ("revoke all on shield.receipts from anon, authenticated",
+         "the browser roles can reach receipts"),
+        ("revoke all on shield.tsa_tokens from anon, authenticated",
+         "the browser roles can reach timestamp tokens"),
+        ("status in ('present', 'missing')",
+         "a timestamp status other than present or missing is allowed"),
+        ("offline_batch",
+         "the custody log cannot record an offline batch"),
+        ("unique (record_id, phone_chain_head)",
+         "two receipts can cover one phone-chain head"),
+    ):
+        if needle not in sql:
+            return False, why
+
+    db_src = _strip_prose((SHIELD / "db.py").read_text())
+    if "def insert_receipt" not in db_src or "def insert_tsa_token" not in db_src:
+        return False, "db.py is no longer the service-role writer for receipts"
+
+    import tenant_api
+    ingest = _strip_prose(_source(tenant_api.ingest_queue))
+    sig_at = ingest.find("_queue_signatures")
+    insert_at = ingest.find("insert_receipt")
+    if sig_at < 0 or insert_at < 0 or sig_at > insert_at:
+        return False, ("a receipt is stored before the hardware signatures "
+                       "are checked")
+    if "CHALLENGES" in ingest:
+        return False, "the offline queue reads the in-process challenge jar"
+    checked = _strip_prose(_source(tenant_api._queue_signatures))
+    if '["verified"]' not in checked:
+        return False, "the batch does not require a verified hardware signature"
+    if 'existing.get("ticket_clock")' not in ingest:
+        return False, "the batch does not read the clock stored on the ticket"
+    if 'body.get("ticket_clock")' in ingest or "body.get('ticket_clock')" in ingest:
+        return False, "the batch trusts a clock supplied with the request"
+    advance_at = ingest.find("_advance_counter")
+    if advance_at < 0 or advance_at < insert_at:
+        return False, "the assertion counter moves before the receipt is stored"
+    photos = _strip_prose(_source(tenant_api._store_batch_photos))
+    if 'split(",")[-1]' not in photos:
+        return False, ("the batch records the leftmost X-Forwarded-For hop, "
+                       "which the client chooses")
+    return True, ("offline batches nest under chain_version 2, and a missing "
+                  "timestamp is not forged")
+
+
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -1728,6 +2042,8 @@ INVARIANTS = (
     ("export-is-recomputable", "Hand over a package whose integrity is our assertion", inv_export_carries_recomputable_custody),
     ("spec-matches-service", "Ship a spec that does not produce the hashes we issue", inv_verifier_agrees_with_the_service),
     ("rebroadcast-never-accuses", "Turn a photograph of a flat wall into a fraud finding", inv_rebroadcast_never_accuses),
+    ("capture-flags-never-flip-time", "Use a screen, debugger, mock-location, or root flag to change the time verdict", inv_capture_flags_never_flip_time_verdict),
+    ("clock-limit-is-not-challenge-ttl", "Move the clock-mismatch threshold by changing how long a capture challenge lives", inv_clock_limit_is_not_the_challenge_ttl),
     ("attestation-fails-closed", "Claim hardware trust with an unverified or replayed attestation", inv_attestation_fails_closed),
     ("attestation-labels-not-blocks", "Turn a rooted phone into a subcontractor who cannot document his work", inv_attestation_labels_rather_than_blocks),
     ("fee-neutrality-holds", "Quietly delete the one clause that makes issuer-pays survivable", inv_fee_neutrality_clause_survives),
@@ -1748,6 +2064,8 @@ INVARIANTS = (
     ("attestation-anchor-is-configuration", "Verify a forged attestation against a root an attacker chose", inv_attestation_anchor_is_configuration),
     ("attestation-covers-the-bytes", "Attest honestly on a real device and upload somebody else's photograph", inv_attestation_covers_the_bytes),
     ("capture-app-has-no-library-path", "Record a photograph the device never took, via the photo library", inv_capture_app_has_no_library_path),
+    ("job-ticket-is-a-database-row", "Keep a job ticket in one worker's memory, or store one the phone did not sign", inv_job_ticket_is_a_database_row),
+    ("offline-queue-nests-the-phone-chain", "Replace the custody chain with the phone's chain, or call a missing timestamp forged", inv_offline_queue_does_not_replace_the_chain),
 )
 
 

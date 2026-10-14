@@ -236,3 +236,613 @@ no chain had ever been written and the migration this section demands had
 nothing to re-chain. The same change after the first real record would have
 invalidated it. A format defect in an evidence product gets more expensive
 every day it is left, and this one had a window where the price was zero.
+
+## 9. Addendum — the on-phone capture record
+
+Sections 1 through 8 are unchanged. `chain_version` is not part of this
+record. It remains 2.
+
+A phone that keeps taking photos with no signal needs its own record, signed
+by the phone, linked to the previous record on that phone. That chain is not
+the custody chain. Putting these bytes into `event_data` would make them look
+like the custody chain vouched for a time the phone declared. It does not.
+The reference implementation is `capture_record.py`. The time labels are
+`time_audit.py`. Neither one is a route, a database migration, or a phone
+app. Those come later, and they have to produce these bytes.
+
+### 9.1 Version
+
+`version` is `1`. It is inside the hashed bytes so this signing contract can
+be told apart from the older one, which signs
+`SHA256(challenge ‖ SHA256(photo))` and has no record of this shape. A later
+change to these bytes increments `version`. It does not increment
+`chain_version`.
+
+### 9.2 Fields
+
+Fixed membership. A field not in this list is metadata the record hash does
+not cover.
+
+| Field | JSON type | Required | What it is |
+|---|---|---|---|
+| `version` | number | yes | `1` |
+| `checkpoint_id` | string | yes | Which checkpoint the photo is for |
+| `photo_sha256` | string | yes | Lowercase hex SHA-256 of the original photo bytes |
+| `ticket_id` | string | yes | The job ticket this capture was made under |
+| `wall_time_ms` | number | yes | Phone wall clock, Unix epoch milliseconds |
+| `monotonic_ms` | number | yes | Monotonic milliseconds since boot, sleep included |
+| `boot_id` | string | no | Boot-session id (iOS `kern.bootsessionuuid`) |
+| `boot_count` | number | no | Boot count (Android `BOOT_COUNT`) |
+| `gnss_time_ms` | number | no | GNSS time, Unix epoch milliseconds. Omit when there is no fix |
+| `location_simulated` | boolean | no | Platform mock-location flag. Omit when the platform did not report one |
+| `sensor_hash` | string | no | Lowercase hex SHA-256 of the sensor snapshot. Omit when no snapshot was taken |
+| `depth_hash` | string | no | Lowercase hex SHA-256 of the depth payload |
+| `depth_present` | boolean | no | `true` only together with `depth_hash`. `false` means the phone reported that depth was not available |
+| `flags` | number | yes | Bitfield below. `0` means no bits set, and it is not the same as omitting the field |
+
+`prev_hash` and `record_hash` travel with the record and are **not** in the
+table. They are the link, same as on a custody entry.
+
+Whole numbers only. There is no float in this record.
+
+| Quantity | Unit | Example |
+|---|---|---|
+| Coordinate | microdegrees | 40.760560° is `40760560` |
+| Angle | hundredths of a degree | 184.50° is `18450` |
+| Duration, wall time, GNSS time, monotonic time | milliseconds | 120.000 s is `120000`. 120.001 s is `120001` |
+| Hash | lowercase hex, 64 characters | SHA-256 |
+
+A number has to be an integer in the range a JSON number can carry exactly,
+which is ±(2^53 − 1). Past that, a JavaScript verifier cannot reproduce the
+hash. Booleans are JSON `true` and `false`. They are not `1` and `0`. Those
+hash differently, and a reader in another language cannot guess which one was
+signed.
+
+`monotonic_ms` is already milliseconds when it is signed. iOS converts
+`mach_continuous_time` through the timebase with integer arithmetic. Android
+uses `elapsedRealtime()`. Raw ticks are not in the record: they are not
+comparable across phones, and a floating timebase would put a float in the
+signed bytes.
+
+The sensor snapshot and the depth payload are not inside the record. Each is
+canonicalised with the rules in §9.3, hashed, and the hex is what the record
+holds. Angles inside a snapshot are hundredths of a degree. Coordinates are
+microdegrees. The canonicalizer does not do that scaling. A float is a
+rejected input, not a value to be converted.
+
+`flags` bits, lowest first:
+
+| Bit | Value | Name |
+|---|---|---|
+| 0 | 1 | screen captured |
+| 1 | 2 | debugger attached |
+| 2 | 4 | mock location |
+| 3 | 8 | root traces |
+
+A higher bit is kept in the integer and shown as unknown. It is not stripped,
+and it does not change a time label or the byte verdict. The mock-location
+**bit** and the `location_simulated` **field** are the same fact written
+twice, once for the flag list and once next to the clock. This record does
+not reconcile them. Neither one is a time label.
+
+`depth_hash` without `depth_present: true` is not a record. `depth_present:
+true` without `depth_hash` is not a record.
+
+### 9.3 Canonical bytes
+
+Build a map from the fields in §9.2, then serialise it with the rules in §1,
+plus one rule §1 does not have:
+
+1. Omit null. Absent and null are the same bytes. `0` and `false` are not
+   null, and they are not omitted.
+2. **Reject floats.** Do not render them with `repr()`. NaN and the
+   infinities are floats and are rejected too. The custody chain still
+   renders `gps_lat` and `gps_lng` with `repr()`, because that chain already
+   has those fields. This record was defined so it would not.
+3. Reject a boolean in a number field, and reject a number in a boolean
+   field.
+4. There are no nested objects in the record itself. A snapshot that is
+   hashed *into* the record is a JSON object, keys sorted, nulls omitted,
+   lists kept in order, same separators, floats rejected.
+5. The map becomes compact JSON, keys sorted, separators `(",", ":")`,
+   non-ASCII escaped as `\uXXXX`, then UTF-8. This is what `json.dumps` does
+   with `sort_keys`, `separators=(",", ":")`, and `allow_nan=False`.
+
+`version`, `checkpoint_id`, `photo_sha256`, `ticket_id`, `wall_time_ms`,
+`monotonic_ms`, and `flags` are required. Omitting one of them is not a
+record.
+
+### 9.4 The phone-chain link
+
+```
+record_hash = SHA256( canonical(record) || "|" || prev_hash )
+```
+
+The `"|"` is one byte, as in §3. `prev_hash` is the previous record's
+`record_hash`. For the first record it is the ticket hash defined in §10.
+
+Walk the records in the order they were made. Do not sort them by time.
+
+```
+expected_prev = ticket hash
+for each record:
+    if record.record_hash is missing     -> TAMPERED
+    if record.prev_hash != expected_prev -> TAMPERED (link broken)
+    if link(record, prev_hash) != record.record_hash
+                                         -> TAMPERED (bytes do not reproduce)
+    expected_prev = record.record_hash
+```
+
+A record that fails to parse — a float, a missing required field, a hash
+that is not lowercase hex — is TAMPERED. The bytes do not reproduce.
+
+**INTACT** means every record in the list reproduces its hash and names the
+hash before it. INTACT is not SEALED. SEALED also requires the hardware
+signature, the ticket signature, and the timestamp, which are not checked
+here.
+
+Dropping records off the end leaves a shorter chain that still reports
+INTACT. A head hash the holder already has is what catches that, same as §6.
+A full rewrite that recomputes every link also reports INTACT and moves the
+head. The head is the value worth keeping.
+
+### 9.5 Time labels
+
+`time_audit` reads two observations: the phone's clocks when the ticket was
+issued, and the phone's clocks on the photo. Ticket time here is the phone's
+wall clock at that moment, because monotonic time only means something
+against the same clock. It does not read the custody chain, and it does not
+read `flags`.
+
+The limit is **120 seconds**, stored as `CLOCK_MISMATCH_LIMIT_MS = 120000`.
+The comparison is integer milliseconds and it is strict: a difference of
+`120000` agrees, a difference of `120001` does not, in either direction.
+
+That limit is not the capture-challenge lifetime. The challenge lifetime is
+how long a nonce may be spent. This limit is how far the device clock may
+drift from its own monotonic clock, and from GNSS, before the record is
+labeled. They are both 120 seconds today. They are different constants so
+that changing one does not move the other.
+
+| What happened | Label |
+|---|---|
+| Boot id or boot count differs between ticket and photo, or a boot identifier is present on only one of them, or neither observation has a boot identity | **UNVERIFIED TIME** |
+| A wall or monotonic reading the comparison needs is missing, on the same boot | **UNVERIFIED TIME** |
+| Same boot, and monotonic time on the photo is earlier than monotonic time on the ticket | **UNVERIFIED TIME**. The monotonic clock does not run backward on one boot, so there is no interval. A wall clock moved by the same amount does not make the interval reappear. This is not a device-clock mismatch and not a forgery finding |
+| Same boot, monotonic elapsed is zero or positive, and \|wall − (ticket wall + monotonic elapsed)\| > 120 s | **DEVICE CLOCK MISMATCH** |
+| GNSS time is present and \|GNSS − wall\| > 120 s | **DEVICE CLOCK MISMATCH** |
+| GNSS time is absent | No extra label. The monotonic result stands, and the report says GNSS was absent |
+| Same boot, difference ≤ 120 s, and GNSS absent or within 120 s of the wall | **CONSISTENT** |
+
+Monotonic elapsed is `photo.monotonic_ms − ticket.monotonic_ms`. It is only
+computed when the boot is the same and the elapsed time is not negative.
+A reboot does not become a clock mismatch just because the wall clock also
+moved: there is no interval to check. A monotonic clock that moved backward
+on the same boot is the same kind of gap: the interval is not a duration,
+even if the wall clock was set so the absolute formula would come out even.
+UNVERIFIED TIME is not TAMPERED. The bytes can still be INTACT.
+
+GNSS is compared to the photo's wall clock, not to the ticket. If the boot
+changed **and** GNSS disagrees with the wall clock, both labels apply. The
+single verdict is **DEVICE CLOCK MISMATCH**, because that disagreement was
+measured, and **UNVERIFIED TIME** stays in the list. GNSS agreeing with the
+wall clock does not clear a monotonic mismatch. GNSS being absent does not
+create one and does not clear one. An indoor job has no sky.
+
+`flags` and `location_simulated` never change these labels. A screen
+capture, a debugger, a mock location, or a root trace is reported beside the
+verdict. It does not turn CONSISTENT into DEVICE CLOCK MISMATCH, it does not
+turn a mismatch back into CONSISTENT, and it does not make an intact chain
+TAMPERED.
+
+### 9.6 What this addendum does not establish
+
+- That a hardware key signed the record. The hash is what that key will sign.
+  The check that it did is later.
+- That the ticket is genuine, or that the first `prev_hash` is the ticket
+  hash the server issued. This addendum checks the link the caller supplies.
+  §10 is the ticket. This addendum still does not check it.
+- That the photo came off a camera sensor.
+- That the wall clock is the true time when the label is CONSISTENT. A clock
+  set wrong before the ticket, and left alone, agrees with itself.
+- That a missing timestamp, a missing GNSS fix, or a reboot is forgery.
+- Anything about the custody chain's `chain_version`, which remains 2.
+
+## 10. Addendum — the job ticket (genesis)
+
+Sections 1 through 8 are unchanged. `chain_version` is not part of this
+ticket. It remains 2.
+
+A phone that will keep taking photos with no signal needs a ticket first,
+while it still has a signal. The server builds the ticket and signs it.
+The phone's attested install key signs the hash. The row is written only
+after that signature verifies. The reference implementation is `ticket.py`.
+The route is `POST /shield/v2/records/<id>/genesis`. The phone apps do not
+implement the call yet.
+
+### 10.1 Version
+
+`version` is `1`. It is inside the hashed bytes. It is not
+`capture_record` version 1, and it is not `chain_version`. A later change
+to these bytes increments `version`. It does not increment `chain_version`.
+
+### 10.2 Fields
+
+Fixed membership. A field not in this list is not signed and is not stored.
+
+| Field | JSON type | Required | What it is |
+|---|---|---|---|
+| `version` | number | yes | `1` |
+| `record_id` | string | yes | The record this ticket is for |
+| `checkpoint_list_sha256` | string | yes | Lowercase hex SHA-256 of the locked checkpoint list, §10.5 |
+| `actor_id` | string | yes | The authenticated actor. Taken from the credential, not the body |
+| `expires_at_ms` | number | yes | Server clock plus 7 days, Unix milliseconds. `expires_at_ms` is after `server_time_ms` |
+| `server_time_ms` | number | yes | Server clock when the ticket was offered, Unix milliseconds |
+| `roughtime_ms` | number | no | Outside clock, Unix milliseconds. Omit when it is absent |
+
+Whole numbers only. The same rule as §9.2. A float is rejected. `0` is not
+absent. Null and absent are the same bytes.
+
+`server_time_ms` is the server's clock. It is not the phone's wall clock.
+§9.5 compares the phone's clocks with each other. The phone's own clocks
+at the moment it countersigns are `ticket_clock`. They are not fields of
+this signed ticket, because the server builds the ticket before the phone
+measures them. They are covered by the hardware signature in §10.4 and
+stored on the row. A later batch reads that row. It does not get to
+supply a different baseline.
+
+`ticket_id` on a capture record is the ticket hash from §10.3, not a
+separate identifier. The database row also has its own id. That id is not
+in the signed bytes.
+
+### 10.3 Canonical bytes and the ticket hash
+
+Same rules as §9.3: omit null, reject floats, reject a boolean in a number
+field, compact JSON, keys sorted, separators `(",", ":")`, non-ASCII
+escaped, UTF-8.
+
+```
+ticket_hash = SHA256( canonical(ticket) )
+```
+
+Lowercase hex, 64 characters. There is no `"|"` in this hash. The `"|"`
+in §9.4 is how a capture record links to this hash, not how the hash is
+made.
+
+### 10.4 Who signs
+
+**The server.** ECDSA on curve P-256, SHA-256, over the canonical bytes.
+The signature is DER, then base64. The private key is the environment
+variable `SHIELD_TICKET_SIGNING_KEY_PEM`. It is not in this repository.
+Unset, genesis is refused and nothing is stored. The public half is
+exported as PEM and as the uncompressed point (`0x04 || X || Y`, base64)
+for an evidence package. The private key is not in that export.
+
+**The phone.** The install key already in `shield.attested_keys`. The
+signed message carries the ticket hash and the phone clock, in the same
+slot the capture path already uses:
+
+```
+ticket_clock = canonical JSON of wall_time_ms, monotonic_ms, and boot_id and/or boot_count
+clientData = UTF-8("shield-genesis-v1") || SHA256(ticket_hash_raw || ticket_clock)
+```
+
+`ticket_hash_raw` is the 32-byte digest, not the hex text. `ticket_clock`
+is UTF-8 JSON with sorted keys and tight separators, the same whole-number
+rules as §9.3. The SHA-256 is 32 bytes. iOS passes `SHA-256(clientData)` to
+`generateAssertion`. Android signs `clientData` with `SHA256withECDSA` and
+does not pre-hash it. Both are checked by the existing verifiers. Those
+verifiers are not changed. A signature over the bare ticket hash does not
+verify: the clock would otherwise be free to change at sync.
+
+A capture assertion uses a server nonce as its challenge. A ticket
+assertion uses the fixed challenge `shield-genesis-v1`. One does not
+verify as the other.
+
+The hardware signature has to be present and valid. If it is missing or
+does not verify, the route refuses and writes no row. That is the same
+rule as a photograph.
+
+### 10.5 The checkpoint list
+
+Genesis requires the record's checkpoints to be locked. The hash covers
+each checkpoint's id, point number, label, and, when present, description,
+code reference, and what the photo must show. Rows are sorted by point
+number. Status is not in the hash: status changes as photos are graded,
+and the commitment is the list that was locked.
+
+The server computes the hash. A hash in the request body is ignored on
+the offer, and on the seal it has to match the list now. A list that
+moved does not get a stored ticket.
+
+### 10.6 What is refused
+
+The route refuses, and stores nothing, when:
+
+- the hardware signature is missing or does not verify, including a
+  signature that does not cover the `ticket_clock` sent with it
+- `ticket_clock` is missing, or it has no wall time, no monotonic time,
+  or no boot identity
+- the server signature does not verify (the ticket was altered)
+- `record_id` is not the record in the URL
+- `actor_id` is not the authenticated actor
+- the checkpoint hash is not the locked list
+- `now` is past `expires_at_ms` (`expires_at_ms` itself is still current)
+- the record already has a ticket
+- the checkpoints are not locked
+- no signing key is configured
+
+iOS assertions advance the stored counter with the same compare-and-set
+a photograph uses. A replayed assertion does not verify.
+
+### 10.7 Play Integrity, once per job
+
+Android only, and once, on this row, not on each photograph. The reading
+is `attestation.interpret_play_integrity`.
+
+| What was presented | Status stored |
+|---|---|
+| Nothing | **absent**. Not a pass and not a fail |
+| A token this service has not cryptographically checked | **unverifiable**. Not a pass |
+| A checked token with `MEETS_STRONG_INTEGRITY` or `MEETS_DEVICE_INTEGRITY`, bound to this ticket | **pass** |
+| A checked token the platform rejected (no label, unrecognized app, emulator, basic only) | **fail** |
+
+This release does not call Google. A token that arrives on the wire is
+stored as unverifiable. Pass and fail are what the same function returns
+for a fixture once `verified` is true. The route does not set that.
+
+iOS has no Play Integrity API. A Play Integrity body on an iOS request is
+ignored. The stored reason says so, and it says that App Attest does not
+report whether the device is jailbroken. An iOS pass from App Attest is
+a statement about the app and the Secure Enclave. It is not a statement
+that the phone is not jailbroken.
+
+### 10.8 Roughtime
+
+`SHIELD_ROUGHTIME_ENABLED` defaults to off. There is no Roughtime client
+in this release. When the flag is off, or the outside clock does not
+answer, or the reading is not a whole number of milliseconds, `roughtime_ms`
+is omitted. Genesis still completes. The ticket records the absence by
+not having the field.
+
+### 10.9 Two workers
+
+The offer is not kept in the per-process challenge jar. Render runs two
+gunicorn workers, and that jar is not shared. The phone sends the ticket
+and the server signature back. Any worker can check the signature, because
+the key is configuration, not memory. The stored ticket is a row in
+`shield.job_tickets`, written by the service role. One row per record.
+
+### 10.10 What this addendum does not establish
+
+- That a real Apple device produced the assertion. The verifiers are the
+  ones the capture tests already run, against keys those tests mint.
+- That Google Play Integrity was called. It was not.
+- That an iOS device is not jailbroken.
+- That the phone's wall clock matches the server clock. The stored
+  `ticket_clock` is the phone's own clocks at countersign. §9.5 compares
+  later photos to that observation. A clock set wrong before the ticket,
+  and left alone, still reads CONSISTENT.
+- Anything about `chain_version`, which remains 2.
+
+## 11. Addendum — the offline queue, the receipt, and the timestamp
+
+Sections 1 through 8 are unchanged. `chain_version` is not part of the
+receipt. It remains 2.
+
+A phone that already holds a job ticket (§10) can keep taking photos with
+no signal. Each photo has a capture record (§9) and a hardware signature
+over that record. When the phone has a signal again it sends a batch. The
+route is `POST /shield/v2/records/<id>/queue`. The reference
+implementation is `queue_ingest.py` for the batch and `tsa.py` for the
+receipt and the timestamp. The phone apps do not implement the call yet.
+
+The same credential rules as the rest of `/shield/v2` apply. The record
+has to belong to the tenant. The actor has to be the actor on the ticket.
+The platform, when the body names one, has to be the platform on the
+ticket. The signing key has to be the key that countersigned the ticket.
+
+### 11.1 What one request carries
+
+Each item is three parts:
+
+- the photograph, base64
+- the capture record from §9, including `prev_hash` and `record_hash`
+- the hardware signature over that record
+
+`ticket_clock` is not a field of this request. It is the observation
+stored on the job ticket when the phone countersigned it (§10.4):
+`wall_time_ms`, `monotonic_ms`, and `boot_id` and/or `boot_count`. The
+route reads that row. A clock sent with the batch is not used. The
+accepted batch nests the stored observation in the custody entry, so a
+later edit moves the custody head.
+
+The first batch on a record has to start at the ticket hash. The next
+batch has to start at `phone_chain_head` from the receipt already stored
+for this record. A batch that starts anywhere else is refused, and
+nothing is stored.
+
+### 11.2 How many photographs
+
+`SHIELD_QUEUE_BATCH_CAP` defaults to 8. One request may carry that many.
+Photographs past the cap are not accepted. The response says to send the
+next batch, and it names how many were left behind. The prefix that was
+accepted is a chain of its own. The next request starts at that prefix's
+head.
+
+A head the phone claims for the whole request is not applied to a prefix
+the cap shortened. Applying it would refuse the split the cap exists to
+make. When the request fits in the cap, a claimed head that is not the
+head just computed is a truncated chain, and the batch is refused.
+
+### 11.3 The hardware signature
+
+The install key is the one already in `shield.attested_keys`, and it is
+the key on the job ticket. A different key is refused.
+
+The signed message uses the same slot the ticket uses, with a different
+challenge, so a ticket signature does not verify as a capture and a
+capture signature does not verify as a ticket:
+
+```
+clientData = UTF-8("shield-capture-v1") || record_hash_raw
+```
+
+`record_hash_raw` is the 32-byte record hash, not the hex text. The
+record hash covers `photo_sha256`. The route recomputes SHA-256 of the
+photograph that arrived and refuses the batch when it disagrees with the
+record. iOS passes `SHA-256(clientData)` to `generateAssertion`. Android
+signs `clientData` with `SHA256withECDSA`. Both are checked by
+`app_attest.verify_assertion` and `android_attest.verify_signature`.
+Those verifiers are not changed.
+
+There is no server nonce on this path. The phone was offline. The
+per-process challenge jar is not used. A replay of an earlier batch is
+stopped by the chain: the next batch has to extend the phone-chain head
+already stored. Sending the same batch again, after its receipt exists,
+returns that receipt with HTTP 200 and `replayed` true, and stores
+nothing else. iOS also has to advance
+the assertion counter. The counter moves once, to the last counter in
+the batch, and only after the receipt row for this batch is stored. A
+failure before that row exists stores nothing and does not move the
+counter, so the phone can send the batch again.
+
+A signature that does not verify, or a key this service does not trust,
+refuses the batch. Nothing is stored. Trust is the same two tiers a
+photograph already requires.
+
+### 11.4 The chain, and the clock labels
+
+`capture_record.verify_chain` checks the batch. A signed field that was
+edited, a missing link, a chain that does not start where the last
+receipt ended, or a chain shorter than a head the phone claimed: the
+verdict is TAMPERED, the route refuses, and nothing is stored.
+
+`time_audit.assess` runs on every capture that linked. A reboot, or a
+missing boot identity, is **UNVERIFIED TIME**. A wall clock that
+disagrees with the ticket's wall clock plus the monotonic elapsed, or a
+GNSS time that disagrees with the photo's wall clock, is **DEVICE CLOCK
+MISMATCH**. The limit is the one in §9.5. These labels are stored on the
+custody entry and on the receipt. They are not a reason to refuse the
+photographs.
+
+Flags do not enter the time verdict. Screen capture, a debugger, mock
+location, and root traces are stored beside the label. They do not create
+a mismatch, clear one, or turn a reboot into a consistent clock.
+
+The labels describe the clocks the phone reported. A clock set wrong
+before the ticket, and left alone, still reads CONSISTENT. That limit is
+§9.5, and this addendum does not widen it.
+
+The ticket's expiry is not re-checked here. A batch can arrive after the
+seven days in §10.6. A wall clock that has been set back is a time label,
+not a second expiry check.
+
+### 11.5 One custody entry
+
+The route appends one entry, `event_type` `offline_batch`. `file_hash`
+is the phone-chain head. `event_data` carries that same head, the ticket
+hash, the phone chain, the per-capture labels, `ticket_clock`, and
+`sealed_photos`. `ledger.seal` stamps `chain_version` 2, as it does for
+every other entry. The phone chain is nested under the custody chain. It
+does not replace it, and it does not get its own `chain_version`.
+
+`sealed_photos` is a list of objects, one per photograph stored for the
+batch:
+
+| Field | What it is |
+|---|---|
+| `photo_id` | The id assigned when the bytes were stored |
+| `photo_sha256` | The hash of those bytes. The same hash is on the capture record, which the phone's key signed |
+| `checkpoint_id` | The checkpoint named on that capture record |
+
+A verifier pairs a photograph to its hash and its checkpoint by reading
+those three fields on one object. It does not zip a `photo_ids` array
+with `captures` or with `phone_chain` by position. There is no sealed
+`photo_ids` array. The list sits in `event_data`, so editing one object,
+or reordering the list, changes the custody head.
+
+The photographs are stored the way a single upload stores one: the hash
+is recomputed, the file is sniffed, and a second live photo of the same
+checkpoint supersedes the previous one. Those writes are not separate
+custody events. The batch is one link. The id written on the photo row
+is the `photo_id` in `sealed_photos`.
+
+### 11.6 The receipt
+
+After the custody entry is appended, the server signs a receipt with the
+same ECDSA P-256 key that signs job tickets
+(`SHIELD_TICKET_SIGNING_KEY_PEM`). Unset, the route refuses before it
+writes. The signature is DER, then base64, over the canonical bytes of:
+
+| Field | JSON type | What it is |
+|---|---|---|
+| `version` | number | `1`. Not `chain_version`. A later change to these bytes increments this, not `chain_version` |
+| `record_id` | string | The record in the URL |
+| `head_hash` | string | The custody-chain head after this batch's entry. Not the phone-chain head |
+| `accepted_at_ms` | number | Server clock when the batch was accepted, Unix milliseconds |
+
+Same canonical rules as §9.3 and §10.3. Whole numbers only. A float is
+rejected.
+
+`phone_chain_head` and the time labels are stored beside the signature.
+They are not a second signature. The custody head already commits to
+them, because they live in the signed `event_data` of the entry the head
+covers.
+
+The public half of the signing key is what a package carries. The private
+key is not.
+
+One receipt row per accepted batch, in `shield.receipts`, written by the
+service role. The row is append-only. The next batch's index is one
+higher, and its first record has to name this row's `phone_chain_head`.
+
+### 11.7 The timestamp
+
+After the receipt row exists, the server asks for an RFC 3161 token over
+the custody head. The message imprint is the raw 32-byte head. The head
+is already a SHA-256. A verifier compares those 32 bytes to the head. It
+does not hash them again.
+
+`SHIELD_TSA_PRIMARY_URL` defaults to DigiCert
+(`http://timestamp.digicert.com`). `SHIELD_TSA_FALLBACK_URL` defaults to
+Sectigo (`http://timestamp.sectigo.com`). `SHIELD_TSA_ENABLED` defaults
+to off. Off means the server does not open a connection. The receipt
+still exists. The package says the timestamp is missing.
+
+When the flag is on, DigiCert is asked first. Sectigo is asked only if
+DigiCert does not return a token this service can check. The check needs
+a root in `SHIELD_TSA_ROOTS_PEM`. No root, no pass. The signer
+certificate may sit under an intermediate that the token itself carries;
+the chain has to end at one of those roots. The imprint algorithm has
+to be SHA-256, which is what the request asked for. The signature over
+the token may be SHA-256 or SHA-384, RSA or ECDSA. The token's time may
+include a fraction of a second. A token that does not verify is not
+stored as present. The result is missing.
+
+Missing is not forged. There is no status that says it is. `forged` on
+the package is false in both states: a timestamp anchors the custody
+head, and a missing one is a missing anchor, not a finding about the
+photograph. The service does not mint a token to fill the gap.
+
+The outcome is one row in `shield.tsa_tokens`, append-only, either way.
+`present` requires the token. `missing` requires its absence.
+
+### 11.8 The package
+
+`GET /shield/v2/records/<id>/package` and `evidence.build_manifest` both
+carry the latest receipt, the timestamp block, and the public half of the
+signing key. `custody.chain_version` is the version `ledger.verify_chain`
+already reports. It is still 2. A package with no receipt yet says the
+timestamp is missing, and it says that is not a forgery.
+
+### 11.9 What this addendum does not establish
+
+- That the photograph came off a camera sensor.
+- That the wall clock is the true time when the label is CONSISTENT.
+- That a reboot, a missing GNSS fix, or a missing timestamp is forgery.
+- That an iOS device is not jailbroken. App Attest does not say.
+- That DigiCert or Sectigo were contacted. The flag defaults to off, and
+  the addresses are configuration. A test runs a local authority with a
+  certificate that test minted. It does not call either host.
+- Anything that changes `chain_version`, which remains 2.
