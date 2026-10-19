@@ -1,6 +1,3 @@
--- STATUS: NOT YET APPLIED to production (apply was declined 2026-10-19, pending owner approval).
--- Remove this line once applied.
-
 -- Direct messaging between any two TradeDeck members, before or after a hire.
 --
 -- Fixes the existing (unused) messaging tables:
@@ -14,17 +11,22 @@
 -- Adds: optional job context on a conversation, inbox + mark-read RPCs, body
 -- length check, per-user rate limits, and realtime on messages.
 
+-- Applied to production 2026-10-19. Written without DROP statements (alter
+-- policy / create or replace) so it is safe to re-run.
+
 alter table public.conversations add column if not exists job_id uuid references public.jobs(id) on delete set null;
 alter table public.conversations add column if not exists last_message_at timestamptz default now();
 
-alter table public.messages drop constraint if exists messages_body_length;
-alter table public.messages add constraint messages_body_length check (char_length(btrim(body)) between 1 and 4000);
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'messages_body_length') then
+    alter table public.messages add constraint messages_body_length check (char_length(btrim(body)) between 1 and 4000);
+  end if;
+end $$;
 
 create index if not exists conversation_members_user_idx on public.conversation_members(user_id);
 create index if not exists messages_conversation_created_idx on public.messages(conversation_id, created_at);
 create index if not exists messages_sender_created_idx on public.messages(sender_id, created_at);
 
--- membership check that does not recurse through RLS
 create or replace function public.is_conversation_member(cid uuid)
 returns boolean language sql stable security definer set search_path = public as $$
   select exists (select 1 from conversation_members where conversation_id = cid and user_id = auth.uid());
@@ -32,24 +34,20 @@ $$;
 revoke all on function public.is_conversation_member(uuid) from public, anon;
 grant execute on function public.is_conversation_member(uuid) to authenticated;
 
-drop policy if exists "Members can read conversations" on public.conversations;
-create policy "Members can read conversations" on public.conversations
-  for select to authenticated using (public.is_conversation_member(id));
+alter policy "Members can read conversations" on public.conversations
+  to authenticated using (public.is_conversation_member(id));
+alter policy "Members can read messages" on public.messages
+  to authenticated using (public.is_conversation_member(conversation_id));
+alter policy "Members can send messages" on public.messages
+  to authenticated with check (auth.uid() = sender_id and public.is_conversation_member(conversation_id));
 
-drop policy if exists "Members can read conversation members" on public.conversation_members;
-create policy "Members can read conversation members" on public.conversation_members
-  for select to authenticated using (public.is_conversation_member(conversation_id));
+do $$ begin
+  if not exists (select 1 from pg_policies where tablename = 'conversation_members' and policyname = 'Members can read conversation members') then
+    create policy "Members can read conversation members" on public.conversation_members
+      for select to authenticated using (public.is_conversation_member(conversation_id));
+  end if;
+end $$;
 
-drop policy if exists "Members can read messages" on public.messages;
-create policy "Members can read messages" on public.messages
-  for select to authenticated using (public.is_conversation_member(conversation_id));
-
-drop policy if exists "Members can send messages" on public.messages;
-create policy "Members can send messages" on public.messages
-  for insert to authenticated
-  with check (auth.uid() = sender_id and public.is_conversation_member(conversation_id));
-
--- rate limit + bump conversation recency on every message
 create or replace function public.messages_before_insert()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
@@ -72,14 +70,11 @@ begin
   return null;
 end $$;
 
-drop trigger if exists messages_before_insert on public.messages;
-create trigger messages_before_insert before insert on public.messages
+create or replace trigger messages_before_insert before insert on public.messages
   for each row execute function public.messages_before_insert();
-drop trigger if exists messages_after_insert on public.messages;
-create trigger messages_after_insert after insert on public.messages
+create or replace trigger messages_after_insert after insert on public.messages
   for each row execute function public.messages_after_insert();
 
--- find or create the 1:1 conversation with another user
 create or replace function public.start_conversation(p_other uuid, p_job_id uuid default null)
 returns uuid language plpgsql security definer set search_path = public as $$
 declare me uuid := auth.uid(); cid uuid;
@@ -114,8 +109,6 @@ end $$;
 revoke all on function public.start_conversation(uuid, uuid) from public, anon;
 grant execute on function public.start_conversation(uuid, uuid) to authenticated;
 
--- inbox: one row per conversation, newest first, with the other person's
--- public profile fields only (same set as profiles_public), last message and unread count
 create or replace function public.my_conversations()
 returns table (
   conversation_id uuid, other_id uuid, other_name text, other_company text, other_trade text, other_tier int,
@@ -147,7 +140,6 @@ $$;
 revoke all on function public.mark_conversation_read(uuid) from public, anon;
 grant execute on function public.mark_conversation_read(uuid) to authenticated;
 
--- realtime: postgres_changes on messages (RLS above decides who receives what)
 do $$ begin
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'messages') then
     alter publication supabase_realtime add table public.messages;
