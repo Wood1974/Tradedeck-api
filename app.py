@@ -25,6 +25,7 @@ import location
 import packs
 import pdf_export
 from identity_api import identity_bp
+from checkr_api import checkr_bp
 try:
     from shield_api import shield_bp
 except Exception as _shield_import_err:
@@ -45,6 +46,7 @@ CORS(app, origins=config.allowed_origins(), supports_credentials=True,
      allow_headers=["Authorization", "Content-Type"], methods=["GET", "POST", "OPTIONS"])
 app.register_blueprint(shield_bp)
 app.register_blueprint(identity_bp)
+app.register_blueprint(checkr_bp)
 
 stripe.api_key           = os.environ["STRIPE_SECRET_KEY"]
 STRIPE_WEBHOOK_SECRET     = os.environ["STRIPE_WEBHOOK_SECRET"]
