@@ -27,6 +27,7 @@ class FakeCheckr:
 
 @pytest.fixture
 def env(monkeypatch):
+    monkeypatch.setenv("CHECKR_ENABLED", "1")
     monkeypatch.setenv("CHECKR_API_KEY", KEY)
     monkeypatch.setenv("CHECKR_PACKAGE", "tasker_standard")
     db, ck = FakeDb(), FakeCheckr()
@@ -59,6 +60,13 @@ def test_start_requires_auth(env):
 
 def test_not_configured_is_503(env):
     env.monkeypatch.delenv("CHECKR_API_KEY")
+    r = env.client.post("/checkr/start", headers=AUTH)
+    assert r.status_code == 503 and r.get_json()["error"] == "not_configured"
+    assert env.checkr.calls == []
+
+
+def test_on_hold_without_enable_flag_even_with_keys(env):
+    env.monkeypatch.delenv("CHECKR_ENABLED")
     r = env.client.post("/checkr/start", headers=AUTH)
     assert r.status_code == 503 and r.get_json()["error"] == "not_configured"
     assert env.checkr.calls == []

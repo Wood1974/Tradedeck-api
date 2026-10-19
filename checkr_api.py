@@ -7,6 +7,7 @@ consent, SSN/DOB and runs the report -> Checkr calls POST /checkr/webhook -> we 
 Configuration (Render env):
   CHECKR_API_KEY  - Checkr secret API key. Also the key Checkr signs webhooks with.
   CHECKR_PACKAGE  - package slug from the Checkr dashboard (Account Settings -> Packages).
+  CHECKR_ENABLED  - must be "1" to start checks. Unset = ON HOLD (holding message), even with keys present.
   CHECKR_BASE_URL - optional; https://api.checkr-staging.com for staging keys. Default production.
 While CHECKR_API_KEY or CHECKR_PACKAGE is unset, /checkr/start answers 503 {"error": "not_configured"} and the
 frontend shows its holding message, so the feature turns on by adding the env vars, with no code change.
@@ -41,6 +42,11 @@ REPORT_EVENT_STATUS = {
 }
 
 
+def _enabled():
+    """Master switch. Checkr is ON HOLD unless CHECKR_ENABLED=1, even with keys set."""
+    return os.environ.get("CHECKR_ENABLED", "").strip() == "1"
+
+
 def _config():
     key = os.environ.get("CHECKR_API_KEY", "").strip()
     package = os.environ.get("CHECKR_PACKAGE", "").strip()
@@ -70,7 +76,7 @@ def _split_name(full_name):
 @require_auth
 def start():
     key, package, _base = _config()
-    if not key or not package:
+    if not _enabled() or not key or not package:
         return jsonify({"error": "not_configured"}), 503
 
     db = g.supabase

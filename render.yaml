@@ -20,6 +20,9 @@ services:
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
       # Checkr background checks (checkr_api.py). Unset = /checkr/start answers 503 not_configured.
+      # ON HOLD: set CHECKR_ENABLED=1 only when ready to run (and pay for) real checks.
+      - key: CHECKR_ENABLED
+        sync: false
       - key: CHECKR_API_KEY
         sync: false
       - key: CHECKR_PACKAGE
