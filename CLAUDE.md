@@ -82,12 +82,11 @@ Files deleted: `escrow.py` (complete payment state machine, no longer used).
 - `DB_PATH` — SQLite file path (Render disk-backed).
 - `PERMITSTACK_KEY`, `SAM_API_KEY`, `ZIPRECRUITER_KEY` — lead source APIs.
 - `ANTHROPIC_API_KEY` — used only by `/api/chat`.
-- `IDENTITY_RECEIPT_KEY` — EC P-256 private key (PEM) that signs ID-check receipts for the Shield app. Its public half is pinned in
-  `shield-app/src/identity/trust.ts`. Without it `/identity/note` refuses (503).
-- `STRIPE_TEST_SECRET_KEY`, `IDENTITY_TEST_MODE_USER_IDS` — optional owner-only Stripe test mode for the ID check, for an owner with no
-  ID to use. Accounts listed in the second (comma-separated Supabase user ids) run the check against Stripe test mode with the first
-  (must be `sk_test_`/`rk_test_`). Their receipt carries a signed `testMode: true`; the app and the public lookup never treat it as a
-  confirmed real check. Everyone else is always live.
+- `IDENTITY_RECEIPT_KEY`, `STRIPE_TEST_SECRET_KEY`, `IDENTITY_TEST_MODE_USER_IDS` — **legacy.** They configure the older ID-check
+  code in `identity_api.py` / `identity_core.py` here. The Shield phone app no longer calls this service: it signs on with the standalone
+  Shield server (`Wood1974/tradedeck-shield`, which uses `IDENTITY_TEST_MODE_EMAILS`), and the receipt key the app pins is that server's.
+  The old key id stays pinned in the app so records signed by it still verify. Nothing is removed here; whether to retire this copy is a
+  separate decision.
 - `SECRET_KEY` — signs auth tokens and salts password hashes. **Must** be
   set explicitly in Render; the in-code fallback (`'tradedeck-secret-2026'`)
   is not safe for production and is visible to anyone reading this repo.
