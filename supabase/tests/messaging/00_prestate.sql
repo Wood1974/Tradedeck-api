@@ -27,6 +27,8 @@ alter table public.messages enable row level security;
 
 grant usage on schema public to anon, authenticated, service_role;
 grant all on all tables in schema public to anon, authenticated, service_role;
+-- Supabase's default: every new table in public is born open to anon and authenticated.
+alter default privileges for role postgres in schema public grant all on tables to anon, authenticated, service_role;
 
 create function public.is_admin() returns boolean language sql stable security definer set search_path to 'public'
   as $$ select coalesce((select is_admin from profiles where id = auth.uid()), false); $$;

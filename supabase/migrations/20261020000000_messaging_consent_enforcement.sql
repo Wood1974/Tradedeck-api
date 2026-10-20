@@ -10,8 +10,12 @@
 --  6. start_conversation accepted any job id. Now the job must exist and belong to
 --     the caller or the other person, and an existing thread's job is never replaced.
 --  7. anon and authenticated held every table privilege (incl. TRUNCATE, TRIGGER)
---     on the three messaging tables. Now: SELECT, plus INSERT of three columns on
---     messages. Everything else goes through the RPCs below.
+--     on the three messaging tables, because Supabase's default privileges give them
+--     to every new table in public. Root fix: new tables no longer start with any
+--     anon/authenticated rights (each migration grants what it needs). The three
+--     messaging tables are cut to SELECT, plus INSERT of three columns on messages;
+--     everything else goes through the RPCs below. Existing tables are NOT changed
+--     here: they are a separate audit.
 --  + conversations is published to Realtime so accept/decline reach open clients.
 --
 -- Not changed here: the "Admins have full access" policies (finding 4). Who may
@@ -203,10 +207,14 @@ do $$ begin
   end if;
 end $$;
 
--- 6. Grants: only what the client uses -----------------------------------------------------
--- RLS limits rows, not TRUNCATE or TRIGGER. The app only reads these tables and
--- inserts messages (conversation_id, sender_id, body); id, created_at come from defaults/trigger.
+-- 6. Grants -------------------------------------------------------------------------------
+-- Root: tables created by postgres in public are born with full rights for anon and
+-- authenticated (see pg_default_acl). RLS limits rows, not TRUNCATE or TRIGGER. From now
+-- on a new table grants only what its client needs, explicitly. service_role is untouched.
+alter default privileges for role postgres in schema public revoke all on tables from anon, authenticated;
 
+-- The three existing messaging tables: the app only reads them and inserts messages
+-- (conversation_id, sender_id, body); id and created_at come from defaults/trigger.
 revoke all on public.conversations, public.conversation_members, public.messages from anon, authenticated;
 grant select on public.conversations, public.conversation_members, public.messages to authenticated;
 grant insert (conversation_id, sender_id, body) on public.messages to authenticated;

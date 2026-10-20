@@ -134,6 +134,13 @@ select t.as(null, 'anon'); reset role; set role anon;
 select t.fails($q$select count(*) from messages$q$, '42501');
 reset role;
 
+-- 9b. Root of finding 7: a table created from now on starts closed to clients.
+create table public.zz_future_table (id int);
+select t.eq('new table: anon has nothing', has_table_privilege('anon', 'public.zz_future_table', 'SELECT') or has_table_privilege('anon', 'public.zz_future_table', 'TRUNCATE'), false);
+select t.eq('new table: authenticated has nothing', has_table_privilege('authenticated', 'public.zz_future_table', 'SELECT') or has_table_privilege('authenticated', 'public.zz_future_table', 'TRUNCATE'), false);
+select t.eq('new table: service_role keeps access', has_table_privilege('service_role', 'public.zz_future_table', 'SELECT'), true);
+drop table public.zz_future_table;
+
 -- 10. Realtime
 select t.eq('conversations published', (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'conversations'), 1::bigint);
 select t.eq('messages published', (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'messages'), 1::bigint);
