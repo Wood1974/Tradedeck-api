@@ -99,6 +99,11 @@ Files deleted: `escrow.py` (complete payment state machine, no longer used).
 
 ## Conventions / working notes
 
+- **New tables start closed to clients.** Migration `20261020000000` changes the default so tables
+  created in `public` give `anon`/`authenticated` nothing. Every migration that adds a table must
+  grant what the app needs, explicitly (`grant select ... to authenticated`), and enable RLS.
+  Tables created before that date still carry the old full-access default; they need a separate audit.
+
 - Solo-founder project (Joshua), iterating fast across many sessions —
   expect drift between what's described as "done" elsewhere and what's
   actually committed here. Verify against `app.py` directly before
