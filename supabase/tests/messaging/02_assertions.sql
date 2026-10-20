@@ -95,19 +95,6 @@ select t.eq('A has no open requests', (select count(*) from my_message_requests(
 select t.as(:B);
 select t.eq('B outgoing/incoming shows declined', (select status from my_message_requests() limit 1), 'declined');
 
--- 7. Second layer: trigger blocks pending sends even when RLS is bypassed or the caller is an admin
-reset role;
-select t.as(:A);
-select t.fails(format($q$insert into messages(conversation_id, sender_id, body) values (%L, %L, 'x')$q$, :'cid1', :A), '42501');
-select t.as(:D);
-set role authenticated;
-select t.eq('admin can still read', (select count(*) from conversations), 2::bigint);
-select t.fails(format($q$insert into messages(conversation_id, sender_id, body) values (%L, %L, 'x')$q$, :'cid1', :D), '42501');
-reset role;
-select t.as(null, 'service_role');
-select t.ok(format($q$insert into messages(conversation_id, sender_id, body) values (%L, %L, 'service')$q$, :'cid1', :A));
-select t.as(null, 'authenticated');
-
 -- 8. Finding 6: job context
 set role authenticated; select t.as(:A);
 select t.fails(format($q$select start_conversation(%L, %L)$q$, :D, '00000000-0000-0000-0000-00000000ccc1'), '42501'); -- someone else's job

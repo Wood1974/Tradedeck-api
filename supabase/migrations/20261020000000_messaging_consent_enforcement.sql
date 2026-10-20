@@ -4,7 +4,7 @@
 --  1. Sending required only "sender is me and I am a member". A member could post
 --     into a pending or declined thread straight through the API, and new threads
 --     defaulted to accepted. Now: new threads are pending with a requester, and
---     both the INSERT policy and the insert trigger require status = 'accepted'.
+--     the INSERT policy requires status = 'accepted'.
 --  5. Rate limits and find-or-create were check-then-act and could race. Now
 --     serialized with transaction advisory locks; a unique pair key is the backstop.
 --  6. start_conversation accepted any job id. Now the job must exist and belong to
@@ -169,8 +169,7 @@ as $function$
 $function$;
 
 -- 4. Sending requires an accepted thread ----------------------------------------------
--- Policy for the API, trigger as a second layer that also covers admins (whose
--- ALL policy would otherwise skip the check). Only service_role is exempt.
+-- Admins keep their ALL policy (owner's decision, see header), so they are not bound by this.
 
 alter policy "Members can send messages" on public.messages
   to authenticated
@@ -183,11 +182,6 @@ alter policy "Members can send messages" on public.messages
 create or replace function public.messages_before_insert()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  if coalesce(auth.role(), '') <> 'service_role' then
-    if not exists (select 1 from conversations where id = new.conversation_id and status = 'accepted') then
-      raise exception 'This conversation has not been accepted' using errcode = '42501';
-    end if;
-  end if;
   if auth.role() <> 'service_role' and not public.is_admin() then
     -- Serialize this sender's inserts so the count below cannot be raced past.
     perform pg_advisory_xact_lock(hashtextextended('msg-user:' || new.sender_id::text, 0));
