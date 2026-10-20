@@ -105,3 +105,16 @@ Files deleted: `escrow.py` (complete payment state machine, no longer used).
   building on top of a feature.
 - Before adding new functionality, resolve (or at least flag to the
   project owner) the dual/disconnected auth systems.
+
+## Working rules (set by the owner)
+
+Standing instructions from the owner. They apply to every session in this repo, so don't wait to be told again.
+
+- **Fix the root cause, once.** No workarounds or "for now" patches. If the real fix is bigger than asked, say so and propose it.
+- **Say what was verified and what wasn't.** Never overstate. If something couldn't be run or checked (a device, a live server, a dashboard), say that plainly.
+- **The owner merges.** Open PRs as drafts and leave them. Don't merge, and don't start TestFlight or store builds or change live settings (Render env vars, DNS, Stripe, Apple) without the owner's go.
+- **Don't watch PRs.** Opening a PR subscribes the session automatically; unsubscribe right away. Check CI only when asked.
+- **Decide before building** anything that changes who can see data, what leaves the phone, or what costs money: ask first, with a recommendation.
+- **Never print or repeat a password, key or token.** If one has been exposed (in chat, a screenshot, a log), say so plainly so it gets rotated.
+- **Say early which steps only the owner can do** (DNS at GoDaddy, the Render shell, the Apple portal, rolling the Stripe key, merging).
+- **Keep status updates short.** Long reports only when asked.
