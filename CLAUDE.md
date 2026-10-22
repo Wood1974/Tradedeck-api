@@ -121,4 +121,5 @@ Standing instructions from the owner. They apply to every session in this repo, 
 - **Decide before building** anything that changes who can see data, what leaves the phone, or what costs money: ask first, with a recommendation.
 - **Never print or repeat a password, key or token.** If one has been exposed (in chat, a screenshot, a log), say so plainly so it gets rotated.
 - **Say early which steps only the owner can do** (DNS at GoDaddy, the Render shell, the Apple portal, rolling the Stripe key, merging).
+- **Render: read freely, change only with permission.** Reading is allowed without asking: services, deploy history, logs, metrics, and the *names* of environment variables (never print a value). Anything that changes Render (environment variables, deploys or restarts, creating, suspending or deleting a service, disk or database) needs the owner's go each time, and says first exactly what it will change.
 - **Keep status updates short.** Long reports only when asked.
