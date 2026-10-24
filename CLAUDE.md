@@ -82,12 +82,11 @@ Files deleted: `escrow.py` (complete payment state machine, no longer used).
 - `DB_PATH` — SQLite file path (Render disk-backed).
 - `PERMITSTACK_KEY`, `SAM_API_KEY`, `ZIPRECRUITER_KEY` — lead source APIs.
 - `ANTHROPIC_API_KEY` — used only by `/api/chat`.
-- `IDENTITY_RECEIPT_KEY` — EC P-256 private key (PEM) that signs ID-check receipts for the Shield app. Its public half is pinned in
-  `shield-app/src/identity/trust.ts`. Without it `/identity/note` refuses (503).
-- `STRIPE_TEST_SECRET_KEY`, `IDENTITY_TEST_MODE_USER_IDS` — optional owner-only Stripe test mode for the ID check, for an owner with no
-  ID to use. Accounts listed in the second (comma-separated Supabase user ids) run the check against Stripe test mode with the first
-  (must be `sk_test_`/`rk_test_`). Their receipt carries a signed `testMode: true`; the app and the public lookup never treat it as a
-  confirmed real check. Everyone else is always live.
+- `IDENTITY_RECEIPT_KEY`, `STRIPE_TEST_SECRET_KEY`, `IDENTITY_TEST_MODE_USER_IDS` — **legacy.** They configure the older ID-check
+  code in `identity_api.py` / `identity_core.py` here. The Shield phone app no longer calls this service: it signs on with the standalone
+  Shield server (`Wood1974/tradedeck-shield`, which uses `IDENTITY_TEST_MODE_EMAILS`), and the receipt key the app pins is that server's.
+  The old key id stays pinned in the app so records signed by it still verify. Nothing is removed here; whether to retire this copy is a
+  separate decision.
 - `SECRET_KEY` — signs auth tokens and salts password hashes. **Must** be
   set explicitly in Render; the in-code fallback (`'tradedeck-secret-2026'`)
   is not safe for production and is visible to anyone reading this repo.
@@ -116,10 +115,12 @@ Files deleted: `escrow.py` (complete payment state machine, no longer used).
 Standing instructions from the owner. They apply to every session in this repo, so don't wait to be told again.
 
 - **Fix the root cause, once.** No workarounds or "for now" patches. If the real fix is bigger than asked, say so and propose it.
+- **Always fix the cause; don't append.** If a change would add to a shared list, file or section that other work also edits, give it its own file instead. When the same conflict or error comes back, fix what makes it repeat, not just this instance.
 - **Say what was verified and what wasn't.** Never overstate. If something couldn't be run or checked (a device, a live server, a dashboard), say that plainly.
 - **The owner merges.** Open PRs as drafts and leave them. Don't merge, and don't start TestFlight or store builds or change live settings (Render env vars, DNS, Stripe, Apple) without the owner's go.
 - **Don't watch PRs.** Opening a PR subscribes the session automatically; unsubscribe right away. Check CI only when asked.
 - **Decide before building** anything that changes who can see data, what leaves the phone, or what costs money: ask first, with a recommendation.
 - **Never print or repeat a password, key or token.** If one has been exposed (in chat, a screenshot, a log), say so plainly so it gets rotated.
 - **Say early which steps only the owner can do** (DNS at GoDaddy, the Render shell, the Apple portal, rolling the Stripe key, merging).
+- **Render: read freely, change only with permission.** Reading is allowed without asking: services, deploy history, logs, metrics, and the *names* of environment variables (never print a value). Anything that changes Render (environment variables, deploys or restarts, creating, suspending or deleting a service, disk or database) needs the owner's go each time, and says first exactly what it will change.
 - **Keep status updates short.** Long reports only when asked.
