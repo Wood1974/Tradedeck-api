@@ -11,9 +11,9 @@ This file reflects the **actual repo contents as of Sep 2026**, verified
 by reading `app.py` directly — not carried over from planning notes, which
 had drifted significantly from what's actually here.
 
-**Sep 2026 update**: Draw/escrow functionality removed to align Shield as a 
-standalone evidence verification system. Shield operates independently from 
-job payment workflows.
+**Oct 2026 update**: the draw/escrow code removed in Sep 2026 (`5710d6d`,
+`bbbe2b9`) is back, switched off behind `ESCROW_ENABLED` — see
+"Milestone escrow" below.
 
 ## What this service actually does
 
@@ -40,10 +40,9 @@ job payment workflows.
 - **GC leads**: `GET /api/gc-leads`, `POST /api/gc-leads/refresh` — building
   permit data from a PermitStack API, similarly filtered by trade.
 - **Chat**: `POST /api/chat` — a thin proxy to the Anthropic Messages API
-  (`claude-haiku-4-5-20251001`) using `ANTHROPIC_API_KEY`. This is the only
-  use of the Anthropic key in this codebase — there is **no photo-quality
-  AI check** implemented here despite that being described in prior notes
-  as built.
+  (`claude-haiku-4-5-20251001`) using `ANTHROPIC_API_KEY`. The key is also
+  used by `/draws/<id>/photos/upload` (`_analyze_photo`), which is off while
+  escrow is off.
 ## Data layer
 
 - **SQLite**, on Render's persistent disk (`DB_PATH`, default
@@ -59,29 +58,31 @@ job payment workflows.
   service's SQLite schema** (defined inline in `app.py`'s `init_db()`).
   Reconciling the two schemas is unresolved.
 
-## Architecture (Sep 2026)
+## Milestone escrow (built, switched off)
 
-**Shield and TradeDeck are completely standalone applications** sharing the 
-tradedeckapp.com domain but operating independently:
-
-- **Shield**: Standalone evidence verification system with photo analysis, 
-  integrity verification, and contractor scoring. No integration with jobs.
-- **TradeDeck**: Simple job marketplace. Post fixed-price job → apply → hire → pay.
-  No draws/milestones, no escrow, no multi-stage payments.
-
-Draw/milestone/escrow functionality was **intentionally removed** to align 
-with Shield's architecture. Draw/escrow concepts belong to job-workflow 
-payment splits; Shield handles evidence collection independently. Stripe 
-payment processing is retained for fixed-price job payments and Shield Pro 
-subscription billing only.
-
-Files deleted: `escrow.py` (complete payment state machine, no longer used).
+- Routes in `app.py`: `/stripe/escrow/create|release|refund`,
+  `/draws/<id>`, `/draws/<id>/approve`, `/draws/<id>/photos/upload`,
+  `/draws/<id>/photos`, and `/stripe/connect/onboard`. Payment state
+  machine in `escrow.py` (manual-capture PaymentIntent → held via webhook →
+  capture + Transfer to the payee's Connect account on approval, minus
+  `PLATFORM_FEE_BPS`). Draw access checks are in `auth.py`.
+- **Off unless `ESCROW_ENABLED=true`** (`config.escrow_enabled()`). While
+  off, `_require_escrow_enabled` makes every one of those routes return 404
+  before auth or Stripe, and `/stripe/webhook` ignores escrow events (it
+  still records them for idempotency). The variable is not set on Render, so
+  it is off in production. Only the owner turns it on, together with
+  `ESCROW_ENABLED` in the frontend's `assets/app.js`.
+- Escrow amount and payee come only from the stored `draws` /
+  `draw_schedules` rows (`payee_id` is set by the `accept_application`
+  RPC), never from the request body.
+- Shield is separate from escrow: no Shield code depends on it.
 
 ## Environment variables (see `render.yaml` / set in Render dashboard — never commit real values)
 
 - `DB_PATH` — SQLite file path (Render disk-backed).
 - `PERMITSTACK_KEY`, `SAM_API_KEY`, `ZIPRECRUITER_KEY` — lead source APIs.
-- `ANTHROPIC_API_KEY` — used only by `/api/chat`.
+- `ANTHROPIC_API_KEY` — `/api/chat`, and draw photo checks when escrow is on.
+- `ESCROW_ENABLED` — not set (off). See "Milestone escrow". Owner-only to set.
 - `IDENTITY_RECEIPT_KEY`, `STRIPE_TEST_SECRET_KEY`, `IDENTITY_TEST_MODE_USER_IDS` — **legacy.** They configure the older ID-check
   code in `identity_api.py` / `identity_core.py` here. The Shield phone app no longer calls this service: it signs on with the standalone
   Shield server (`Wood1974/tradedeck-shield`, which uses `IDENTITY_TEST_MODE_EMAILS`), and the receipt key the app pins is that server's.

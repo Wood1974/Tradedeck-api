@@ -53,6 +53,14 @@ def allowed_origins():
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
+def escrow_enabled():
+    # Milestone escrow and Stripe Connect payouts are off unless ESCROW_ENABLED
+    # is set to true in the environment. While off, every escrow, draw and
+    # Connect route answers 404 before touching Stripe, and the webhook ignores
+    # escrow events.
+    return (get_env("ESCROW_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+
+
 def platform_fee_bps():
     try:
         return max(0, min(int(get_env("PLATFORM_FEE_BPS", "200")), 1000))
