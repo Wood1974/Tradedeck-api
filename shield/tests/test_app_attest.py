@@ -44,7 +44,7 @@ APP_ID = "ABCDE12345.com.tradedeck.shield"
 CHALLENGE = "challenge-issued-for-this-one-capture"
 PHOTO = b"\xff\xd8\xff\xe0 the bytes this attestation is supposed to be about"
 PHOTO_SHA = hashlib.sha256(PHOTO).digest()
-NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)  # certificates are issued around the real clock, as production checks them
 
 
 # ----------------------------------------------------------- the generator --
