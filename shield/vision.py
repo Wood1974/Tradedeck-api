@@ -10,6 +10,8 @@ Differences from the parent implementation:
     JSONDecodeError branch the parent needed.
   * Prompt caching on the stable system prefix. The instructions are identical
     on every call; only the image and checkpoint vary.
+  * Material identification (trade, materials visible, match to spec) is
+    returned by the same call. Its vocabulary lives in materials.py.
   * The model is told what the metadata *is*, never asked to trust the caller's
     word about it. Every value here is read from the database by the caller —
     see routes.analyze_photo.
@@ -20,6 +22,7 @@ import logging
 import anthropic
 
 import config
+import materials
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +43,8 @@ _INSPECTOR_SYSTEM = (
     "an honest abstention is worth more than a confident guess.\n\n"
     "Verdicts: 'pass' work is correct and complete · 'flag' concern or insufficient "
     "evidence · 'fail' wrong, incomplete, or non-compliant · 'fake' not a genuine "
-    "photograph of this site."
+    "photograph of this site.\n\n"
+    + materials.materials_brief()
 )
 
 _ANALYSIS_SCHEMA = {
@@ -53,9 +57,11 @@ _ANALYSIS_SCHEMA = {
         "findings":          {"type": "array", "items": {"type": "string"}},
         "notes":             {"type": "string"},
         "required_action":   {"type": ["string", "null"]},
+        **materials.MATERIAL_SCHEMA_PROPERTIES,
     },
     "required": ["authentic", "authenticity_note", "verdict", "confidence",
-                 "findings", "notes", "required_action"],
+                 "findings", "notes", "required_action",
+                 *materials.MATERIAL_SCHEMA_REQUIRED],
     "additionalProperties": False,
 }
 
@@ -159,4 +165,11 @@ def analyze_photo(image_bytes: bytes, *, point_label: str, point_description: st
                            "This checkpoint has not been verified.")
     if result.get("verdict") not in VERDICTS:
         result["verdict"] = "flag"
+
+    # A compliance pass requires the materials to be the ones specified. If the
+    # model saw clearly different materials, the verdict cannot stay 'pass'.
+    if result.get("material_matches_spec") is False and result.get("verdict") == "pass":
+        result["verdict"] = "fail"
+        result["notes"] = (f"Visible materials do not match the checkpoint: "
+                           f"{result.get('material_note', '')} " + result.get("notes", ""))
     return result
