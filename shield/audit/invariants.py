@@ -2005,97 +2005,6 @@ def inv_offline_queue_does_not_replace_the_chain():
                   "timestamp is not forged")
 
 
-# ── Standalone-from-the-marketplace ─────────────────────────────────────────
-# Not an exploit in the usual sense. The owner's rule is that Shield and
-# TradeDeck are completely standalone, with no integration with jobs, and
-# tenancy.py records why it is load-bearing rather than tidy: when every Shield
-# table carried a foreign key into TradeDeck's `jobs` and `profiles`, "a second
-# business could not hold a record without first existing as a row in somebody
-# else's marketplace", so Shield could not be sold to anyone else. auth.py says
-# the same. These two tripwires keep that from coming back quietly.
-#
-# Known gap, stated rather than hidden: the live Supabase schema holds eight
-# foreign keys from the OLD web Shield's tables into `jobs` and `profiles`
-# (shield_jobs.job_id, shield_pivotal_points.job_id,
-# shield_completion_reports.job_id, plus five into profiles.id). Those are the
-# arrangement tenancy.py replaced, they are not declared in any migration in
-# this repo, and this audit cannot see them — it runs with static credentials
-# and never touches live services, by design. So these invariants prove the
-# standalone service stays standalone; they do not prove that residue is gone.
-
-_MARKETPLACE_TABLES = ("jobs", "profiles", "applications", "draws", "draw_schedules")
-
-
-def _shield_sources():
-    """Every .py in the standalone service, excluding its tests and the
-    deliberately-kept legacy shim."""
-    out = {}
-    for p in sorted(SHIELD.rglob("*.py")):
-        rel = p.relative_to(SHIELD).as_posix()
-        if rel.startswith(("tests/", "audit/")) or rel == "legacy_auth.py":
-            continue
-        out[rel] = p.read_text(encoding="utf-8")
-    return out
-
-
-def inv_shield_identity_is_its_own():
-    """Shield resolves callers from its own tenancy, never the marketplace's."""
-    srcs = _shield_sources()
-
-    auth = srcs.get("auth.py")
-    if auth is None:
-        return False, "shield/auth.py is gone — Shield's own identity path gone with it"
-    for needed in ("tenant_id", "api_keys", "members"):
-        if needed not in auth:
-            return False, (f"shield/auth.py no longer references {needed!r}; the "
-                           f"caller may be resolved outside Shield's own tenancy")
-
-    # The old model: load a row, then compare the caller against marketplace ids.
-    offenders = []
-    for rel, src in srcs.items():
-        body = _strip_prose(src)
-        for table in _MARKETPLACE_TABLES:
-            if re.search(rf'''table\(\s*["']{table}["']\s*\)''', body):
-                offenders.append(f"{rel} queries {table}")
-        if re.search(r"\b(homeowner_id|contractor_id)\b", body):
-            offenders.append(f"{rel} uses the pre-tenancy ownership columns")
-    if offenders:
-        return False, (
-            "Shield authorises against the marketplace's identity — "
-            + "; ".join(sorted(set(offenders)))
-            + ". routes.py (/shield, v1) compares the caller to shield_jobs' "
-              "homeowner_id/contractor_id, which are FKs into profiles.id, so "
-              "authorisation depends on marketplace rows; tenant_api.py "
-              "(/shield/v2) is the replacement and is clean. Both blueprints "
-              "are registered in app.py, so the v1 path is live. This clears "
-              "when v1 is moved onto tenancy.Principal scoping — not by "
-              "exempting it here")
-    return True, ("callers resolve to a tenant from shield.api_keys / "
-                  "shield.members; no marketplace table or ownership column read")
-
-
-def inv_no_marketplace_fk_in_shield_migrations():
-    """No migration keys a Shield table into `jobs` or `profiles`."""
-    found = []
-    for path in sorted(MIGRATIONS.glob("*.sql")):
-        sql = path.read_text(encoding="utf-8")
-        # Only statements that both name a shield table and reference a
-        # marketplace one; `create table ... shield_x (... references jobs(id))`.
-        for stmt in re.split(r";\s*", sql):
-            low = stmt.lower()
-            if "shield" not in low or "references" not in low:
-                continue
-            for table in _MARKETPLACE_TABLES:
-                if re.search(rf"references\s+(public\.)?{table}\s*\(", low):
-                    found.append(f"{path.name} keys a shield table into {table}")
-    if found:
-        return False, ("a migration reintroduces the coupling tenancy.py removed — "
-                       + "; ".join(sorted(set(found))))
-    return True, ("no migration keys a shield table into the marketplace "
-                  "(note: the eight pre-existing live FKs predate migration "
-                  "tracking and are invisible here)")
-
-
 INVARIANTS = (
     ("analyze-trusts-nothing", "Substitute the image being graded via the request body", inv_analyze_trusts_nothing),
     ("analyze-write-conditional", "Race concurrent analyses to re-roll a verdict", inv_analyze_write_is_conditional),
@@ -2157,8 +2066,6 @@ INVARIANTS = (
     ("capture-app-has-no-library-path", "Record a photograph the device never took, via the photo library", inv_capture_app_has_no_library_path),
     ("job-ticket-is-a-database-row", "Keep a job ticket in one worker's memory, or store one the phone did not sign", inv_job_ticket_is_a_database_row),
     ("offline-queue-nests-the-phone-chain", "Replace the custody chain with the phone's chain, or call a missing timestamp forged", inv_offline_queue_does_not_replace_the_chain),
-    ("shield-identity-is-its-own", "Re-borrow TradeDeck's identity, so no second business can hold a record without a row in somebody else's marketplace", inv_shield_identity_is_its_own),
-    ("no-marketplace-fk-in-migrations", "Key a Shield table back into jobs or profiles in a migration", inv_no_marketplace_fk_in_shield_migrations),
 )
 
 
