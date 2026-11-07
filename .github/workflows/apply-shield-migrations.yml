@@ -1,150 +1,49 @@
 name: Apply Shield Migrations to Supabase
 
+# Manual only. Committing a migration file does NOT apply it.
+#
+# The service role key comes from the repository secret SUPABASE_SERVICE_KEY and
+# nowhere else. It is passed through `env:` and read with os.environ -- never
+# interpolated into a run block with ${{ }}.
+#
+# This workflow previously accepted the key as a workflow_dispatch string input
+# and inlined it into the Python heredoc. Both were unsafe: workflow_dispatch
+# string inputs are not masked, so the value was visible in the run's parameters
+# to anyone with Actions read access, and ${{ }} interpolation into a run block
+# is a script-injection vector that also exposes the value to the runner's
+# process list. If that input was ever used, treat the key as exposed and
+# rotate it in the Supabase dashboard.
+
 on:
   workflow_dispatch:
-    inputs:
-      supabase_service_key:
-        description: 'Supabase service role key for jlaajejpqjldpbinktln'
-        required: false
-        type: string
 
 jobs:
   apply-migrations:
     runs-on: ubuntu-latest
-    
+    env:
+      SUPABASE_URL: https://jlaajejpqjldpbinktln.supabase.co
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Install Supabase client
         run: pip install supabase
-      
-      - name: Apply Migration 1 - Base Schema & RLS
-        run: python3 << 'PYTHON'
-import subprocess
-from supabase import create_client
 
-SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
-SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
+      - name: Check the service key is configured
+        run: |
+          if [ -z "${SUPABASE_SERVICE_KEY}" ]; then
+            echo "::error::Repository secret SUPABASE_SERVICE_KEY is not set. Add it in Settings > Secrets and variables > Actions. Do not pass it as a workflow input." >&2
+            exit 1
+          fi
 
-client = create_client(SUPABASE_URL, SERVICE_KEY)
+      - name: Apply migrations
+        run: python3 .github/scripts/apply_migrations.py
 
-with open('supabase/migrations/20260914000000_shield_schema_and_rls.sql', 'r') as f:
-    sql = f.read()
-
-try:
-    result = client.rpc('execute_sql', {'sql': sql}).execute()
-    print("✓ Migration 1 applied successfully")
-except Exception as e:
-    print(f"✗ Migration 1 failed: {e}")
-    exit(1)
-PYTHON
-      
-      - name: Apply Migration 2 - Hardening
-        run: python3 << 'PYTHON'
-import subprocess
-from supabase import create_client
-
-SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
-SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
-
-client = create_client(SUPABASE_URL, SERVICE_KEY)
-
-with open('supabase/migrations/20260914010000_shield_hardening.sql', 'r') as f:
-    sql = f.read()
-
-try:
-    result = client.rpc('execute_sql', {'sql': sql}).execute()
-    print("✓ Migration 2 applied successfully")
-except Exception as e:
-    print(f"✗ Migration 2 failed: {e}")
-    exit(1)
-PYTHON
-      
-      - name: Apply Migration 3 - Field Notes
-        run: python3 << 'PYTHON'
-from supabase import create_client
-
-SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
-SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
-
-client = create_client(SUPABASE_URL, SERVICE_KEY)
-
-with open('supabase/migrations/20260914020000_shield_field_notes.sql', 'r') as f:
-    sql = f.read()
-
-try:
-    result = client.rpc('execute_sql', {'sql': sql}).execute()
-    print("✓ Migration 3 applied successfully")
-except Exception as e:
-    print(f"✗ Migration 3 failed: {e}")
-    exit(1)
-PYTHON
-      
-      - name: Apply Migration 4 - Retake Index
-        run: python3 << 'PYTHON'
-from supabase import create_client
-
-SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
-SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
-
-client = create_client(SUPABASE_URL, SERVICE_KEY)
-
-with open('supabase/migrations/20260914030000_shield_retake_index.sql', 'r') as f:
-    sql = f.read()
-
-try:
-    result = client.rpc('execute_sql', {'sql': sql}).execute()
-    print("✓ Migration 4 applied successfully")
-except Exception as e:
-    print(f"✗ Migration 4 failed: {e}")
-    exit(1)
-PYTHON
-      
-      - name: Apply Migration 5 - RLS Security Fixes
-        run: python3 << 'PYTHON'
-from supabase import create_client
-
-SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
-SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
-
-client = create_client(SUPABASE_URL, SERVICE_KEY)
-
-with open('supabase/migrations/20260928000000_rls_close_privilege_escalation.sql', 'r') as f:
-    sql = f.read()
-
-try:
-    result = client.rpc('execute_sql', {'sql': sql}).execute()
-    print("✓ Migration 5 applied successfully")
-except Exception as e:
-    print(f"✗ Migration 5 failed: {e}")
-    exit(1)
-PYTHON
-      
-      - name: Verify Migrations
-        run: python3 << 'PYTHON'
-from supabase import create_client
-
-SUPABASE_URL = "https://jlaajejpqjldpbinktln.supabase.co"
-SERVICE_KEY = "${{ secrets.SUPABASE_SERVICE_KEY || inputs.supabase_service_key }}"
-
-client = create_client(SUPABASE_URL, SERVICE_KEY)
-
-verify_sql = """
-SELECT table_name 
-FROM information_schema.tables 
-WHERE table_schema = 'public' AND table_name LIKE 'shield_%'
-ORDER BY table_name;
-"""
-
-try:
-    result = client.rpc('execute_sql', {'sql': verify_sql}).execute()
-    print("✓ Verification successful")
-    print(result)
-except Exception as e:
-    print(f"✗ Verification failed: {e}")
-PYTHON
+      - name: Verify Shield tables
+        run: python3 .github/scripts/apply_migrations.py --verify-only
