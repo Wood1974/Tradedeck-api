@@ -11,6 +11,19 @@ This file reflects the **actual repo contents as of Sep 2026**, verified
 by reading `app.py` directly — not carried over from planning notes, which
 had drifted significantly from what's actually here.
 
+**Nov 2026 reconciliation.** This file was checked line by line against
+`render.yaml`, `app.py` and the **live Render account**, because three separate
+planning sessions were derailed by statements in here that were untrue. What was
+wrong, now corrected below: the **Data layer** claimed the SQLite database sat
+on a Render persistent disk (it sits on ephemeral disk and does not survive a
+deploy); the Supabase note omitted that `render.yaml` provisions a
+`SUPABASE_SERVICE_KEY` anyway; **Deployment** did not record that the standalone
+Shield server is deployed **three times over**, twice with its own photo disk.
+The infrastructure claims here are now sourced from the live account, not from
+memory or from `render.yaml` alone — `render.yaml` and the dashboard disagree,
+and **the dashboard is what runs.** Re-verify against both before trusting any
+line in this file.
+
 **Sep 2026 update**: Draw/escrow functionality removed to align Shield as a 
 standalone evidence verification system. Shield operates independently from 
 job payment workflows.
@@ -46,13 +59,34 @@ job payment workflows.
   as built.
 ## Data layer
 
-- **SQLite**, on Render's persistent disk (`DB_PATH`, default
-  `/var/data/tradedeck.db` per `render.yaml`). This is the real, live
-  datastore for everything this service does — not a legacy fallback.
-- **No Supabase usage anywhere in this codebase.** The frontend's move to
-  Supabase Auth (in `index.html`) has no counterpart here. If the plan is
-  to consolidate on Supabase, this service's auth, jobs, and leads tables
-  would all need to move — that's a real migration, not a config change.
+> **This section was wrong until Nov 2026 and the error was load-bearing.** It
+> claimed the SQLite file sat on a Render persistent disk at
+> `/var/data/tradedeck.db` "per `render.yaml`". None of that was true, and at
+> least one planning session was built on top of it. Verified below against the
+> live Render service and `render.yaml` itself.
+
+- **SQLite, on ephemeral container disk — it does not survive a deploy.**
+  `app.py:63` is `DB_PATH = get_env("DB_PATH", "/tmp/tradedeckapp_shield.db")`.
+  `render.yaml` declares **no `DB_PATH`** and **no `disk:` block**, and the live
+  service (`srv-d9hurcr7uimc73aovmu0`) has no disk attached. With no disk, the
+  container filesystem is ephemeral, so this file is lost on **every deploy and
+  every restart**. `autoDeploy` is on, triggered by each commit to `main`.
+  Everything this service stores — its own auth accounts, native job postings,
+  applications, `live-leads`, `gc-leads` — is therefore **not durable today.**
+  Do not build anything on this datastore until that is resolved.
+  (Unverified: whether `DB_PATH` is set in the Render dashboard. It would not
+  help on its own — there is no disk for it to point at.)
+- **Resolving it: prefer moving this data to Supabase over attaching a disk.**
+  Supabase Postgres already exists, already has RLS, and the frontend already
+  authenticates against it. Moving kills the dual-auth problem below in the same
+  change. Attaching a disk is the cheap patch and leaves two user databases.
+- **No Supabase *client* usage in this codebase** — the frontend's move to
+  Supabase Auth has no counterpart here, so there are two disconnected user
+  databases. **But note the contradiction:** `render.yaml` provisions
+  `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` for this service anyway. The service
+  role key bypasses every RLS policy in the project, so either this note is
+  stale or that key is exposed for nothing. Settle which, and if it is unused,
+  remove it from `render.yaml` and the dashboard.
 - `tradedeck_schema.sql` (Supabase: profiles, jobs, applications, draws) was
   reconstructed fresh this session and verified against a local Postgres
   instance — it targets Supabase, and has **no relationship to this
@@ -77,9 +111,30 @@ subscription billing only.
 
 Files deleted: `escrow.py` (complete payment state machine, no longer used).
 
+**Escrow state across the two repos — read both before touching it.** Verified
+Nov 2026: this service has **no** escrow or draw routes and no `escrow.py`
+(`/stripe/connect/onboard` at `app.py:262` does survive). The *frontend* took
+the opposite path — it **restored** its escrow/draw client code behind
+`ESCROW_ENABLED = false` (Tradeneck `#55`). So the client code exists and is
+switched off, while the server endpoints it would call do not exist. Turning
+escrow on means restoring routes here **first**. Neither doc is wrong; reading
+only one of them is.
+
+**"Standalone" means nothing of Shield belongs in a web browser.** The Shield
+phone app (`shield-app/` in the frontend repo) talks only to
+`tradedeck-shield.onrender.com` — never to this service. But `shield_api.py`
+here (**60.8 KB**, blueprint mounted at `/shield`, `app.py:30–47`) plus the
+inline "SHIELD CAPTURE v1" routes (~line 305) and `/api/config/shields` (~824)
+exist solely to serve the **older web Shield** (`shield.js`, 95.8 KB, in the
+frontend). That web surface is slated for removal, after which nothing calls
+any of this. Retiring it is its own decision and its own PR — same treatment as
+the legacy `identity_api.py` note below.
+
 ## Environment variables (see `render.yaml` / set in Render dashboard — never commit real values)
 
-- `DB_PATH` — SQLite file path (Render disk-backed).
+- `DB_PATH` — SQLite file path. **Not disk-backed.** Not declared in
+  `render.yaml`; the in-code default is `/tmp/tradedeckapp_shield.db` and no
+  disk is mounted on the service. See **Data layer** above.
 - `PERMITSTACK_KEY`, `SAM_API_KEY`, `ZIPRECRUITER_KEY` — lead source APIs.
 - `ANTHROPIC_API_KEY` — used only by `/api/chat`.
 - `IDENTITY_RECEIPT_KEY`, `STRIPE_TEST_SECRET_KEY`, `IDENTITY_TEST_MODE_USER_IDS` — **legacy.** They configure the older ID-check
@@ -90,11 +145,34 @@ Files deleted: `escrow.py` (complete payment state machine, no longer used).
 - `SECRET_KEY` — signs auth tokens and salts password hashes. **Must** be
   set explicitly in Render; the in-code fallback (`'tradedeck-secret-2026'`)
   is not safe for production and is visible to anyone reading this repo.
+  **Not declared in `render.yaml`, and whether it is set in the dashboard is
+  unverified** (the agent toolset here exposes no read-only env-var listing).
+  Confirm it. If it is unset, treat the committed fallback as exposed and
+  rotate — but note rotation invalidates live sessions and makes existing
+  `sha256(password + SECRET_KEY)` hashes unverifiable, so it needs a password
+  reset path. That is a migration, not a config change.
+  Related: those password hashes are plain SHA-256 with a shared salt, not
+  bcrypt/scrypt/argon2 and not salted per user. Replace before real users
+  register — moot if this service's auth moves to Supabase.
 
 ## Deployment
 
-- Hosted on Render: `tradedeck-api.onrender.com`, via `Procfile`
-  (`gunicorn app:app`) and `render.yaml`.
+- Hosted on Render: `tradedeck-api.onrender.com` (`srv-d9hurcr7uimc73aovmu0`),
+  via `Procfile` (`gunicorn app:app`) and `render.yaml`. Python runtime, starter
+  plan, Oregon, **no disk** (see **Data layer**). `autoDeploy` on every commit
+  to `main`.
+- **The standalone Shield server is deployed three times over.** All three
+  Render services build `Wood1974/tradedeck-shield` from `main` with autoDeploy
+  on, as of Nov 2026:
+  | service | disk | health check |
+  |---|---|---|
+  | `tradedeck-shield` — the phone app's actual target | `shield-data` 10 GB @ `/data` | `/health` |
+  | `tradedeck-shield-qtt8` | `shield-data` 10 GB @ `/data` | `/health` |
+  | `tradedeck-shield-1` | none | none |
+  Two live instances with **separate** photo disks means a sealed photo sits on
+  whichever one answered — a custody problem for an evidence product, not just
+  duplicated spend. Confirm which disk holds real photos before suspending
+  anything. Owner-only.
 
 ## Conventions / working notes
 
