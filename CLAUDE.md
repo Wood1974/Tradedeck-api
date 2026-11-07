@@ -11,8 +11,9 @@ This file reflects the **actual repo contents as of Sep 2026**, verified
 by reading `app.py` directly — not carried over from planning notes, which
 had drifted significantly from what's actually here.
 
-**Nov 2026 reconciliation, done in two passes — and the first pass was itself
-wrong.** This matters more than any individual correction below, so read it.
+**Nov 2026 reconciliation, done in three passes — the first two were each
+wrong in a different way.** This matters more than any individual correction
+below, so read it.
 
 The first pass verified the *infrastructure* against the live Render account
 and found real problems, but took this file's *application* description on
@@ -28,6 +29,19 @@ user system, `SECRET_KEY` is used by **no live code**, there is **no password
 handling at all**, `/api/jobs` is **Supabase-backed**, Supabase **is** used
 here, and the SQLite file holds **two tables** (`custom_packs`, `manifests`)
 of Shield capture v1 data — not auth, jobs, applications or leads.
+
+The second pass got one thing badly wrong, which the third pass fixes: it
+recorded "no escrow or draw routes, `escrow.py` deleted — verified Nov 2026".
+That was read from a **working tree five commits behind `origin/main`**. PR #35
+(`140269c`, merged 2026-11-06) had already **restored `escrow.py` and every
+escrow and draw route**. True of that branch, false of this repo. See
+**Milestone escrow** for what the merged tree actually contains.
+
+**The mechanism behind all three mistakes is the same: each pass verified
+against the wrong reference.** Pass one trusted the previous version of this
+file; pass two trusted the working tree; the fix each time was to go one level
+closer to what actually runs. So: derive from the code, read it on
+`origin/main`, and read infrastructure from the live Render account.
 
 Infrastructure findings that did hold up: no `disk:` block and no `DB_PATH` in
 `render.yaml`, so the SQLite file is on ephemeral disk; the standalone Shield
@@ -83,9 +97,10 @@ job payment workflows.
   `checkr_bp` at `/checkr` with `/start` and `/webhook` — the frontend's
   `CHECKR_API` in `assets/app.js` points here. `render.yaml` notes Checkr is
   ON HOLD behind `CHECKR_ENABLED`.
-- **Stripe**: `/stripe/connect/onboard` and `/stripe/webhook`. No escrow or
-  draw routes — `escrow.py` is deleted, so the frontend's `/draws/<id>/approve`
-  call has no server side (it is unreachable while `ESCROW_ENABLED` is false).
+- **Stripe and escrow** — see **Milestone escrow** below. `escrow.py` exists
+  and all seven escrow/draw routes are present; the earlier claim here that
+  they were deleted was read off a stale branch. `/stripe/webhook` is
+  ungated; every other Stripe, escrow and draw route is gated.
 - **Config/health**: `/`, `/health`, `/api/health`, `/api/config/shields`,
   `/api/config/location`.
 - **Gone, despite prior notes**: `/api/auth/register|login|me`,
@@ -141,35 +156,58 @@ here assuming it is what runs at `tradedeck-shield.onrender.com`.
   service's SQLite schema** (defined inline in `app.py`'s `init_db()`).
   Reconciling the two schemas is unresolved.
 
-## Architecture (Sep 2026)
+## Milestone escrow (built, switched off)
 
-**Shield and TradeDeck are completely standalone applications** sharing the 
-tradedeckapp.com domain but operating independently:
+- Routes in `app.py`: `/stripe/escrow/create|release|refund`,
+  `/draws/<id>`, `/draws/<id>/approve`, `/draws/<id>/photos/upload`,
+  `/draws/<id>/photos`, and `/stripe/connect/onboard`. Payment state
+  machine in `escrow.py` (manual-capture PaymentIntent → held via webhook →
+  capture + Transfer to the payee's Connect account on approval, minus
+  `PLATFORM_FEE_BPS`). Draw access checks are in `auth.py`.
+- **Off unless `ESCROW_ENABLED=true`** (`config.escrow_enabled()`). While
+  off, `_require_escrow_enabled` makes every one of those routes return 404
+  before auth or Stripe, and `/stripe/webhook` ignores escrow events (it
+  still records them for idempotency). The variable is not set on Render, so
+  it is off in production. Only the owner turns it on, together with
+  `ESCROW_ENABLED` in the frontend's `assets/app.js`.
+- Escrow amount and payee come only from the stored `draws` /
+  `draw_schedules` rows (`payee_id` is set by the `accept_application`
+  RPC), never from the request body.
+- Shield is separate from escrow: no Shield code depends on it.
+- `tests/test_escrow_gate.py` covers the gate. `escrow_enabled()` accepts `1`,
+  `true` or `yes` (`config.py:56`); anything else, unset included, is off.
+- **This closes a gap the frontend doc flags.** That doc warns its own
+  `ESCROW_ENABLED` is client-side only and "the backend is what actually has to
+  refuse payments". It now does. Because the server 404s regardless, a client
+  flag left on surfaces as 404s rather than unguarded payments — and the
+  frontend doc's line that these routes must be "restored here first" is
+  **stale**: they are back, so turning escrow on is configuration, not a
+  restore.
+- ⚠️ **An earlier Nov 2026 pass of this file claimed `escrow.py` was deleted
+  and no escrow or draw routes existed.** That was read off a working tree five
+  commits behind `origin/main`, before PR #35 (`140269c`, merged 2026-11-06).
+  Wrong about this repo. Kept here as the worked example of why the conventions
+  below say to read `origin/main`.
 
-- **Shield**: Standalone evidence verification system with photo analysis, 
-  integrity verification, and contractor scoring. No integration with jobs.
-- **TradeDeck**: Simple job marketplace. Post fixed-price job → apply → hire → pay.
-  No draws/milestones, no escrow, no multi-stage payments.
+## Architecture — Shield and TradeDeck are standalone (owner's decision)
 
-Draw/milestone/escrow functionality was **intentionally removed** to align 
-with Shield's architecture. Draw/escrow concepts belong to job-workflow 
-payment splits; Shield handles evidence collection independently. Stripe 
-payment processing is retained for fixed-price job payments and Shield Pro 
-subscription billing only.
+This section was lost in the Nov 2026 merge of PR #35, because the version of
+it written in Sep 2026 also asserted "no draws/milestones, no escrow", which
+escrow's return made false. **The standalone decision itself still stands** and
+is restored here without the stale escrow claims — the frontend CLAUDE.md
+quotes it from this file, so it needs to exist here.
 
-Files deleted: `escrow.py` (complete payment state machine, no longer used).
+**Shield and TradeDeck are completely standalone applications**, sharing the
+`tradedeckapp.com` domain and operating independently:
 
-**Escrow state across the two repos — read both before touching it.** Verified
-Nov 2026: this service has **no** escrow or draw routes and no `escrow.py`
-(`/stripe/connect/onboard` at `app.py:262` does survive). The *frontend* took
-the opposite path — it **restored** its escrow/draw client code behind
-`ESCROW_ENABLED = false` (Tradeneck `#55`). So the client code exists and is
-switched off, while the server endpoints it would call do not exist. Turning
-escrow on means restoring routes here **first**. Neither doc is wrong; reading
-only one of them is.
+- **Shield** — standalone evidence verification: photo analysis, integrity
+  verification, contractor scoring. **No integration with jobs.**
+- **TradeDeck** — the job marketplace. Milestone escrow is part of *it*
+  (built, switched off — see above), not of Shield. No Shield code depends on
+  escrow and none should.
 
-**"Standalone" means nothing of Shield belongs in a web browser.** The Shield
-phone app (`shield-app/` in the frontend repo) talks only to
+**"Standalone" also means nothing of Shield belongs in a web browser.** The
+Shield phone app (`shield-app/` in the frontend repo) talks only to
 `tradedeck-shield.onrender.com` — never to this service. But `shield_api.py`
 here (**60.8 KB**, blueprint mounted at `/shield`, `app.py:30–47`) plus the
 inline "SHIELD CAPTURE v1" routes (~line 305) and `/api/config/shields` (~824)
@@ -184,7 +222,14 @@ the legacy `identity_api.py` note below.
   `render.yaml`; the in-code default is `/tmp/tradedeckapp_shield.db` and no
   disk is mounted on the service. See **Data layer** above.
 - `PERMITSTACK_KEY`, `SAM_API_KEY`, `ZIPRECRUITER_KEY` — lead source APIs.
-- `ANTHROPIC_API_KEY` — used only by `/api/chat`.
+- `ANTHROPIC_API_KEY` — **required for the service to boot at all.** `app.py:63`
+  is `anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])` at module
+  level, with a subscript rather than `.get()`, so an unset key raises
+  `KeyError` on import and gunicorn never starts. Consumed by `_analyze_photo`
+  (`app.py:231`) from `/draws/<id>/photos/upload` (`app.py:430`) — which is
+  escrow-gated, so **the key is needed to boot even though the only caller is
+  switched off**. There is no `/api/chat` route, despite older notes.
+- `ESCROW_ENABLED` — not set (off). See "Milestone escrow". Owner-only to set.
 - `IDENTITY_RECEIPT_KEY`, `STRIPE_TEST_SECRET_KEY`, `IDENTITY_TEST_MODE_USER_IDS` — **legacy.** They configure the older ID-check
   code in `identity_api.py` / `identity_core.py` here. The Shield phone app no longer calls this service: it signs on with the standalone
   Shield server (`Wood1974/tradedeck-shield`, which uses `IDENTITY_TEST_MODE_EMAILS`), and the receipt key the app pins is that server's.
@@ -237,12 +282,22 @@ the legacy `identity_api.py` note below.
 - **The dual-auth problem is resolved.** Earlier versions of this file told
   every new session to go resolve it first. Auth here is Supabase JWT via
   `auth.py`; there is one user system. Nothing to do.
-- **Derive this file from the code, not from the previous version of this
-  file.** That is how it came to describe an auth system, a leads aggregator
-  and a chat proxy that do not exist — each rewrite trusted the last. For
-  routes: `grep -rn '\.route(' --include=*.py .`. For tables: read
-  `init_db()`. For infrastructure: read the live Render account, because
-  `render.yaml` and the dashboard disagree and the dashboard is what runs.
+- **Derive this file from the code, on `origin/main`, not from the previous
+  version of this file and not from your working tree.** Three Nov 2026 passes
+  each got this wrong in a different way and each produced a confidently wrong
+  commit: pass one trusted the previous version of this file (hence the auth
+  system, leads aggregator and chat proxy that do not exist); pass two trusted
+  the working tree (hence "escrow.py deleted", while `origin/main` was five
+  commits ahead with it restored). Concretely, before writing anything here:
+  - `git fetch origin main` first, and read on `origin/main` — or note plainly
+    that a claim is branch-local.
+  - Routes: `git grep -nE '\.route\(' origin/main -- '*.py'`.
+  - Tables: read `init_db()`.
+  - Infrastructure: read the live Render account, because `render.yaml` and the
+    dashboard disagree and **the dashboard is what runs**.
+  - Check open and recently merged PRs in both repos before describing or
+    rebuilding anything; the frontend CLAUDE.md's "check what the other open
+    branch or PR already did" is the same rule and would have caught pass two.
 
 ## Working rules (set by the owner)
 
